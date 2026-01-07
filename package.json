@@ -1,0 +1,12 @@
+{
+  "name": "snippet-posw",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "0.23.1",
+    "html-minifier-terser": "7.2.0"
+  }
+}
