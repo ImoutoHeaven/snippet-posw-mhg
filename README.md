@@ -69,7 +69,7 @@ Each `CONFIG` entry looks like:
 | `POW_DIFFICULTY_COEFF` | `number` | `1.0` | Difficulty multiplier (steps ≈ `base * coeff`). |
 | `POW_MIN_STEPS` | `number` | `512` | Minimum step count (clamps computed steps). |
 | `POW_MAX_STEPS` | `number` | `8192` | Maximum step count (clamps computed steps). |
-| `POW_HASHCASH_BITS` | `number` | `3` | Extra hashcash check on the last index (0 disables). |
+| `POW_HASHCASH_BITS` | `number` | `3` | Extra “root-bound hashcash” check on the last index (0 disables). |
 | `POW_SEGMENT_LEN` | `string \| number` | `"48-64"` | Segment length: fixed `N` or range `"min-max"` (each clamped to `1..64`). |
 | `POW_SAMPLE_K` | `number` | `15` | Extra sampled indices per round (total extra ≈ `POW_SAMPLE_K * POW_CHAL_ROUNDS`). |
 | `POW_SPINE_K` | `number` | `2` | Number of “spine” constraints per batch (`0` disables). |
@@ -95,6 +95,21 @@ Each `CONFIG` entry looks like:
 | `POW_BIND_COUNTRY` | `boolean` | `false` | Bind to `request.cf.country`. |
 | `POW_BIND_ASN` | `boolean` | `false` | Bind to `request.cf.asn`. |
 | `POW_BIND_TLS` | `boolean` | `true` | Bind to TLS fingerprint derived from `request.cf.tlsClientExtensionsSha1` + `tlsClientCiphersSha1`. |
+
+### Root-bound Hashcash (`POW_HASHCASH_BITS`)
+
+This is **not** a standard Hashcash stamp format. It is a lightweight, *commitment-bound* extra PoW condition:
+
+- It is only checked when the sampled index is the **last step** (`i = L`).
+- The server computes:
+  - `digest = SHA256("hashcash|v3|" || merkleRoot || chain[L])`
+  - and requires `leadingZeroBits(digest) >= POW_HASHCASH_BITS`.
+
+Why it exists:
+
+- It provides an **exponential cost knob** with minimal server overhead (one SHA-256 and a leading-zero count).
+- Because it is bound to `merkleRoot` and `chain[L]`, it cannot be “pre-stamped” independently of the actual PoSW chain commitment.
+- Increasing `POW_HASHCASH_BITS` increases the expected client work by roughly `~ 2^bits`, because the client must retry with a different nonce (which changes the whole chain commitment) until the condition holds.
 
 ### Turnstile
 
