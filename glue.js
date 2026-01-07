@@ -268,12 +268,15 @@ const runPowFlow = async (
       throw new Error("Challenge Failed");
     }
     let round = 0;
+    let verifyLine = -1;
     while (state && state.done !== true) {
       round++;
       if (!Array.isArray(state.indices) || state.indices.length === 0) {
         throw new Error("Challenge Failed");
       }
-      log("Verifying #" + round + " (" + state.indices.length + ")...");
+      const verifyMsg = "Verifying #" + round + " (" + state.indices.length + ")...";
+      if (verifyLine === -1) verifyLine = log(verifyMsg);
+      else update(verifyLine, verifyMsg);
       const indices = state.indices;
       const segs =
         Array.isArray(state.segs) && state.segs.length === indices.length
@@ -303,6 +306,7 @@ const runPowFlow = async (
         throw new Error("Challenge Failed");
       }
     }
+    if (verifyLine !== -1) update(verifyLine, "Verifying... done");
     log("PoW... done");
   } finally {
     clearInterval(spinTimer);
