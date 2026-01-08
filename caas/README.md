@@ -41,16 +41,38 @@ Typical flow:
 2) The browser completes the challenge (landing UI) and receives `turnProofToken` and/or `powProofToken`.
 3) Your backend calls `server/attest` to decrypt `ctx`, then applies business checks and one-time consumption.
 
+If you use the provided browser helper (`frontend/caas-client.js`), expose two app endpoints that wrap CaaS:
+
+- `POST /api/caas/generate` → calls `POST /__pow/v1/server/generate`
+- `POST /api/caas/attest` → calls `POST /__pow/v1/server/attest` and returns your application-specific decision
+
+See `examples/node-demo.mjs` for a minimal end-to-end implementation.
+
 Node (18+) example using `sdk/node.js`:
 
 ```js
-import { createCaasClient } from "./caas/sdk/node.js";
+import { createCaasClient } from "./sdk/node.js";
 
-const caas = createCaasClient({ caasOrigin: "https://caas.example.com", serviceToken: process.env.CAAS_SERVICE_TOKEN });
+const caas = createCaasClient({
+  caasOrigin: "https://caas.example.com",
+  serviceToken: process.env.CAAS_SERVICE_TOKEN,
+});
+
+const nowSec = () => Math.floor(Date.now() / 1000);
+const b64uJson = (obj) => Buffer.from(JSON.stringify(obj), "utf8").toString("base64url");
+const b64uJsonDecode = (b64) => JSON.parse(Buffer.from(b64, "base64url").toString("utf8"));
 
 // generate
-const ctx = { v: 1, act: "download", rid: "file_123", sub: "user_456", jti: "random_128bit", iat: nowSec(), exp: nowSec() + 300 };
-const ctxB64 = base64url(JSON.stringify(ctx));
+const ctx = {
+  v: 1,
+  act: "download",
+  rid: "file_123",
+  sub: "user_456",
+  jti: "random_128bit",
+  iat: nowSec(),
+  exp: nowSec() + 300,
+};
+const ctxB64 = b64uJson(ctx);
 const gen = await caas.generate({
   ctxB64,
   ttlSec: 300,
@@ -61,7 +83,7 @@ const gen = await caas.generate({
 
 // attest (after frontend returns proof tokens)
 const attest = await caas.attest({ chal: gen.chal, turnProofToken, powProofToken });
-const ctxPlain = JSON.parse(base64urlDecode(attest.ctxB64));
+const ctxPlain = b64uJsonDecode(attest.ctxB64);
 ```
 
 Notes:
@@ -71,7 +93,7 @@ Notes:
 
 ## Frontend integration
 
-Recommended: use `frontend/caas-client.js` (postMessage-first, iframe/popup).
+Use `frontend/caas-client.js` (postMessage-first, iframe/popup).
 
 ```js
 import { caasRun } from "/caas-client.js";
