@@ -1234,6 +1234,12 @@ const handleUiLanding = async (request, url, nowSeconds, config) => {
       scriptSrc.add(esm.origin);
     }
   } catch {}
+  const workerSrc = new Set(["'self'", "blob:", "https://challenges.cloudflare.com"]);
+  for (const value of scriptSrc) {
+    if (typeof value === "string" && value.startsWith("http")) {
+      workerSrc.add(value);
+    }
+  }
   const connectSrc = new Set(["'self'", "https://challenges.cloudflare.com"]);
   const frameSrc = new Set(["https://challenges.cloudflare.com"]);
   const imgSrc = new Set(["'self'", "data:", "https://challenges.cloudflare.com"]);
@@ -1244,6 +1250,7 @@ const handleUiLanding = async (request, url, nowSeconds, config) => {
     "form-action 'none'",
     `frame-ancestors ${parentOrigin}`,
     `script-src ${Array.from(scriptSrc).join(" ")}`,
+    `worker-src ${Array.from(workerSrc).join(" ")}`,
     `connect-src ${Array.from(connectSrc).join(" ")}`,
     `frame-src ${Array.from(frameSrc).join(" ")}`,
     `img-src ${Array.from(imgSrc).join(" ")}`,
