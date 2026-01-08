@@ -70,6 +70,23 @@ const parseChalPayload = (chal) => {
   }
 };
 
+const readChalFromFragment = () => {
+  const raw = typeof location.hash === "string" ? location.hash : "";
+  const q = raw.startsWith("#") ? raw.slice(1) : raw;
+  if (!q) return "";
+  try {
+    const params = new URLSearchParams(q.startsWith("?") ? q.slice(1) : q);
+    const chal = params.get("chal");
+    if (!chal) return "";
+    try {
+      history.replaceState(null, "", location.pathname + location.search);
+    } catch {}
+    return String(chal);
+  } catch {
+    return "";
+  }
+};
+
 async function solveTurn({ apiPrefix, chal, chalId, sitekey }) {
   await loadTurnstile();
   const container = document.createElement("div");
@@ -114,7 +131,7 @@ async function solvePow({ apiPrefix, chal, chalId, powEsmUrl }) {
 
   const bindingString = `chalId=${chalId}`;
   const hashcashBits = Number(params && params.hashcashBits) || 0;
-  const segmentLen = Number(params && params.segmentLen) || 64;
+  const segmentLen = 64;
 
   const status = document.createElement("pre");
   status.style.cssText = "white-space:pre-wrap;word-break:break-word;font:12px/1.4 monospace;";
@@ -184,6 +201,7 @@ export default async function main(cfgB64) {
 
   const parent = getParentTarget();
   let chal = chalFromState;
+  if (!chal) chal = readChalFromFragment();
 
   if (!chal) {
     if (!parent || !parentOrigin) {
