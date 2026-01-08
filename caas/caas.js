@@ -235,6 +235,16 @@ const normalizeNumber = (value, fallback) => {
   return Number.isFinite(num) ? num : fallback;
 };
 
+const normalizeApiPrefix = (value, fallback) => {
+  const raw = typeof value === "string" ? value.trim() : "";
+  const base = raw || (typeof fallback === "string" ? fallback.trim() : "");
+  if (!base) return null;
+  let out = base.startsWith("/") ? base : `/${base}`;
+  while (out.length > 1 && out.endsWith("/")) out = out.slice(0, -1);
+  if (out === "/") return null;
+  return out;
+};
+
 const normalizePath = (pathname) => {
   if (typeof pathname !== "string") return null;
   let decoded;
@@ -510,13 +520,17 @@ const getDefaultCache = () => {
   return null;
 };
 
-const replayCacheKey = (origin, chalId) =>
-  new Request(`${origin}${DEFAULTS.API_PREFIX}/_replay/${chalId}`, { method: "GET" });
+const replayCacheKey = (origin, apiPrefix, chalId) => {
+  const prefix = normalizeApiPrefix(apiPrefix, DEFAULTS.API_PREFIX);
+  if (!prefix) return null;
+  return new Request(`${origin}${prefix}/_replay/${chalId}`, { method: "GET" });
+};
 
-const checkAndMarkReplayBestEffort = async (origin, chalId, ttlSec) => {
+const checkAndMarkReplayBestEffort = async (origin, apiPrefix, chalId, ttlSec) => {
   const cache = getDefaultCache();
   if (!cache) return "unknown";
-  const key = replayCacheKey(origin, chalId);
+  const key = replayCacheKey(origin, apiPrefix, chalId);
+  if (!key) return "unknown";
   try {
     const hit = await cache.match(key);
     if (hit) return "hit";
@@ -1006,13 +1020,13 @@ const handleServerGenerate = async (request, url, nowSeconds, config) => {
       returnUrl,
     };
     const state = await makeState(powSecret, statePayload);
-    const landingUrl = `${url.origin}${DEFAULTS.API_PREFIX}/ui/landing?state=${encodeURIComponent(state)}`;
+    const landingUrl = `${url.origin}${config.API_PREFIX}/ui/landing?state=${encodeURIComponent(state)}`;
 
     let landingUrlRedirect = null;
     if (allowRedirect && returnUrl) {
       const statePayload2 = { ...statePayload, chal };
       const state2 = await makeState(powSecret, statePayload2);
-      landingUrlRedirect = `${url.origin}${DEFAULTS.API_PREFIX}/ui/landing?state=${encodeURIComponent(
+      landingUrlRedirect = `${url.origin}${config.API_PREFIX}/ui/landing?state=${encodeURIComponent(
         state2
       )}`;
     }
@@ -1069,6 +1083,7 @@ const handleServerAttest = async (request, nowSeconds, config) => {
   if (!ctxBytes) return deny();
   const replayHint = await checkAndMarkReplayBestEffort(
     new URL(request.url).origin,
+    config.API_PREFIX,
     chalId,
     Math.min(
       exp - nowSeconds,
@@ -1159,7 +1174,7 @@ const handleUiLanding = async (request, url, nowSeconds, config) => {
   if (!chalId || !nonce || !parentOrigin) return deny();
 
   const cfgObj = {
-    apiPrefix: DEFAULTS.API_PREFIX,
+    apiPrefix: config.API_PREFIX,
     chalId,
     nonce,
     parentOrigin,
@@ -1519,12 +1534,15 @@ export default {
 
     const config = getEffectiveConfig(url.hostname, requestPath);
     if (!config) return S(500);
+    const apiPrefix = normalizeApiPrefix(config.API_PREFIX, DEFAULTS.API_PREFIX);
+    if (!apiPrefix) return S(500);
+    config.API_PREFIX = apiPrefix;
 
-    if (!requestPath.startsWith(`${DEFAULTS.API_PREFIX}/`)) {
+    if (!requestPath.startsWith(`${apiPrefix}/`)) {
       return S(404);
     }
 
-    const subpath = requestPath.slice(DEFAULTS.API_PREFIX.length);
+    const subpath = requestPath.slice(apiPrefix.length);
 
     if (subpath === "/server/generate") {
       if (request.method !== "POST") return S(405);

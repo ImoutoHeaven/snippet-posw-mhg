@@ -1,9 +1,14 @@
-export function createCaasClient({ caasOrigin, serviceToken }) {
+export function createCaasClient({ caasOrigin, serviceToken, apiPrefix = "/__pow/v1" }) {
   if (!caasOrigin) throw new Error("caasOrigin required");
   if (!serviceToken) throw new Error("serviceToken required");
 
   const origin = String(caasOrigin).replace(/\/+$/, "");
   const auth = `Bearer ${serviceToken}`;
+  let prefix = String(apiPrefix || "/__pow/v1").trim();
+  if (!prefix) throw new Error("apiPrefix invalid");
+  if (!prefix.startsWith("/")) prefix = `/${prefix}`;
+  prefix = prefix.replace(/\/+$/, "");
+  if (prefix === "/") throw new Error("apiPrefix invalid");
 
   const postJson = async (path, body) => {
     const res = await fetch(`${origin}${path}`, {
@@ -32,11 +37,10 @@ export function createCaasClient({ caasOrigin, serviceToken }) {
 
   return {
     generate(body) {
-      return postJson("/__pow/v1/server/generate", body);
+      return postJson(`${prefix}/server/generate`, body);
     },
     attest(body) {
-      return postJson("/__pow/v1/server/attest", body);
+      return postJson(`${prefix}/server/attest`, body);
     },
   };
 }
-

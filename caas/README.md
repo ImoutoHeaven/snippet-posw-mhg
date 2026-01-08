@@ -18,8 +18,9 @@ Configure `CONFIG` in `caas.js`:
 - Single-site: set `CONFIG` to an object.
 - Multi-site: set `CONFIG` to an array of `{ pattern, config }` entries (first-match-wins; pattern syntax matches the Gate snippet).
 
+- `API_PREFIX`: API/UI prefix (default: `/__pow/v1`). Can be set per-site in multi-site mode.
 - `POW_TOKEN`: master secret used for HMAC + AES-GCM key derivation (required).
-- `SERVICE_TOKEN`: bearer token for `POST /__pow/v1/server/*` (required).
+- `SERVICE_TOKEN`: bearer token for `POST {API_PREFIX}/server/*` (required).
 - `TURNSTILE_SITEKEY` / `TURNSTILE_SECRET`: required when `requireTurn: true`.
 - `ALLOWED_PARENT_ORIGINS`: allowlist for embedding + postMessage validation (required for UI usage).
 - `CAAS_GLUE_URL`: ES module URL for the landing page glue code (required for UI).
@@ -27,14 +28,16 @@ Configure `CONFIG` in `caas.js`:
 
 ## Endpoints (v1)
 
+Default `API_PREFIX` is `/__pow/v1` (configurable via `CONFIG.API_PREFIX`).
+
 - Server (requires `Authorization: Bearer <SERVICE_TOKEN>`):
-  - `POST /__pow/v1/server/generate`
-  - `POST /__pow/v1/server/attest`
+  - `POST {API_PREFIX}/server/generate`
+  - `POST {API_PREFIX}/server/attest`
 - Client/UI:
-  - `POST /__pow/v1/client/turn`
-  - `POST /__pow/v1/client/pow/commit`
-  - `POST /__pow/v1/client/pow/open`
-  - `GET /__pow/v1/ui/landing?state=...`
+  - `POST {API_PREFIX}/client/turn`
+  - `POST {API_PREFIX}/client/pow/commit`
+  - `POST {API_PREFIX}/client/pow/open`
+  - `GET {API_PREFIX}/ui/landing?state=...`
 
 ## Backend integration (caller)
 
@@ -59,6 +62,7 @@ import { createCaasClient } from "./sdk/node.js";
 const caas = createCaasClient({
   caasOrigin: "https://caas.example.com",
   serviceToken: process.env.CAAS_SERVICE_TOKEN,
+  apiPrefix: "/__pow/v1",
 });
 
 const nowSec = () => Math.floor(Date.now() / 1000);
