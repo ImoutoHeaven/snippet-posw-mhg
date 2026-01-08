@@ -58,11 +58,13 @@ const CONFIG = {
 
   // landing 最小页会动态 import 这个 glue（建议自托管到 caas 域或可信 CDN）
   // 示例："https://caas.example.com/assets/caas-glue.js"
-  CAAS_GLUE_URL: "",
+  CAAS_GLUE_URL:
+    "https://cdn.jsdelivr.net/gh/ImoutoHeaven/snippet-posw@4605ca27c264e69da52eadc031cbd543a1118669/caas/glue.js",
 
   // PoW solver（computePoswCommit）模块 URL（建议自托管/固定版本）
   // 示例："https://caas.example.com/assets/esm.js"
-  CAAS_POW_ESM_URL: "",
+  CAAS_POW_ESM_URL:
+    "https://cdn.jsdelivr.net/gh/ImoutoHeaven/snippet-posw@4605ca27c264e69da52eadc031cbd543a1118669/caas/esm/esm.js",
 };
 
 const HTML_TEMPLATE = typeof __HTML_TEMPLATE__ === "string" ? __HTML_TEMPLATE__ : "";
