@@ -979,7 +979,8 @@ const verifySol = async (
   powSecret,
   cfgId,
   cookieName,
-  solTag
+  solTag,
+  pathHashOverride
 ) => {
   const cookies = parseCookieHeader(request.headers.get("Cookie"));
   const solRaw = cookies.get(cookieName) || "";
@@ -998,7 +999,10 @@ const verifySol = async (
   if (sol.last < sol.iat) return null;
   if (sol.last > nowSeconds) return null;
   if (sol.last > ticket.e) return null;
-  const bindingValues = await getPowBindingValues(request, canonicalPath, config);
+  const bindingValues =
+    typeof pathHashOverride === "string"
+      ? await getPowBindingValuesWithPathHash(request, pathHashOverride, config)
+      : await getPowBindingValues(request, canonicalPath, config);
   if (!bindingValues) return null;
   const { pathHash, ipScope, country, asn, tlsFingerprint } = bindingValues;
   const bindingString = makePowBindingString(
@@ -1512,9 +1516,11 @@ const handleTurn = async (request, url, nowSeconds) => {
   const baseConfig = getConfigById(ticket.cfgId);
   if (!baseConfig) return deny();
   const config = { ...DEFAULTS, ...baseConfig };
+  const needPow = config.powcheck === true;
+  const needTurn = config.turncheck === true;
   const powSecret = getPowSecret(config);
   if (!powSecret) return S(500);
-  if (config.turncheck !== true) return S(404);
+  if (!needTurn) return S(404);
   const turnSecret = typeof config.TURNSTILE_SECRET === "string" ? config.TURNSTILE_SECRET : "";
   if (!turnSecret) return S(500);
 
@@ -1542,6 +1548,24 @@ const handleTurn = async (request, url, nowSeconds) => {
   );
   const expectedMac = await hmacSha256Base64UrlNoPad(powSecret, bindingString);
   if (!timingSafeEqual(expectedMac, ticket.mac)) return deny();
+
+  if (needPow && needTurn) {
+    const powMeta = await verifySol(
+      request,
+      url,
+      "",
+      nowSeconds,
+      config,
+      powSecret,
+      ticket.cfgId,
+      DEFAULTS.POW_SOL_COOKIE,
+      SOL_TAG_POW,
+      normalizedPathHash
+    );
+    if (!powMeta || !powMeta.sol) return deny();
+    const expectedLink = await deriveSolLink(powSecret, ticket.mac);
+    if (powMeta.sol.link !== expectedLink) return deny();
+  }
 
   const form = new URLSearchParams();
   form.set("secret", turnSecret);

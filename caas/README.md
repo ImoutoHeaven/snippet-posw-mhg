@@ -96,6 +96,7 @@ const ctxPlain = b64uJsonDecode(attest.ctxB64);
 Notes:
 
 - CaaS is stateless: replay prevention should be enforced by the caller (e.g. `ctx.jti` with Redis `SETNX`).
+- When `policy.requirePow` and `policy.requireTurn` are both `true`, `client/turn` requires `powProofToken` and verifies it before calling Turnstile.
 - Any “business binding” (IP/country/fingerprint/account) should be carried in `ctx` and checked by the caller.
 
 ## Frontend integration

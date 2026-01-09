@@ -87,30 +87,56 @@ const readChalFromFragment = () => {
   }
 };
 
-async function solveTurn({ apiPrefix, chal, chalId, sitekey }) {
+async function solveTurn({ apiPrefix, chal, chalId, sitekey, powPromise }) {
   await loadTurnstile();
   const container = document.createElement("div");
   container.style.cssText = "margin:24px auto;max-width:320px;";
   document.body.appendChild(container);
 
-  const token = await new Promise((resolve) => {
-    globalThis.turnstile.render(container, {
-      sitekey,
-      cData: chalId,
-      callback: resolve,
+  const maxAttempts = 5;
+  let widgetId = null;
+  const nextToken = () =>
+    new Promise((resolve, reject) => {
+      container.innerHTML = "";
+      widgetId = globalThis.turnstile.render(container, {
+        sitekey,
+        cData: chalId,
+        callback: resolve,
+        "error-callback": () => reject(new Error("turnstile failed")),
+        "expired-callback": () => reject(new Error("turnstile expired")),
+      });
     });
-  });
 
-  const res = await fetch(`${apiPrefix}/client/turn`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ chal, turnstileToken: token }),
-  });
-  const j = await res.json().catch(() => null);
-  if (!res.ok || !j || j.ok !== true) {
-    throw new Error("turn attest failed");
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    let token;
+    try {
+      token = await nextToken();
+    } catch (e) {
+      if (attempt >= maxAttempts) throw e;
+      continue;
+    }
+    const powProofToken = powPromise ? await powPromise : "";
+    const body = { chal, turnstileToken: token };
+    if (powPromise) body.powProofToken = powProofToken;
+    const res = await fetch(`${apiPrefix}/client/turn`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const j = await res.json().catch(() => null);
+    if (res.ok && j && j.ok === true && typeof j.turnProofToken === "string") {
+      return j.turnProofToken;
+    }
+    if (attempt >= maxAttempts) {
+      throw new Error("turn attest failed");
+    }
+    if (globalThis.turnstile && typeof globalThis.turnstile.reset === "function") {
+      try {
+        globalThis.turnstile.reset(widgetId);
+      } catch {}
+    }
   }
-  return j.turnProofToken;
+  throw new Error("turn attest failed");
 }
 
 async function solvePow({ apiPrefix, chal, chalId, powEsmUrl }) {
@@ -236,13 +262,23 @@ export default async function main(cfgB64) {
 
   const proof = { chalId, nonce };
 
-  if (requireTurn) {
-    if (!sitekey) throw new Error("turn sitekey missing");
-    proof.turnProofToken = await solveTurn({ apiPrefix, chal, chalId, sitekey });
+  const powPromise = requirePow
+    ? (() => {
+        if (!powEsmUrl) throw new Error("pow esm url missing");
+        return solvePow({ apiPrefix, chal, chalId, powEsmUrl });
+      })()
+    : null;
+  const turnPromise = requireTurn
+    ? (() => {
+        if (!sitekey) throw new Error("turn sitekey missing");
+        return solveTurn({ apiPrefix, chal, chalId, sitekey, powPromise });
+      })()
+    : null;
+  if (powPromise) {
+    proof.powProofToken = await powPromise;
   }
-  if (requirePow) {
-    if (!powEsmUrl) throw new Error("pow esm url missing");
-    proof.powProofToken = await solvePow({ apiPrefix, chal, chalId, powEsmUrl });
+  if (turnPromise) {
+    proof.turnProofToken = await turnPromise;
   }
 
   if (parent && parentOrigin) {

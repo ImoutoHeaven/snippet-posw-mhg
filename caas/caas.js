@@ -1109,6 +1109,13 @@ const handleClientTurn = async (request, nowSeconds, config) => {
   const { payload, chalId } = parsed;
   if (Number(payload.exp) <= nowSeconds) return J({ ok: false }, 403, headers);
   if (!(payload.policy && payload.policy.requireTurn === true)) return J({ ok: false }, 403, headers);
+  const requirePow = payload.policy && payload.policy.requirePow === true;
+  if (requirePow) {
+    const powProofToken = typeof body.powProofToken === "string" ? body.powProofToken : "";
+    if (!(await verifyProofToken(powSecret, "pow", powProofToken, chalId, nowSeconds))) {
+      return J({ ok: false }, 403, headers);
+    }
+  }
 
   const form = new URLSearchParams();
   form.set("secret", config.TURNSTILE_SECRET);

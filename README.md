@@ -120,6 +120,7 @@ Turnstile is implemented as a stateless gate:
   - `success === true`
   - returned `cdata === ticket.mac` (binding)
 - On success, the snippet issues `__Host-turn_sol` (separate from `__Host-pow_sol`).
+- When `powcheck` and `turncheck` are both enabled, `POST /__pow/turn` requires a valid `__Host-pow_sol` cookie before calling `siteverify`.
 
 Examples:
 

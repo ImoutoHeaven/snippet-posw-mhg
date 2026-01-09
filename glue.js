@@ -128,7 +128,7 @@ const loadTurnstile = () => {
   return turnstilePromise;
 };
 
-const runTurnstile = async (apiPrefix, ticketB64, pathHash, sitekey) => {
+const runTurnstile = async (apiPrefix, ticketB64, pathHash, sitekey, waitForPow) => {
   const ticketMac = getTicketMac(ticketB64);
   if (!ticketMac) throw new Error("Bad Ticket");
   log("Loading Turnstile...");
@@ -166,6 +166,7 @@ const runTurnstile = async (apiPrefix, ticketB64, pathHash, sitekey) => {
     throw e;
   }
   const maxAttempts = 5;
+  let waitedForPow = false;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     let token;
     try {
@@ -178,6 +179,13 @@ const runTurnstile = async (apiPrefix, ticketB64, pathHash, sitekey) => {
         continue;
       }
       throw e;
+    }
+    if (waitForPow) {
+      if (!waitedForPow) {
+        log("Waiting for PoW...");
+        waitedForPow = true;
+      }
+      await waitForPow;
     }
     const submitLine = log("Submitting Turnstile...");
     try {
@@ -334,9 +342,8 @@ export default async function runPow(
     const needTurn = !!turnSiteKey;
 
     const tasks = [];
-    if (needPow) {
-      tasks.push(
-        runPowFlow(
+    const powPromise = needPow
+      ? runPowFlow(
           apiPrefix,
           bindingB64,
           steps,
@@ -346,10 +353,12 @@ export default async function runPow(
           segmentLen,
           esmUrlB64
         )
-      );
+      : null;
+    if (powPromise) {
+      tasks.push(powPromise);
     }
     if (needTurn) {
-      tasks.push(runTurnstile(apiPrefix, ticketB64, pathHash, turnSiteKey));
+      tasks.push(runTurnstile(apiPrefix, ticketB64, pathHash, turnSiteKey, powPromise));
     }
     if (!tasks.length) throw new Error("No Challenge");
 
