@@ -181,8 +181,11 @@ const runTurnstile = async (apiPrefix, ticketB64, pathHash, sitekey, waitForPow)
       throw e;
     }
     if (waitForPow) {
+      if (el && !el.hidden) {
+        el.hidden = true;
+      }
       if (!waitedForPow) {
-        log("Waiting for PoW...");
+        log("Turnstile solved. Waiting for PoW...");
         waitedForPow = true;
       }
       await waitForPow;
@@ -205,6 +208,9 @@ const runTurnstile = async (apiPrefix, ticketB64, pathHash, sitekey, waitForPow)
     } catch (e) {
       if (e && e.message === "403") {
         update(submitLine, "Turnstile rejected. Please try again.");
+        if (el && el.hidden) {
+          el.hidden = false;
+        }
         if (attempt >= maxAttempts) throw new Error("Turnstile Rejected");
         tokenPromise = nextToken();
         if (ts && typeof ts.reset === "function") ts.reset(widgetId);

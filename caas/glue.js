@@ -97,6 +97,7 @@ async function solveTurn({ apiPrefix, chal, chalId, sitekey, powPromise }) {
   let widgetId = null;
   const nextToken = () =>
     new Promise((resolve, reject) => {
+      container.hidden = false;
       container.innerHTML = "";
       widgetId = globalThis.turnstile.render(container, {
         sitekey,
@@ -115,6 +116,9 @@ async function solveTurn({ apiPrefix, chal, chalId, sitekey, powPromise }) {
       if (attempt >= maxAttempts) throw e;
       continue;
     }
+    if (powPromise) {
+      container.hidden = true;
+    }
     const powProofToken = powPromise ? await powPromise : "";
     const body = { chal, turnstileToken: token };
     if (powPromise) body.powProofToken = powProofToken;
@@ -125,10 +129,16 @@ async function solveTurn({ apiPrefix, chal, chalId, sitekey, powPromise }) {
     });
     const j = await res.json().catch(() => null);
     if (res.ok && j && j.ok === true && typeof j.turnProofToken === "string") {
+      if (powPromise) {
+        container.hidden = true;
+      }
       return j.turnProofToken;
     }
     if (attempt >= maxAttempts) {
       throw new Error("turn attest failed");
+    }
+    if (container.hidden) {
+      container.hidden = false;
     }
     if (globalThis.turnstile && typeof globalThis.turnstile.reset === "function") {
       try {
