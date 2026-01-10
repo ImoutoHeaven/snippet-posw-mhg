@@ -97,13 +97,13 @@ async function solveTurn({ apiPrefix, chal, chalId, sitekey, powPromise }) {
   let widgetId = null;
   const nextToken = () =>
     new Promise((resolve, reject) => {
-      container.hidden = false;
+      container.style.display = "block";
       container.innerHTML = "";
       widgetId = globalThis.turnstile.render(container, {
         sitekey,
         cData: chalId,
         callback: (token) => {
-          container.hidden = true;
+          container.style.display = "none";
           resolve(token);
         },
         "error-callback": () => reject(new Error("turnstile failed")),
@@ -130,16 +130,14 @@ async function solveTurn({ apiPrefix, chal, chalId, sitekey, powPromise }) {
     const j = await res.json().catch(() => null);
     if (res.ok && j && j.ok === true && typeof j.turnProofToken === "string") {
       if (powPromise) {
-        container.hidden = true;
+        container.style.display = "none";
       }
       return j.turnProofToken;
     }
     if (attempt >= maxAttempts) {
       throw new Error("turn attest failed");
     }
-    if (container.hidden) {
-      container.hidden = false;
-    }
+    container.style.display = "block";
     if (globalThis.turnstile && typeof globalThis.turnstile.reset === "function") {
       try {
         globalThis.turnstile.reset(widgetId);
