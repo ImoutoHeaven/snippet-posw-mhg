@@ -9,6 +9,17 @@ const decodeB64Url = (str) => {
   }
 };
 
+const encoder = new TextEncoder();
+const base64UrlEncodeNoPad = (bytes) =>
+  btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+const sha256Bytes = async (value) => {
+  const bytes = encoder.encode(String(value ?? ""));
+  const buf = await crypto.subtle.digest("SHA-256", bytes);
+  return new Uint8Array(buf);
+};
+const tbFromToken = async (token) =>
+  base64UrlEncodeNoPad((await sha256Bytes(token)).slice(0, 12));
+
 const normalizeApiPrefix = (prefix) => {
   if (!prefix || typeof prefix !== "string") return "/__pow";
   return prefix.endsWith("/") ? prefix.slice(0, -1) : prefix;
@@ -128,7 +139,7 @@ const loadTurnstile = () => {
   return turnstilePromise;
 };
 
-const runTurnstile = async (apiPrefix, ticketB64, pathHash, sitekey, waitForPow) => {
+const runTurnstile = async (ticketB64, sitekey, submitToken) => {
   const ticketMac = getTicketMac(ticketB64);
   if (!ticketMac) throw new Error("Bad Ticket");
   log("Loading Turnstile...");
@@ -171,7 +182,6 @@ const runTurnstile = async (apiPrefix, ticketB64, pathHash, sitekey, waitForPow)
     throw e;
   }
   const maxAttempts = 5;
-  let waitedForPow = false;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     let token;
     try {
@@ -188,17 +198,10 @@ const runTurnstile = async (apiPrefix, ticketB64, pathHash, sitekey, waitForPow)
     if (el && !el.hidden) {
       el.hidden = true;
     }
-    if (waitForPow) {
-      if (!waitedForPow) {
-        log("Turnstile solved. Waiting for PoW...");
-        waitedForPow = true;
-      }
-      await waitForPow;
-    }
-    const submitLine = log("Submitting Turnstile...");
+    const submitLine = submitToken ? log("Submitting Turnstile...") : -1;
     try {
-      await postJson(apiPrefix + "/turn", { ticketB64, pathHash, token });
-      update(submitLine, "Submitting Turnstile... done");
+      if (submitToken) await submitToken(token);
+      if (submitLine !== -1) update(submitLine, "Submitting Turnstile... done");
       log("Turnstile... done");
       if (el) {
         el.hidden = true;
@@ -209,9 +212,9 @@ const runTurnstile = async (apiPrefix, ticketB64, pathHash, sitekey, waitForPow)
           ts.remove(widgetId);
         } catch {}
       }
-      return;
+      return token;
     } catch (e) {
-      if (e && e.message === "403") {
+      if (submitToken && e && e.message === "403") {
         update(submitLine, "Turnstile rejected. Please try again.");
         if (el && el.hidden) {
           el.hidden = false;
@@ -224,6 +227,7 @@ const runTurnstile = async (apiPrefix, ticketB64, pathHash, sitekey, waitForPow)
       throw e;
     }
   }
+  return null;
 };
 
 const runPowFlow = async (
@@ -234,7 +238,8 @@ const runPowFlow = async (
   pathHash,
   hashcashBits,
   segmentLen,
-  esmUrlB64
+  esmUrlB64,
+  turnToken
 ) => {
   log("Loading solver...");
   const esmUrl = decodeB64Url(String(esmUrlB64 || ""));
@@ -243,7 +248,11 @@ const runPowFlow = async (
   if (typeof computePoswCommit !== "function") {
     throw new Error("Solver Missing");
   }
-  const binding = decodeB64Url(String(bindingB64 || ""));
+  const authBinding = decodeB64Url(String(bindingB64 || ""));
+  if (!authBinding) {
+    throw new Error("Bad Binding");
+  }
+  const powBinding = turnToken ? `${authBinding}&tb=${await tbFromToken(turnToken)}` : authBinding;
   const spinIndex = log("Computing hash chain...");
   const spinChars = "|/-\\";
   let spinFrame = 0;
@@ -256,7 +265,7 @@ const runPowFlow = async (
     update(spinIndex, msg + " " + spinChars[spinFrame++ % spinChars.length]);
   }, 120);
   try {
-    const commit = await computePoswCommit(binding, steps, {
+    const commit = await computePoswCommit(powBinding, steps, {
       hashcashBits,
       segmentLen,
       onStatus: (type, val) => {
@@ -269,12 +278,14 @@ const runPowFlow = async (
       attemptCount > 0 ? "Screening hash... done" : "Computing hash chain... done"
     );
     log("Submitting commit...");
-    await postJson(apiPrefix + "/commit", {
+    const commitBody = {
       ticketB64,
       rootB64: commit.rootB64,
       pathHash,
       nonce: commit.nonce,
-    });
+    };
+    if (turnToken) commitBody.token = turnToken;
+    await postJson(apiPrefix + "/commit", commitBody);
     log("Requesting challenge...");
     let state = await postJson(apiPrefix + "/challenge", {});
     if (
@@ -307,13 +318,15 @@ const runPowFlow = async (
       }
       const segLens = segs.map((v) => Number(v));
       const opens = await commit.open(indices, { segLens, spinePos });
-      state = await postJson(apiPrefix + "/open", {
+      const openBody = {
         sid: state.sid,
         cursor: state.cursor,
         token: state.token,
         spinePos,
         opens,
-      });
+      };
+      if (turnToken) openBody.turnToken = turnToken;
+      state = await postJson(apiPrefix + "/open", openBody);
       if (state && state.done === true) break;
       if (
         !state ||
@@ -352,28 +365,39 @@ export default async function runPow(
     const turnSiteKey = decodeB64Url(String(turnSiteKeyB64 || "")) || "";
     const needTurn = !!turnSiteKey;
 
-    const tasks = [];
-    const powPromise = needPow
-      ? runPowFlow(
-          apiPrefix,
-          bindingB64,
-          steps,
-          ticketB64,
-          pathHash,
-          hashcashBits,
-          segmentLen,
-          esmUrlB64
-        )
-      : null;
-    if (powPromise) {
-      tasks.push(powPromise);
-    }
-    if (needTurn) {
-      tasks.push(runTurnstile(apiPrefix, ticketB64, pathHash, turnSiteKey, powPromise));
-    }
-    if (!tasks.length) throw new Error("No Challenge");
+    if (!needPow && !needTurn) throw new Error("No Challenge");
 
-    await Promise.all(tasks);
+    if (needTurn && !needPow) {
+      await runTurnstile(ticketB64, turnSiteKey, async (token) => {
+        await postJson(apiPrefix + "/turn", { ticketB64, pathHash, token });
+      });
+    } else if (needPow && !needTurn) {
+      await runPowFlow(
+        apiPrefix,
+        bindingB64,
+        steps,
+        ticketB64,
+        pathHash,
+        hashcashBits,
+        segmentLen,
+        esmUrlB64,
+        ""
+      );
+    } else {
+      const turnToken = await runTurnstile(ticketB64, turnSiteKey);
+      log("Turnstile solved. Starting PoW...");
+      await runPowFlow(
+        apiPrefix,
+        bindingB64,
+        steps,
+        ticketB64,
+        pathHash,
+        hashcashBits,
+        segmentLen,
+        esmUrlB64,
+        turnToken
+      );
+    }
     log("Access granted. Redirecting...");
     setStatus(true);
     document.title = "Redirecting";
