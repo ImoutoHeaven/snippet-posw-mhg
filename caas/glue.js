@@ -172,10 +172,13 @@ async function runTurnstile({ chalId, sitekey, submitToken }) {
   const nextToken = () =>
     new Promise((resolve, reject) => {
       if (container) {
-        container.style.display = "block";
         container.innerHTML = "";
-        container.classList.add("show");
-        container.classList.remove("hide");
+        // Force reflow before adding .show class to trigger transition
+        void container.offsetHeight;
+        requestAnimationFrame(() => {
+          container.classList.add("show");
+          container.classList.remove("hide");
+        });
       }
       widgetId = globalThis.turnstile.render(container, {
         sitekey,
@@ -202,9 +205,11 @@ async function runTurnstile({ chalId, sitekey, submitToken }) {
       if (attempt >= maxAttempts) throw e;
       log("Turnstile failed. Retrying...");
       if (container) {
-        container.classList.add("show");
-        container.classList.remove("hide");
-        container.style.display = "block";
+        void container.offsetHeight;
+        requestAnimationFrame(() => {
+          container.classList.add("show");
+          container.classList.remove("hide");
+        });
       }
       continue;
     }
@@ -227,9 +232,11 @@ async function runTurnstile({ chalId, sitekey, submitToken }) {
         update(submitLine, "Turnstile rejected. Retrying...");
         if (attempt >= maxAttempts) throw new Error("turn attest failed");
         if (container) {
-          container.classList.add("show");
-          container.classList.remove("hide");
-          container.style.display = "block";
+          void container.offsetHeight;
+          requestAnimationFrame(() => {
+            container.classList.add("show");
+            container.classList.remove("hide");
+          });
         }
         if (globalThis.turnstile && typeof globalThis.turnstile.reset === "function") {
           try {

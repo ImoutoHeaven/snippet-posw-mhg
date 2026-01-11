@@ -149,15 +149,18 @@ const runTurnstile = async (ticketB64, sitekey, submitToken) => {
   }
   const el = ui.tsEl;
   if (el) {
-    el.hidden = false;
     el.innerHTML = "";
   }
   log("Waiting for Turnstile...");
   const container = document.createElement("div");
   if (el) {
     el.appendChild(container);
-    el.classList.add("show");
-    el.classList.remove("hide");
+    // Force reflow before adding .show class to trigger transition
+    void el.offsetHeight;
+    requestAnimationFrame(() => {
+      el.classList.add("show");
+      el.classList.remove("hide");
+    });
   }
   let tokenResolve;
   let tokenReject;
@@ -195,8 +198,11 @@ const runTurnstile = async (ticketB64, sitekey, submitToken) => {
       if (e && e.message === "Turnstile Expired") {
         log("Turnstile expired. Retrying...");
         if (el) {
-          el.classList.add("show");
-          el.classList.remove("hide");
+          void el.offsetHeight;
+          requestAnimationFrame(() => {
+            el.classList.add("show");
+            el.classList.remove("hide");
+          });
         }
         tokenPromise = nextToken();
         if (ts && typeof ts.reset === "function") ts.reset(widgetId);
@@ -232,8 +238,11 @@ const runTurnstile = async (ticketB64, sitekey, submitToken) => {
       if (submitToken && e && e.message === "403") {
         update(submitLine, "Turnstile rejected. Please try again.");
         if (el) {
-          el.classList.add("show");
-          el.classList.remove("hide");
+          void el.offsetHeight;
+          requestAnimationFrame(() => {
+            el.classList.add("show");
+            el.classList.remove("hide");
+          });
         }
         if (attempt >= maxAttempts) throw new Error("Turnstile Rejected");
         tokenPromise = nextToken();
