@@ -68,7 +68,7 @@ Each `CONFIG` entry looks like:
 | `POW_MIN_STEPS` | `number` | `512` | Minimum step count (clamps computed steps). |
 | `POW_MAX_STEPS` | `number` | `8192` | Maximum step count (clamps computed steps). |
 | `POW_HASHCASH_BITS` | `number` | `3` | Extra “root-bound hashcash” check on the last index (0 disables). |
-| `POW_SEGMENT_LEN` | `string | number` | `"48-64"` | Segment length: fixed `N` or range `"min-max"` (each clamped to `1..64`). |
+| `POW_SEGMENT_LEN` | `string, number` | `"48-64"` | Segment length: fixed `N` or range `"min-max"` (each clamped to `1..64`). |
 | `POW_SAMPLE_K` | `number` | `15` | Extra sampled indices per round (total extra ≈ `POW_SAMPLE_K * POW_CHAL_ROUNDS`). |
 | `POW_SPINE_K` | `number` | `2` | Number of “spine” constraints per batch (`0` disables). |
 | `POW_CHAL_ROUNDS` | `number` | `12` | Challenge rounds (controls how many indices are requested). |
@@ -83,7 +83,7 @@ Each `CONFIG` entry looks like:
 | `PROOF_RENEW_WINDOW_SEC` | `number` | `90` | Only renew when `exp - now <= window`. |
 | `PROOF_RENEW_MIN_SEC` | `number` | `30` | Minimum seconds between renewals. |
 | `POW_BIND_PATH` | `boolean` | `true` | Bind to canonical path hash; when enabled and `bindPathMode` is `query`/`header`, missing/invalid bindPath returns `400`. |
-| `bindPathMode` | `"none"|"query"|"header"` | `"none"` | How to derive canonical path for binding (proxy-style endpoints). |
+| `bindPathMode` | `"none", "query", "header"` | `"none"` | How to derive canonical path for binding (proxy-style endpoints). |
 | `bindPathQueryName` | `string` | `"path"` | Query param name when `bindPathMode: "query"`. |
 | `bindPathHeaderName` | `string` | `""` | Header name when `bindPathMode: "header"`. |
 | `stripBindPathHeader` | `boolean` | `false` | If `true` and `bindPathMode: "header"`, delete the header before proxying upstream. |
