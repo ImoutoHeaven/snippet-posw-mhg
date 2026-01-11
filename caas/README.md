@@ -56,7 +56,7 @@ Configure `CONFIG` in `caas.js`:
 | `POW_MIN_STEPS` | `number` | `512` | Min PoW steps (clamp). |
 | `POW_MAX_STEPS` | `number` | `8192` | Max PoW steps (clamp). |
 | `POW_HASHCASH_BITS` | `number` | `3` | Root-bound hashcash bits (0 disables). |
-| `POW_SEGMENT_LEN` | `string | number` | `"48-64"` | Segment length spec. |
+| `POW_SEGMENT_LEN` | `string, number` | `"48-64"` | Segment length spec. |
 | `POW_SAMPLE_K` | `number` | `15` | Extra sampled indices per round. |
 | `POW_SPINE_K` | `number` | `2` | Spine constraints per batch. |
 | `POW_CHAL_ROUNDS` | `number` | `12` | Challenge rounds. |
