@@ -97,6 +97,8 @@ Each `CONFIG` entry looks like:
 | `INNER_AUTH_QUERY_VALUE` | `string` | `""` | Query param value for internal bypass. Requires `INNER_AUTH_QUERY_NAME`. |
 | `INNER_AUTH_HEADER_NAME` | `string` | `""` | Header name for internal bypass. Requires `INNER_AUTH_HEADER_VALUE`. |
 | `INNER_AUTH_HEADER_VALUE` | `string` | `""` | Header value for internal bypass. Requires `INNER_AUTH_HEADER_NAME`. |
+| `stripInnerAuthQuery` | `boolean` | `false` | Remove the bypass query param before proxying (only when bypass matched). |
+| `stripInnerAuthHeader` | `boolean` | `false` | Remove the bypass header before proxying (only when bypass matched). |
 
 ## Proof Cookie (`__Host-proof`)
 
@@ -112,7 +114,7 @@ A request is allowed when `(m & requiredMask) == requiredMask`.
 
 ## Internal bypass
 
-You can bypass the gate for internal traffic by matching a specific query param or header. When a match occurs, the snippet returns `fetch(request)` and skips PoW/Turnstile checks. This is useful for internal APIs because Snippet rules cannot match on headers or query strings.
+You can bypass the gate for internal traffic by matching a specific query param or header. When a match occurs, the snippet returns `fetch(request)` and skips PoW/Turnstile checks. This is useful for internal APIs because Snippet rules cannot match on headers or query strings. You can also strip the bypass credential before proxying.
 
 Configuration (exact match required):
 
@@ -129,13 +131,18 @@ Example:
   INNER_AUTH_QUERY_VALUE: "my-internal-token",
   INNER_AUTH_HEADER_NAME: "X-Inner-Auth",
   INNER_AUTH_HEADER_VALUE: "X-Inner-Auth-Value",
+  stripInnerAuthQuery: true,
+  stripInnerAuthHeader: true,
 } }
 ```
 
 Notes:
 
 - Both name and value must be set for a match.
+- If both query and header are configured, **both must match** to bypass.
+- If only one is configured, that single match is sufficient.
 - The bypass only applies to protected paths (non-`/__pow/*` requests).
+- If `stripInnerAuthQuery`/`stripInnerAuthHeader` are `true`, the matched credential is removed before proxying.
 
 ## Turnstile integration
 

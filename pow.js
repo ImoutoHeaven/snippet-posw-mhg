@@ -33,6 +33,8 @@ const DEFAULTS = {
   INNER_AUTH_QUERY_VALUE: "",
   INNER_AUTH_HEADER_NAME: "",
   INNER_AUTH_HEADER_VALUE: "",
+  stripInnerAuthQuery: false,
+  stripInnerAuthHeader: false,
   POW_BIND_PATH: true,
   POW_BIND_IPRANGE: true,
   POW_BIND_COUNTRY: false,
@@ -589,26 +591,63 @@ const normalizeTlsFingerprint = (value) => {
   return value.trim();
 };
 
-const shouldBypassGate = (request, url, config) => {
+const resolveBypassRequest = (request, url, config) => {
   const queryName =
     typeof config.INNER_AUTH_QUERY_NAME === "string" ? config.INNER_AUTH_QUERY_NAME.trim() : "";
   const queryValue =
     typeof config.INNER_AUTH_QUERY_VALUE === "string" ? config.INNER_AUTH_QUERY_VALUE : "";
-  if (queryName && queryValue) {
-    const got = url.searchParams.get(queryName);
-    if (typeof got === "string" && timingSafeEqual(got, queryValue)) return true;
-  }
   const headerName =
     typeof config.INNER_AUTH_HEADER_NAME === "string"
       ? config.INNER_AUTH_HEADER_NAME.trim()
       : "";
   const headerValue =
     typeof config.INNER_AUTH_HEADER_VALUE === "string" ? config.INNER_AUTH_HEADER_VALUE : "";
-  if (headerName && headerValue) {
-    const got = request.headers.get(headerName);
-    if (typeof got === "string" && timingSafeEqual(got, headerValue)) return true;
+  const queryConfigured = Boolean(queryName && queryValue);
+  const headerConfigured = Boolean(headerName && headerValue);
+  const queryMatch = queryConfigured
+    ? (() => {
+        const got = url.searchParams.get(queryName);
+        return typeof got === "string" && timingSafeEqual(got, queryValue);
+      })()
+    : false;
+  const headerMatch = headerConfigured
+    ? (() => {
+        const got = request.headers.get(headerName);
+        return typeof got === "string" && timingSafeEqual(got, headerValue);
+      })()
+    : false;
+
+  const bypass =
+    queryConfigured && headerConfigured
+      ? queryMatch && headerMatch
+      : queryConfigured
+        ? queryMatch
+        : headerConfigured
+          ? headerMatch
+          : false;
+
+  if (!bypass) {
+    return { bypass: false, forwardRequest: request };
   }
-  return false;
+
+  const stripQuery = queryMatch && config.stripInnerAuthQuery === true;
+  const stripHeader = headerMatch && config.stripInnerAuthHeader === true;
+  let forwardRequest = request;
+
+  if (stripQuery) {
+    const nextUrl = new URL(url.toString());
+    nextUrl.searchParams.delete(queryName);
+    forwardRequest = new Request(nextUrl, request);
+  }
+
+  if (stripHeader) {
+    if (forwardRequest === request) {
+      forwardRequest = new Request(request);
+    }
+    forwardRequest.headers.delete(headerName);
+  }
+
+  return { bypass: true, forwardRequest };
 };
 
 const buildTlsFingerprintHash = async (request) => {
@@ -2215,8 +2254,9 @@ export default {
     if (!needPow && !needTurn) {
       return fetch(request);
     }
-    if (shouldBypassGate(request, url, config)) {
-      return fetch(request);
+    const bypass = resolveBypassRequest(request, url, config);
+    if (bypass.bypass) {
+      return fetch(bypass.forwardRequest);
     }
 
     const bindRes = resolveBindPathForPow(request, url, requestPath, config);
