@@ -93,6 +93,10 @@ Each `CONFIG` entry looks like:
 | `POW_BIND_COUNTRY` | `boolean` | `false` | Bind to `request.cf.country`. |
 | `POW_BIND_ASN` | `boolean` | `false` | Bind to `request.cf.asn`. |
 | `POW_BIND_TLS` | `boolean` | `true` | Bind to TLS fingerprint derived from `request.cf.tlsClientExtensionsSha1` + `tlsClientCiphersSha1`. |
+| `INNER_AUTH_QUERY_NAME` | `string` | `""` | Query param name for internal bypass. Requires `INNER_AUTH_QUERY_VALUE`. |
+| `INNER_AUTH_QUERY_VALUE` | `string` | `""` | Query param value for internal bypass. Requires `INNER_AUTH_QUERY_NAME`. |
+| `INNER_AUTH_HEADER_NAME` | `string` | `""` | Header name for internal bypass. Requires `INNER_AUTH_HEADER_VALUE`. |
+| `INNER_AUTH_HEADER_VALUE` | `string` | `""` | Header value for internal bypass. Requires `INNER_AUTH_HEADER_NAME`. |
 
 ## Proof Cookie (`__Host-proof`)
 
@@ -105,6 +109,33 @@ The gate issues a single proof cookie with a mode mask:
   - `3` = PoW + Turnstile
 
 A request is allowed when `(m & requiredMask) == requiredMask`.
+
+## Internal bypass
+
+You can bypass the gate for internal traffic by matching a specific query param or header. When a match occurs, the snippet returns `fetch(request)` and skips PoW/Turnstile checks. This is useful for internal APIs because Snippet rules cannot match on headers or query strings.
+
+Configuration (exact match required):
+
+- Query param: `INNER_AUTH_QUERY_NAME` + `INNER_AUTH_QUERY_VALUE`
+- Header: `INNER_AUTH_HEADER_NAME` + `INNER_AUTH_HEADER_VALUE`
+
+Example:
+
+```js
+{ pattern: "example.com/**", config: {
+  POW_TOKEN: "replace-me",
+  powcheck: true,
+  INNER_AUTH_QUERY_NAME: "auth",
+  INNER_AUTH_QUERY_VALUE: "my-internal-token",
+  INNER_AUTH_HEADER_NAME: "X-Inner-Auth",
+  INNER_AUTH_HEADER_VALUE: "X-Inner-Auth-Value",
+} }
+```
+
+Notes:
+
+- Both name and value must be set for a match.
+- The bypass only applies to protected paths (non-`/__pow/*` requests).
 
 ## Turnstile integration
 

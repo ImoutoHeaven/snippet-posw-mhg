@@ -29,6 +29,10 @@ const DEFAULTS = {
   PROOF_RENEW_MAX: 2,
   PROOF_RENEW_WINDOW_SEC: 90,
   PROOF_RENEW_MIN_SEC: 30,
+  INNER_AUTH_QUERY_NAME: "",
+  INNER_AUTH_QUERY_VALUE: "",
+  INNER_AUTH_HEADER_NAME: "",
+  INNER_AUTH_HEADER_VALUE: "",
   POW_BIND_PATH: true,
   POW_BIND_IPRANGE: true,
   POW_BIND_COUNTRY: false,
@@ -583,6 +587,28 @@ const normalizeAsn = (value) => {
 const normalizeTlsFingerprint = (value) => {
   if (typeof value !== "string") return "";
   return value.trim();
+};
+
+const shouldBypassGate = (request, url, config) => {
+  const queryName =
+    typeof config.INNER_AUTH_QUERY_NAME === "string" ? config.INNER_AUTH_QUERY_NAME.trim() : "";
+  const queryValue =
+    typeof config.INNER_AUTH_QUERY_VALUE === "string" ? config.INNER_AUTH_QUERY_VALUE : "";
+  if (queryName && queryValue) {
+    const got = url.searchParams.get(queryName);
+    if (typeof got === "string" && timingSafeEqual(got, queryValue)) return true;
+  }
+  const headerName =
+    typeof config.INNER_AUTH_HEADER_NAME === "string"
+      ? config.INNER_AUTH_HEADER_NAME.trim()
+      : "";
+  const headerValue =
+    typeof config.INNER_AUTH_HEADER_VALUE === "string" ? config.INNER_AUTH_HEADER_VALUE : "";
+  if (headerName && headerValue) {
+    const got = request.headers.get(headerName);
+    if (typeof got === "string" && timingSafeEqual(got, headerValue)) return true;
+  }
+  return false;
 };
 
 const buildTlsFingerprintHash = async (request) => {
@@ -2187,6 +2213,9 @@ export default {
     const needPow = config.powcheck === true;
     const needTurn = config.turncheck === true;
     if (!needPow && !needTurn) {
+      return fetch(request);
+    }
+    if (shouldBypassGate(request, url, config)) {
       return fetch(request);
     }
 
