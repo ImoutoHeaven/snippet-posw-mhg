@@ -360,7 +360,10 @@ const runPowFlow = async (
   }
   const powBinding = turnToken ? `${authBinding}&tb=${await tbFromToken(turnToken)}` : authBinding;
 
-  const worker = new Worker(workerUrl, { type: "module" });
+  const workerCode = await fetch(workerUrl).then(r => r.text());
+  const blob = new Blob([workerCode], { type: "application/javascript" });
+  const blobUrl = URL.createObjectURL(blob);
+  const worker = new Worker(blobUrl, { type: "module" });
   let spinTimer;
   let verifySpinTimer;
   try {
@@ -483,6 +486,7 @@ const runPowFlow = async (
     if (spinTimer) clearInterval(spinTimer);
     if (verifySpinTimer) clearInterval(verifySpinTimer);
     worker.terminate();
+    URL.revokeObjectURL(blobUrl);
   }
 };
 

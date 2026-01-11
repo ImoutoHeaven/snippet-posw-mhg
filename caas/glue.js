@@ -338,7 +338,10 @@ async function solvePow({ apiPrefix, chal, chalId, powEsmUrl, turnToken }) {
   const hashcashBits = Number(params && params.hashcashBits) || 0;
   const segmentLen = Number(params && params.segmentLen) || 64;
 
-  const worker = new Worker(workerUrl, { type: "module" });
+  const workerCode = await fetch(workerUrl).then(r => r.text());
+  const blob = new Blob([workerCode], { type: "application/javascript" });
+  const blobUrl = URL.createObjectURL(blob);
+  const worker = new Worker(blobUrl, { type: "module" });
   let spinTimer;
   let verifySpinTimer;
   try {
@@ -447,6 +450,7 @@ async function solvePow({ apiPrefix, chal, chalId, powEsmUrl, turnToken }) {
     if (spinTimer) clearInterval(spinTimer);
     if (verifySpinTimer) clearInterval(verifySpinTimer);
     worker.terminate();
+    URL.revokeObjectURL(blobUrl);
   }
 }
 
