@@ -34,13 +34,13 @@ const MAX_VISIBLE_LINES = 6;
 const initUi = () => {
   const style = document.createElement("style");
   style.textContent = [
-    ":root{--bg:#09090b;--card-bg:#18181b;--border:#27272a;--text:#e4e4e7;--sub:#a1a1aa;--accent:#fff;--font:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;--mono:ui-monospace,'SFMono-Regular',Menlo,Monaco,Consolas,monospace;}",
+    ":root{--bg:#09090b;--card-bg:#18181b;--border:#27272a;--text:#e4e4e7;--sub:#a1a1aa;--accent:#fff;--yellow:#fbbf24;--green:#4ade80;--font:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;--mono:ui-monospace,'SFMono-Regular',Menlo,Monaco,Consolas,monospace;}",
     "html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:var(--bg);color:var(--text);font-family:var(--font);display:flex;justify-content:center;align-items:center;-webkit-font-smoothing:antialiased;}",
     ".card{background:var(--card-bg);border:1px solid var(--border);border-radius:12px;padding:32px;width:90%;max-width:360px;text-align:center;box-shadow:0 0 0 1px rgba(255,255,255,0.05),0 4px 12px rgba(0,0,0,0.4);animation:fade-in 0.6s cubic-bezier(0.16,1,0.3,1) both;transition:height 0.3s ease;}",
     "h1{margin:0 0 24px;font-size:15px;font-weight:500;color:var(--accent);letter-spacing:-0.01em;}",
     "#log{font-family:var(--mono);font-size:13px;color:var(--sub);text-align:left;height:120px;overflow:hidden;position:relative;mask-image:linear-gradient(to bottom,transparent,black 30%);-webkit-mask-image:linear-gradient(to bottom,transparent,black 30%);display:flex;flex-direction:column;justify-content:flex-end;}",
     "#ts{margin-top:16px;display:flex;justify-content:center;max-height:0;opacity:0;overflow:hidden;transition:max-height 0.4s cubic-bezier(0.16,1,0.3,1),opacity 0.3s ease,margin-top 0.4s cubic-bezier(0.16,1,0.3,1);}#ts.show{max-height:400px;opacity:1;margin-top:16px;}#ts.hide{max-height:0;opacity:0;margin-top:0;}",
-    ".log-line{padding:3px 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}",
+    ".log-line{padding:3px 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}.log-line .yellow{color:var(--yellow);}.log-line .green{color:var(--green);}",
     "@keyframes fade-in{from{opacity:0;transform:scale(0.98)}to{opacity:1;transform:scale(1)}}"
   ].join("");
   (document.head || document.documentElement).appendChild(style);
@@ -216,7 +216,7 @@ async function runTurnstile({ chalId, sitekey, submitToken }) {
     const submitLine = submitToken ? log("Submitting Turnstile...") : -1;
     try {
       const result = submitToken ? await submitToken(token) : token;
-      if (submitLine !== -1) update(submitLine, "Submitting Turnstile... done");
+      if (submitLine !== -1) update(submitLine, "Submitting Turnstile... <span class=\"green\">done</span>");
       if (container) {
         container.classList.add("hide");
         container.classList.remove("show");
@@ -284,7 +284,8 @@ async function solvePow({ apiPrefix, chal, chalId, powEsmUrl, turnToken }) {
     if (attemptCount > 0) {
       msg = "Screening hash (attempt " + attemptCount + ")...";
     }
-    update(spinIndex, msg + " " + spinChars[spinFrame++ % spinChars.length]);
+    const spinner = '<span class="yellow">' + spinChars[spinFrame++ % spinChars.length] + '</span>';
+    update(spinIndex, msg + " " + spinner);
   }, 120);
 
   try {
@@ -297,10 +298,8 @@ async function solvePow({ apiPrefix, chal, chalId, powEsmUrl, turnToken }) {
       },
     });
     clearInterval(spinTimer);
-    update(
-      spinIndex,
-      attemptCount > 0 ? "Screening hash... done" : "Computing hash chain... done"
-    );
+    const doneText = attemptCount > 0 ? "Screening hash... <span class=\"green\">done</span>" : "Computing hash chain... <span class=\"green\">done</span>";
+    update(spinIndex, doneText);
 
     log("Submitting commit...");
     const commitRes = await fetch(`${apiPrefix}/client/pow/commit`, {
@@ -343,7 +342,7 @@ async function solvePow({ apiPrefix, chal, chalId, powEsmUrl, turnToken }) {
       if (!openRes.ok || !state) throw new Error("pow open failed");
       await sleep(0);
     }
-    if (verifyLine !== -1) update(verifyLine, "Verifying... done");
+    if (verifyLine !== -1) update(verifyLine, "Verifying... <span class=\"green\">done</span>");
 
     if (!state || state.done !== true || typeof state.proofToken !== "string") {
       throw new Error("pow solve failed");
@@ -470,7 +469,7 @@ export default async function main(cfgB64) {
   }
 
   if (allowRedirect && returnUrl) {
-    log("Redirecting...");
+    log("<span class=\"yellow\">Redirecting...</span>");
     const url = new URL(returnUrl);
     url.hash = new URLSearchParams({
       proof: proof.proofToken || "",
