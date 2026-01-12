@@ -36,7 +36,7 @@ const DEFAULTS = {
   ATOMIC_TURN_HEADER: "x-turnstile",
   ATOMIC_TICKET_HEADER: "x-ticket",
   ATOMIC_CONSUME_HEADER: "x-consume",
-  ATOMIC_COOKIE_NAME: "__Host-pow_a",
+  ATOMIC_COOKIE_NAME: "__Secure-pow_a",
   STRIP_ATOMIC_QUERY: true,
   STRIP_ATOMIC_HEADERS: true,
   INNER_AUTH_QUERY_NAME: "",
@@ -2398,11 +2398,13 @@ export default {
       const baseRequest = bindRes.forwardRequest;
       const baseUrl = new URL(baseRequest.url);
       const atomic = extractAtomicAuth(baseRequest, baseUrl, config);
+      const fail = (resp) =>
+        atomic.fromCookie ? withClearedCookie(resp, atomic.cookieName) : resp;
       if (atomic.turnToken) {
         const turnToken = validateTurnToken(atomic.turnToken);
-        if (!turnToken) return deny();
+        if (!turnToken) return fail(deny());
         const turnSecret = getTurnSecret(config);
-        if (!turnSecret) return S(500);
+        if (!turnSecret) return fail(S(500));
         if (needPow) {
           const consume = await verifyConsumeToken(
             atomic.consumeToken,
@@ -2410,9 +2412,9 @@ export default {
             nowSeconds,
             requiredMask
           );
-          if (!consume) return deny();
+          if (!consume) return fail(deny());
           const tb = await tbFromToken(turnToken);
-          if (tb !== consume.tb) return deny();
+          if (tb !== consume.tb) return fail(deny());
           const ticket = await loadAtomicTicket(
             consume.ticketB64,
             baseRequest,
@@ -2423,9 +2425,9 @@ export default {
             cfgId,
             nowSeconds
           );
-          if (!ticket) return deny();
+          if (!ticket) return fail(deny());
           if (!(await verifyTurnstileForTicket(baseRequest, turnSecret, turnToken, ticket))) {
-            return deny();
+            return fail(deny());
           }
           const response = await fetch(atomic.forwardRequest);
           return atomic.fromCookie ? withClearedCookie(response, atomic.cookieName) : response;
@@ -2440,9 +2442,9 @@ export default {
           cfgId,
           nowSeconds
         );
-        if (!ticket) return deny();
+        if (!ticket) return fail(deny());
         if (!(await verifyTurnstileForTicket(baseRequest, turnSecret, turnToken, ticket))) {
-          return deny();
+          return fail(deny());
         }
         const response = await fetch(atomic.forwardRequest);
         return atomic.fromCookie ? withClearedCookie(response, atomic.cookieName) : response;

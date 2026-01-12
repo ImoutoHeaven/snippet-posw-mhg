@@ -34,7 +34,7 @@ const parseAtomicCfg = (raw) => {
       tt: parts[5] || "x-ticket",
       ct: parts[6] || "x-consume",
     },
-    c: parts[7] || "__Host-pow_a",
+    c: parts[7] || "__Secure-pow_a",
   };
 };
 
@@ -73,14 +73,24 @@ const postJson = async (url, body, retries = 3) => {
   return {};
 };
 
-const setAtomicCookie = (name, value, maxAge) => {
+const setAtomicCookie = (name, value, maxAge, path) => {
   if (!name || !value) return false;
-  document.cookie = `${name}=${value}; Max-Age=${maxAge}; Path=/; Secure; SameSite=Lax`;
+  const cookiePath = path && path.startsWith("/") ? path : "/";
+  document.cookie = `${name}=${value}; Max-Age=${maxAge}; Path=${cookiePath}; Secure; SameSite=Lax`;
   return document.cookie.includes(`${name}=`);
 };
 
 const canUseCookie = (name, value) =>
   Boolean(name && value && value.length + name.length + 1 <= 3800);
+
+const cookiePathForTarget = (target) => {
+  try {
+    const url = new URL(target, window.location.href);
+    return url.pathname || "/";
+  } catch {
+    return "/";
+  }
+};
 
 const addQuery = (url, kv) => {
   const next = new URL(url, window.location.href);
@@ -587,7 +597,11 @@ export default async function runPow(
           return;
         }
         const cookieValue = `1|t|${turnToken}|${ticketB64}`;
-        if (canUseCookie(C_NAME, cookieValue) && setAtomicCookie(C_NAME, cookieValue, 10)) {
+        const cookiePath = cookiePathForTarget(target);
+        if (
+          canUseCookie(C_NAME, cookieValue) &&
+          setAtomicCookie(C_NAME, cookieValue, 5, cookiePath)
+        ) {
           log("Access granted. <span class=\"yellow\">Redirecting...</span>");
           setStatus(true);
           document.title = "Redirecting";
@@ -642,7 +656,11 @@ export default async function runPow(
           return;
         }
         const cookieValue = `1|c|${turnToken}|${consume}`;
-        if (canUseCookie(C_NAME, cookieValue) && setAtomicCookie(C_NAME, cookieValue, 10)) {
+        const cookiePath = cookiePathForTarget(target);
+        if (
+          canUseCookie(C_NAME, cookieValue) &&
+          setAtomicCookie(C_NAME, cookieValue, 5, cookiePath)
+        ) {
           log("Access granted. <span class=\"yellow\">Redirecting...</span>");
           setStatus(true);
           document.title = "Redirecting";
