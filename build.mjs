@@ -75,7 +75,20 @@ const built = await readFile(outfile, "utf-8");
 const terserResult = await minifyJs(built, {
   ecma: 2022,
   module: true,
-  compress: { passes: 3, toplevel: true },
+  compress: {
+    passes: 3,
+    toplevel: true,
+    unsafe: true,
+    unsafe_arrows: true,
+    unsafe_comps: true,
+    unsafe_Function: true,
+    unsafe_math: true,
+    unsafe_methods: true,
+    unsafe_proto: true,
+    unsafe_regexp: true,
+    unsafe_undefined: true,
+    unsafe_symbols: true,
+  },
   mangle: { toplevel: true },
   format: { ascii_only: true },
 });
