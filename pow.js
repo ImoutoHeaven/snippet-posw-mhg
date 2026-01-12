@@ -60,10 +60,7 @@ const DEFAULTS = {
 };
 
 const CONFIG = [
-  // Example:
-  // { pattern: "alist-landing-*.example.com/**", config: { POW_TOKEN: "replace-with-powToken", powcheck: true } },
-  // Proxy endpoint bindPath (only affects PoW binding input; does not affect rule matching/difficulty):
-  // { pattern: "alist-landing-*.example.com/info", config: { POW_TOKEN: "replace-with-powToken", powcheck: true, bindPathMode: "query", bindPathQueryName: "path" } },
+  { pattern: "example.com/**", config: { POW_TOKEN: "replace-me", powcheck: true } },
 ];
 
 const COMPILED_CONFIG = __COMPILED_CONFIG__.map((entry) => ({
@@ -163,11 +160,8 @@ const isBase64Url = (value, minLen, maxLen) => {
   return BASE64URL_RE.test(value);
 };
 
-const isBase64UrlOrAny = (value, minLen, maxLen) =>
-  value === "any" || isBase64Url(value, minLen, maxLen);
 
 const utf8ToBytes = (value) => encoder.encode(String(value ?? ""));
-const bytesToUtf8 = (bytes) => decoder.decode(bytes);
 const normalizeNumber = (value, fallback) => {
   const num = Number(value);
   return Number.isFinite(num) ? num : fallback;
@@ -185,23 +179,6 @@ const normalizePath = (pathname) => {
   return decoded.startsWith("/") ? decoded : `/${decoded}`;
 };
 
-const normalizeDecodedPath = (pathname) => {
-  if (typeof pathname !== "string") return null;
-  if (pathname.length === 0) return "/";
-  return pathname.startsWith("/") ? pathname : `/${pathname}`;
-};
-
-const decodePathParam = (value) => {
-  if (typeof value !== "string") return null;
-  let decoded;
-  try {
-    decoded = decodeURIComponent(value);
-  } catch {
-    return null;
-  }
-  return decoded;
-};
-
 const isExpired = (expire, nowSeconds) => expire > 0 && expire < nowSeconds;
 
 const hmacSha256 = async (secret, data) => {
@@ -211,10 +188,9 @@ const hmacSha256 = async (secret, data) => {
   return new Uint8Array(buf);
 };
 
-const BIND_PATH_MAX_LEN = 4096;
 const CONTROL_CHAR_RE = /[\u0000-\u001F\u007F]/;
 const validateTurnToken = (value) => {
-  if (typeof value !== "string") return null;
+  if (!value) return null;
   const token = value.trim();
   if (token.length < TURN_TOKEN_MIN_LEN || token.length > TURN_TOKEN_MAX_LEN) return null;
   if (CONTROL_CHAR_RE.test(token)) return null;
@@ -222,12 +198,14 @@ const validateTurnToken = (value) => {
 };
 
 const normalizeBindPathInput = (raw) => {
-  if (typeof raw !== "string") return null;
-  const decoded = decodePathParam(raw);
-  if (decoded === null) return null;
-  const canonical = normalizeDecodedPath(decoded);
-  if (!canonical) return null;
-  if (canonical.length > BIND_PATH_MAX_LEN) return null;
+  let decoded;
+  try {
+    decoded = decodeURIComponent(raw);
+  } catch {
+    return null;
+  }
+  const canonical = decoded[0] === "/" ? decoded : `/${decoded}`;
+  if (canonical.length > 4096) return null;
   if (CONTROL_CHAR_RE.test(canonical)) return null;
   return canonical;
 };
@@ -1070,7 +1048,7 @@ const parsePowTicket = (ticketB64) => {
   if (!isBase64Url(ticketB64, 1, B64_TICKET_MAX_LEN)) return null;
   const bytes = base64UrlDecodeToBytes(ticketB64);
   if (!bytes) return null;
-  const raw = bytesToUtf8(bytes);
+  const raw = decoder.decode(bytes);
   const parts = raw.split(".");
   if (parts.length !== 6) return null;
   const v = Number.parseInt(parts[0], 10);
@@ -1079,16 +1057,13 @@ const parsePowTicket = (ticketB64) => {
   const r = parts[3] || "";
   const cfgId = Number.parseInt(parts[4], 10);
   const mac = parts[5] || "";
-  if (!Number.isFinite(v) || !Number.isFinite(e) || !Number.isFinite(L)) return null;
-  if (!Number.isFinite(cfgId) || cfgId < 0) return null;
-  if (!r || !mac) return null;
   if (!isBase64Url(r, 1, B64_HASH_MAX_LEN)) return null;
   if (!isBase64Url(mac, 1, B64_HASH_MAX_LEN)) return null;
   return { v, e, L, r, cfgId, mac };
 };
 
 const parsePowCommitCookie = (value) => {
-  if (!value || typeof value !== "string") return null;
+  if (!value) return null;
   const parts = value.split(".");
   if (parts.length !== 9) return null;
   if (parts[0] !== "v4") return null;
@@ -1100,14 +1075,10 @@ const parsePowCommitCookie = (value) => {
   const exp = Number.parseInt(parts[6], 10);
   const spineSeed = parts[7] || "";
   const mac = parts[8] || "";
-  if (!ticketB64 || !rootB64 || !pathHash || !tb || !nonce || !Number.isFinite(exp) || !mac) {
-    return null;
-  }
-  if (!spineSeed) return null;
   if (!isBase64Url(ticketB64, 1, B64_TICKET_MAX_LEN)) return null;
   if (!isBase64Url(rootB64, 1, B64_HASH_MAX_LEN)) return null;
-  if (!isBase64UrlOrAny(pathHash, 1, B64_HASH_MAX_LEN)) return null;
-  if (!isBase64UrlOrAny(tb, TB_LEN, TB_LEN)) return null;
+  if (!(pathHash === "any" || isBase64Url(pathHash, 1, B64_HASH_MAX_LEN))) return null;
+  if (!(tb === "any" || isBase64Url(tb, TB_LEN, TB_LEN))) return null;
   if (!isBase64Url(nonce, NONCE_MIN_LEN, NONCE_MAX_LEN)) return null;
   if (!isBase64Url(spineSeed, SPINE_SEED_MIN_LEN, SPINE_SEED_MAX_LEN)) {
     return null;
@@ -1117,7 +1088,7 @@ const parsePowCommitCookie = (value) => {
 };
 
 const parseProofCookie = (value) => {
-  if (!value || typeof value !== "string") return null;
+  if (!value) return null;
   const parts = value.split(".");
   if (parts.length !== 7 || parts[0] !== "v1") return null;
   const ticketB64 = parts[1] || "";
@@ -1126,26 +1097,13 @@ const parseProofCookie = (value) => {
   const n = Number.parseInt(parts[4], 10);
   const m = Number.parseInt(parts[5], 10);
   const mac = parts[6] || "";
-  if (
-    !ticketB64 ||
-    !Number.isFinite(iat) ||
-    !Number.isFinite(last) ||
-    !Number.isFinite(n) ||
-    !Number.isFinite(m) ||
-    !mac
-  ) {
-    return null;
-  }
-  if (iat <= 0 || last <= 0 || n < 0) return null;
-  if (last < iat) return null;
-  if (m < 0 || m > 3) return null;
   if (!isBase64Url(ticketB64, 1, B64_TICKET_MAX_LEN)) return null;
   if (!isBase64Url(mac, 1, B64_HASH_MAX_LEN)) return null;
   return { v: 1, ticketB64, iat, last, n, m, mac };
 };
 
 const parseConsumeToken = (value) => {
-  if (!value || typeof value !== "string") return null;
+  if (!value) return null;
   const parts = value.split(".");
   if (parts.length !== 6 || parts[0] !== "v2") return null;
   const ticketB64 = parts[1] || "";
@@ -1153,8 +1111,7 @@ const parseConsumeToken = (value) => {
   const tb = parts[3] || "";
   const m = Number.parseInt(parts[4], 10);
   const mac = parts[5] || "";
-  if (!ticketB64 || !Number.isFinite(exp) || !Number.isFinite(m) || !mac) return null;
-  if (exp <= 0 || m < 0 || m > 3) return null;
+  if (exp <= 0) return null;
   if (!isBase64Url(ticketB64, 1, B64_TICKET_MAX_LEN)) return null;
   if (!isBase64Url(tb, TB_LEN, TB_LEN)) return null;
   if (!isBase64Url(mac, 1, B64_HASH_MAX_LEN)) return null;
@@ -1162,7 +1119,7 @@ const parseConsumeToken = (value) => {
 };
 
 const parseAtomicCookie = (value) => {
-  if (!value || typeof value !== "string") return null;
+  if (!value) return null;
   const parts = value.split("|");
   if (parts[0] !== "1" || parts.length < 4) return null;
   const mode = parts[1];
@@ -1408,11 +1365,6 @@ const verifyProofCookie = async (
   const raw = cookies.get(PROOF_COOKIE) || "";
   const proof = parseProofCookie(raw);
   if (!proof) return null;
-  if (!Number.isFinite(proof.iat) || proof.iat <= 0 || proof.iat > nowSeconds) return null;
-  if (!Number.isFinite(proof.last) || proof.last <= 0 || proof.last > nowSeconds) return null;
-  if (proof.last < proof.iat) return null;
-  if (!Number.isFinite(proof.n) || proof.n < 0) return null;
-  if (!Number.isFinite(proof.m) || proof.m < 0 || proof.m > 3) return null;
   const ticket = parsePowTicket(proof.ticketB64);
   if (!ticket) return null;
   const powVersion = getPowVersion(config);
@@ -1845,9 +1797,6 @@ const handlePowCommit = async (request, url, nowSeconds) => {
   const pathHash = typeof body.pathHash === "string" ? body.pathHash : "";
   const nonce = typeof body.nonce === "string" ? body.nonce : "";
   const token = typeof body.token === "string" ? body.token : "";
-  if (!ticketB64 || !rootB64 || !nonce) {
-    return S(400);
-  }
   if (
     !isBase64Url(ticketB64, 1, B64_TICKET_MAX_LEN) ||
     !isBase64Url(rootB64, 1, B64_HASH_MAX_LEN) ||
@@ -1910,7 +1859,6 @@ const handleTurn = async (request, url, nowSeconds) => {
   const ticketB64 = typeof body.ticketB64 === "string" ? body.ticketB64 : "";
   const pathHash = typeof body.pathHash === "string" ? body.pathHash : "";
   const token = typeof body.token === "string" ? body.token : "";
-  if (!ticketB64 || !token) return S(400);
   if (!isBase64Url(ticketB64, 1, B64_TICKET_MAX_LEN) || pathHash.length > B64_HASH_MAX_LEN) {
     return S(400);
   }
