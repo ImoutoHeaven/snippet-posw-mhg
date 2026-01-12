@@ -20,6 +20,23 @@ const sha256Bytes = async (value) => {
 const tbFromToken = async (token) =>
   base64UrlEncodeNoPad((await sha256Bytes(token)).slice(0, 12));
 
+const parseAtomicCfg = (raw) => {
+  const parts = typeof raw === "string" && raw ? raw.split("|") : [];
+  return {
+    atomic: parts[0] === "1",
+    q: {
+      ts: parts[1] || "__ts",
+      tt: parts[2] || "__tt",
+      ct: parts[3] || "__ct",
+    },
+    h: {
+      ts: parts[4] || "x-turnstile",
+      tt: parts[5] || "x-ticket",
+      ct: parts[6] || "x-consume",
+    },
+  };
+};
+
 const normalizeApiPrefix = (prefix) => {
   if (!prefix || typeof prefix !== "string") return "/__pow";
   return prefix.endsWith("/") ? prefix.slice(0, -1) : prefix;
@@ -53,6 +70,28 @@ const postJson = async (url, body, retries = 3) => {
     }
   }
   return {};
+};
+
+const addQuery = (url, kv) => {
+  const next = new URL(url, window.location.href);
+  for (const [key, value] of Object.entries(kv || {})) {
+    if (key && value) next.searchParams.set(key, value);
+  }
+  return next.toString();
+};
+
+const postAtomicMessage = (payload) => {
+  const msg = { type: "POW_ATOMIC", ...(payload || {}) };
+  try {
+    if (window.opener && !window.opener.closed) {
+      window.opener.postMessage(msg, "*");
+    }
+  } catch {}
+  try {
+    if (window.parent && window.parent !== window) {
+      window.parent.postMessage(msg, "*");
+    }
+  } catch {}
 };
 
 const createWorkerRpc = (worker, onProgress) => {
@@ -482,6 +521,7 @@ const runPowFlow = async (
     if (verifyLine !== -1) update(verifyLine, "Verifying... <span class=\"green\">done</span>");
     log("PoW... <span class=\"green\">done</span>");
     rpc.dispose();
+    return state;
   } finally {
     if (spinTimer) clearInterval(spinTimer);
     if (verifySpinTimer) clearInterval(verifySpinTimer);
@@ -500,7 +540,8 @@ export default async function runPow(
   reloadUrlB64,
   apiPrefixB64,
   esmUrlB64,
-  turnSiteKeyB64
+  turnSiteKeyB64,
+  atomicCfg
 ) {
   try {
     const apiPrefix = normalizeApiPrefix(decodeB64Url(String(apiPrefixB64 || "")));
@@ -509,10 +550,37 @@ export default async function runPow(
     const needPow = Number(steps) > 0;
     const turnSiteKey = decodeB64Url(String(turnSiteKeyB64 || "")) || "";
     const needTurn = !!turnSiteKey;
+    const cfg = parseAtomicCfg(atomicCfg);
+    const atomicEnabled = cfg.atomic;
+    const Q_TURN = cfg.q.ts;
+    const Q_TICKET = cfg.q.tt;
+    const Q_CONSUME = cfg.q.ct;
+    const H_TURN = cfg.h.ts;
+    const H_TICKET = cfg.h.tt;
+    const H_CONSUME = cfg.h.ct;
 
     if (!needPow && !needTurn) throw new Error("No Challenge");
 
+    const embedded = !!(window.opener || window.parent !== window);
+
     if (needTurn && !needPow) {
+      if (atomicEnabled) {
+        const turnToken = await runTurnstile(ticketB64, turnSiteKey);
+        const query = { [Q_TURN]: turnToken, [Q_TICKET]: ticketB64 };
+        const headers = { [H_TURN]: turnToken, [H_TICKET]: ticketB64 };
+        if (embedded) {
+          postAtomicMessage({ mode: "turn", turnToken, ticketB64, headers, query });
+          log("Access granted. You may close this window.");
+          setStatus(true);
+          document.title = "Done";
+          return;
+        }
+        log("Access granted. <span class=\"yellow\">Redirecting...</span>");
+        setStatus(true);
+        document.title = "Redirecting";
+        window.location.replace(addQuery(target, query));
+        return;
+      }
       await runTurnstile(ticketB64, turnSiteKey, async (token) => {
         await postJson(apiPrefix + "/turn", { ticketB64, pathHash, token });
       });
@@ -531,7 +599,7 @@ export default async function runPow(
     } else {
       const turnToken = await runTurnstile(ticketB64, turnSiteKey);
       log("Turnstile solved. Starting PoW...");
-      await runPowFlow(
+      const state = await runPowFlow(
         apiPrefix,
         bindingB64,
         steps,
@@ -542,6 +610,24 @@ export default async function runPow(
         esmUrlB64,
         turnToken
       );
+      if (atomicEnabled) {
+        const consume = state && state.consume;
+        if (!consume) throw new Error("Consume Missing");
+        const query = { [Q_TURN]: turnToken, [Q_CONSUME]: consume };
+        const headers = { [H_TURN]: turnToken, [H_CONSUME]: consume };
+        if (embedded) {
+          postAtomicMessage({ mode: "combine", turnToken, consume, headers, query });
+          log("Access granted. You may close this window.");
+          setStatus(true);
+          document.title = "Done";
+          return;
+        }
+        log("Access granted. <span class=\"yellow\">Redirecting...</span>");
+        setStatus(true);
+        document.title = "Redirecting";
+        window.location.replace(addQuery(target, query));
+        return;
+      }
     }
     log("Access granted. <span class=\"yellow\">Redirecting...</span>");
     setStatus(true);

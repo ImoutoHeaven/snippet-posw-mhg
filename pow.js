@@ -29,6 +29,15 @@ const DEFAULTS = {
   PROOF_RENEW_MAX: 2,
   PROOF_RENEW_WINDOW_SEC: 90,
   PROOF_RENEW_MIN_SEC: 30,
+  ATOMIC_CONSUME: false,
+  ATOMIC_TURN_QUERY: "__ts",
+  ATOMIC_TICKET_QUERY: "__tt",
+  ATOMIC_CONSUME_QUERY: "__ct",
+  ATOMIC_TURN_HEADER: "x-turnstile",
+  ATOMIC_TICKET_HEADER: "x-ticket",
+  ATOMIC_CONSUME_HEADER: "x-consume",
+  STRIP_ATOMIC_QUERY: true,
+  STRIP_ATOMIC_HEADERS: true,
   INNER_AUTH_QUERY_NAME: "",
   INNER_AUTH_QUERY_VALUE: "",
   INNER_AUTH_HEADER_NAME: "",
@@ -649,6 +658,91 @@ const resolveBypassRequest = (request, url, config) => {
   return { bypass: true, forwardRequest };
 };
 
+const extractAtomicAuth = (request, url, config) => {
+  const qTurn =
+    (typeof config.ATOMIC_TURN_QUERY === "string" && config.ATOMIC_TURN_QUERY.trim()) ||
+    DEFAULTS.ATOMIC_TURN_QUERY;
+  const qTicket =
+    (typeof config.ATOMIC_TICKET_QUERY === "string" &&
+      config.ATOMIC_TICKET_QUERY.trim()) ||
+    DEFAULTS.ATOMIC_TICKET_QUERY;
+  const qConsume =
+    (typeof config.ATOMIC_CONSUME_QUERY === "string" &&
+      config.ATOMIC_CONSUME_QUERY.trim()) ||
+    DEFAULTS.ATOMIC_CONSUME_QUERY;
+  const hTurn =
+    (typeof config.ATOMIC_TURN_HEADER === "string" && config.ATOMIC_TURN_HEADER.trim()) ||
+    DEFAULTS.ATOMIC_TURN_HEADER;
+  const hTicket =
+    (typeof config.ATOMIC_TICKET_HEADER === "string" &&
+      config.ATOMIC_TICKET_HEADER.trim()) ||
+    DEFAULTS.ATOMIC_TICKET_HEADER;
+  const hConsume =
+    (typeof config.ATOMIC_CONSUME_HEADER === "string" &&
+      config.ATOMIC_CONSUME_HEADER.trim()) ||
+    DEFAULTS.ATOMIC_CONSUME_HEADER;
+
+  let turnToken = "";
+  let ticketB64 = "";
+  let consumeToken = "";
+  const headerTurn = hTurn ? request.headers.get(hTurn) : "";
+  if (headerTurn) {
+    turnToken = headerTurn;
+    ticketB64 = hTicket ? request.headers.get(hTicket) || "" : "";
+    consumeToken = hConsume ? request.headers.get(hConsume) || "" : "";
+  } else {
+    turnToken = qTurn ? url.searchParams.get(qTurn) || "" : "";
+    ticketB64 = qTicket ? url.searchParams.get(qTicket) || "" : "";
+    consumeToken = qConsume ? url.searchParams.get(qConsume) || "" : "";
+  }
+
+  const stripQuery = config.STRIP_ATOMIC_QUERY !== false;
+  const stripHeader = config.STRIP_ATOMIC_HEADERS !== false;
+  let forwardRequest = request;
+
+  if (stripQuery && (qTurn || qTicket || qConsume)) {
+    const nextUrl = new URL(url.toString());
+    let changed = false;
+    if (qTurn && nextUrl.searchParams.has(qTurn)) {
+      nextUrl.searchParams.delete(qTurn);
+      changed = true;
+    }
+    if (qTicket && nextUrl.searchParams.has(qTicket)) {
+      nextUrl.searchParams.delete(qTicket);
+      changed = true;
+    }
+    if (qConsume && nextUrl.searchParams.has(qConsume)) {
+      nextUrl.searchParams.delete(qConsume);
+      changed = true;
+    }
+    if (changed) {
+      forwardRequest = new Request(nextUrl, request);
+    }
+  }
+
+  if (stripHeader && (hTurn || hTicket || hConsume)) {
+    const headers = new Headers(forwardRequest.headers);
+    let changed = false;
+    if (hTurn && headers.has(hTurn)) {
+      headers.delete(hTurn);
+      changed = true;
+    }
+    if (hTicket && headers.has(hTicket)) {
+      headers.delete(hTicket);
+      changed = true;
+    }
+    if (hConsume && headers.has(hConsume)) {
+      headers.delete(hConsume);
+      changed = true;
+    }
+    if (changed) {
+      forwardRequest = new Request(forwardRequest, { headers });
+    }
+  }
+
+  return { turnToken, ticketB64, consumeToken, forwardRequest };
+};
+
 const buildTlsFingerprintHash = async (request) => {
   const cf = getRequestCf(request);
   if (!cf) return "";
@@ -890,6 +984,9 @@ const makePowCommitMac = async (
     `C|${ticketB64}|${rootB64}|${pathHash}|${tb}|${nonce}|${exp}|${spineSeed}`
   );
 
+const makeConsumeMac = async (powSecret, ticketB64, exp, tb, m) =>
+  hmacSha256Base64UrlNoPad(powSecret, `U|${ticketB64}|${exp}|${tb}|${m}`);
+
 const makePowStateToken = async (
   powSecret,
   cfgId,
@@ -1087,6 +1184,23 @@ const parseProofCookie = (value) => {
   return { v: 1, ticketB64, iat, last, n, m, mac };
 };
 
+const parseConsumeToken = (value) => {
+  if (!value || typeof value !== "string") return null;
+  const parts = value.split(".");
+  if (parts.length !== 6 || parts[0] !== "v2") return null;
+  const ticketB64 = parts[1] || "";
+  const exp = Number.parseInt(parts[2], 10);
+  const tb = parts[3] || "";
+  const m = Number.parseInt(parts[4], 10);
+  const mac = parts[5] || "";
+  if (!ticketB64 || !Number.isFinite(exp) || !Number.isFinite(m) || !mac) return null;
+  if (exp <= 0 || m < 0 || m > 3) return null;
+  if (!isBase64Url(ticketB64, 1, B64_TICKET_MAX_LEN)) return null;
+  if (!isBase64Url(tb, TB_LEN, TB_LEN)) return null;
+  if (!isBase64Url(mac, 1, B64_HASH_MAX_LEN)) return null;
+  return { ticketB64, exp, tb, m, mac };
+};
+
 const makeProofMac = async (powSecret, ticketB64, iat, last, n, m) =>
   hmacSha256Base64UrlNoPad(powSecret, `O|${ticketB64}|${iat}|${last}|${n}|${m}`);
 
@@ -1169,6 +1283,43 @@ const verifyCommit = async (commit, ticket, config, powSecret, nowSeconds) => {
   );
   if (!timingSafeEqual(commitMac, commit.mac)) return 0;
   return powVersion;
+};
+
+const verifyConsumeToken = async (consumeToken, powSecret, nowSeconds, requiredMask) => {
+  const parsed = parseConsumeToken(consumeToken);
+  if (!parsed) return null;
+  if (isExpired(parsed.exp, nowSeconds)) return null;
+  if ((parsed.m & requiredMask) !== requiredMask) return null;
+  const mac = await makeConsumeMac(
+    powSecret,
+    parsed.ticketB64,
+    parsed.exp,
+    parsed.tb,
+    parsed.m
+  );
+  if (!timingSafeEqual(mac, parsed.mac)) return null;
+  return parsed;
+};
+
+const loadAtomicTicket = async (
+  ticketB64,
+  request,
+  url,
+  canonicalPath,
+  config,
+  powSecret,
+  cfgId,
+  nowSeconds
+) => {
+  const ticket = parsePowTicket(ticketB64);
+  if (!ticket) return null;
+  if (ticket.cfgId !== cfgId) return null;
+  if (!Number.isFinite(ticket.L) || ticket.L <= 0) return null;
+  if (!validateTicket(ticket, config, nowSeconds)) return null;
+  const bindingValues = await getPowBindingValues(request, canonicalPath, config);
+  if (!bindingValues) return null;
+  if (!(await verifyTicketMac(ticket, url, bindingValues, powSecret))) return null;
+  return ticket;
 };
 
 const normalizePathHash = (pathHash, config) => {
@@ -1407,18 +1558,20 @@ const buildPowChallengeHtml = ({
   esmUrlB64,
   turnSiteKeyB64,
   glueUrl,
+  atomicCfg,
 }) => __HTML_TEMPLATE__
-  .replace('__BINDING_STRING_B64__', bindingStringB64)
-  .replace('__STEPS__', String(steps))
-  .replace('__TICKET_B64__', ticketB64)
-  .replace('__PATH_HASH__', pathHash)
-  .replace('__HASHCASH_BITS__', String(hashcashBits))
-  .replace('__SEGMENT_LEN__', String(segmentLen))
-  .replace('__GLUE_URL__', glueUrl)
-  .replace('__RELOAD_URL_B64__', reloadUrlB64)
-  .replace('__API_PREFIX_B64__', apiPrefixB64)
-  .replace('__ESM_URL_B64__', esmUrlB64)
-  .replace('__TURN_SITEKEY_B64__', turnSiteKeyB64);
+  .replace('__B__', bindingStringB64)
+  .replace('__S__', String(steps))
+  .replace('__T__', ticketB64)
+  .replace('__P__', pathHash)
+  .replace('__H__', String(hashcashBits))
+  .replace('__L__', String(segmentLen))
+  .replace('__G__', glueUrl)
+  .replace('__R__', reloadUrlB64)
+  .replace('__A__', apiPrefixB64)
+  .replace('__E__', esmUrlB64)
+  .replace('__K__', turnSiteKeyB64)
+  .replace('__C__', atomicCfg);
 
 const respondPowChallengeHtml = async (
   request,
@@ -1483,6 +1636,30 @@ const respondPowChallengeHtml = async (
     ? base64UrlEncodeNoPad(utf8ToBytes(String(config.TURNSTILE_SITEKEY)))
     : "";
   const glueUrl = typeof config.POW_GLUE_URL === "string" ? config.POW_GLUE_URL : "";
+  const atomicConsume = config.ATOMIC_CONSUME === true ? "1" : "0";
+  const atomicTurnQuery =
+    (typeof config.ATOMIC_TURN_QUERY === "string" && config.ATOMIC_TURN_QUERY.trim()) ||
+    DEFAULTS.ATOMIC_TURN_QUERY;
+  const atomicTicketQuery =
+    (typeof config.ATOMIC_TICKET_QUERY === "string" &&
+      config.ATOMIC_TICKET_QUERY.trim()) ||
+    DEFAULTS.ATOMIC_TICKET_QUERY;
+  const atomicConsumeQuery =
+    (typeof config.ATOMIC_CONSUME_QUERY === "string" &&
+      config.ATOMIC_CONSUME_QUERY.trim()) ||
+    DEFAULTS.ATOMIC_CONSUME_QUERY;
+  const atomicTurnHeader =
+    (typeof config.ATOMIC_TURN_HEADER === "string" && config.ATOMIC_TURN_HEADER.trim()) ||
+    DEFAULTS.ATOMIC_TURN_HEADER;
+  const atomicTicketHeader =
+    (typeof config.ATOMIC_TICKET_HEADER === "string" &&
+      config.ATOMIC_TICKET_HEADER.trim()) ||
+    DEFAULTS.ATOMIC_TICKET_HEADER;
+  const atomicConsumeHeader =
+    (typeof config.ATOMIC_CONSUME_HEADER === "string" &&
+      config.ATOMIC_CONSUME_HEADER.trim()) ||
+    DEFAULTS.ATOMIC_CONSUME_HEADER;
+  const atomicCfg = `${atomicConsume}|${atomicTurnQuery}|${atomicTicketQuery}|${atomicConsumeQuery}|${atomicTurnHeader}|${atomicTicketHeader}|${atomicConsumeHeader}`;
   const segmentLenFixed = Math.max(
     1,
     Math.min(
@@ -1502,6 +1679,7 @@ const respondPowChallengeHtml = async (
     apiPrefixB64,
     esmUrlB64,
     turnSiteKeyB64,
+    atomicCfg,
   });
   const headers = new Headers();
   headers.set("Content-Type", "text/html");
@@ -1769,7 +1947,7 @@ const handleTurn = async (request, url, nowSeconds) => {
   if (!powSecret) return S(500);
   const needPow = config.powcheck === true;
   const needTurn = config.turncheck === true;
-  if (!needTurn || needPow) return S(404);
+  if (!needTurn || needPow || config.ATOMIC_CONSUME === true) return S(404);
   const turnSecret = getTurnSecret(config);
   if (!turnSecret) return S(500);
   const turnToken = validateTurnToken(token);
@@ -2097,6 +2275,21 @@ const handlePowOpen = async (request, url, nowSeconds) => {
     if (!nextResp) return deny();
     return J(nextResp);
   }
+  const ttl = getProofTtl(ticket, config, nowSeconds);
+  if (!ttl) return deny();
+
+  if (needTurn && config.ATOMIC_CONSUME === true) {
+    const finalToken = validateTurnToken(turnToken);
+    if (!finalToken) return deny();
+    const tb = await tbFromToken(finalToken);
+    if (tb !== commit.tb) return deny();
+    const exp = nowSeconds + ttl;
+    const mac = await makeConsumeMac(powSecret, commit.ticketB64, exp, tb, 3);
+    const headers = new Headers();
+    clearCookie(headers, DEFAULTS.POW_COMMIT_COOKIE);
+    return J({ done: true, consume: `v2.${commit.ticketB64}.${exp}.${tb}.3.${mac}` }, 200, headers);
+  }
+
   if (needTurn) {
     const turnSecret = getTurnSecret(config);
     if (!turnSecret) return S(500);
@@ -2109,8 +2302,6 @@ const handlePowOpen = async (request, url, nowSeconds) => {
     }
   }
 
-  const ttl = getProofTtl(ticket, config, nowSeconds);
-  if (!ttl) return deny();
   const headers = new Headers();
   await issueProofCookie(
     headers,
@@ -2225,6 +2416,59 @@ export default {
         response
       );
       return response;
+    }
+
+    if (needTurn && config.ATOMIC_CONSUME === true) {
+      const baseRequest = bindRes.forwardRequest;
+      const baseUrl = new URL(baseRequest.url);
+      const atomic = extractAtomicAuth(baseRequest, baseUrl, config);
+      if (atomic.turnToken) {
+        const turnToken = validateTurnToken(atomic.turnToken);
+        if (!turnToken) return deny();
+        const turnSecret = getTurnSecret(config);
+        if (!turnSecret) return S(500);
+        if (needPow) {
+          const consume = await verifyConsumeToken(
+            atomic.consumeToken,
+            powSecret,
+            nowSeconds,
+            requiredMask
+          );
+          if (!consume) return deny();
+          const tb = await tbFromToken(turnToken);
+          if (tb !== consume.tb) return deny();
+          const ticket = await loadAtomicTicket(
+            consume.ticketB64,
+            baseRequest,
+            baseUrl,
+            bindRes.canonicalPath,
+            config,
+            powSecret,
+            cfgId,
+            nowSeconds
+          );
+          if (!ticket) return deny();
+          if (!(await verifyTurnstileForTicket(baseRequest, turnSecret, turnToken, ticket))) {
+            return deny();
+          }
+          return fetch(atomic.forwardRequest);
+        }
+        const ticket = await loadAtomicTicket(
+          atomic.ticketB64,
+          baseRequest,
+          baseUrl,
+          bindRes.canonicalPath,
+          config,
+          powSecret,
+          cfgId,
+          nowSeconds
+        );
+        if (!ticket) return deny();
+        if (!(await verifyTurnstileForTicket(baseRequest, turnSecret, turnToken, ticket))) {
+          return deny();
+        }
+        return fetch(atomic.forwardRequest);
+      }
     }
 
     if (!isNavigationRequest(request)) {
