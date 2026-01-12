@@ -180,6 +180,18 @@ In combined mode, PoW is bound to the Turnstile token:
 
 This guarantees **one token → one PoW**, preventing “1 PoW + N tokens”.
 
+### `tb` design (Turnstile binding tag)
+
+`tb` is a compact binding tag derived from the Turnstile token:
+
+- `tb = base64url(sha256(turnstile_token).slice(0, 12))` (96-bit tag, 16 chars base64url).
+- Used to bind PoW/consume tokens to a specific Turnstile token without carrying the full token.
+- Stored inside signed artifacts: `__Host-pow_commit` (v4) and `consume` (v2).
+- Recomputed on the server from `turnToken` and compared (`tb` must match).
+- For non-Turnstile flows, `tb = "any"`.
+
+`tb` is not secret; integrity is enforced by HMAC on the enclosing token/cookie.
+
 ## CCR: Commit → Challenge → Open
 
 PoW uses a stateless CCR API:
