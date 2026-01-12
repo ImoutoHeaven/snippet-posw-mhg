@@ -170,13 +170,6 @@ const compileConfigEntry = (entry) => {
   return { hostRegex, pathRegex, config };
 };
 
-const regexToLiteral = (regex) => {
-  if (!regex) return "null";
-  const source = regex.source.replace(/\//g, "\\/");
-  const flags = regex.flags || "";
-  return `/${source}/${flags}`;
-};
-
 const buildCompiledConfig = async () => {
   const source = await readFile(entry, "utf-8");
   const literal = extractConfigLiteral(source);
@@ -188,13 +181,13 @@ const buildCompiledConfig = async () => {
     throw new Error("CONFIG must be array");
   }
   const compiled = config.map(compileConfigEntry);
-  const entries = compiled.map((entry) => {
-    const hostRegex = regexToLiteral(entry.hostRegex);
-    const pathRegex = regexToLiteral(entry.pathRegex);
-    const cfg = JSON.stringify(entry.config || {});
-    return `{hostRegex:${hostRegex},pathRegex:${pathRegex},config:${cfg}}`;
-  });
-  return `[${entries.join(",")}]`;
+  return JSON.stringify(
+    compiled.map((entry) => ({
+      host: entry.hostRegex ? { s: entry.hostRegex.source, f: entry.hostRegex.flags } : null,
+      path: entry.pathRegex ? { s: entry.pathRegex.source, f: entry.pathRegex.flags } : null,
+      config: entry.config || {},
+    }))
+  );
 };
 
 console.log("Reading HTML template...");

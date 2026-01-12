@@ -65,7 +65,11 @@ const CONFIG = [
   // { pattern: "alist-landing-*.example.com/info", config: { POW_TOKEN: "replace-with-powToken", powcheck: true, bindPathMode: "query", bindPathQueryName: "path" } },
 ];
 
-const COMPILED_CONFIG = __COMPILED_CONFIG__;
+const COMPILED_CONFIG = __COMPILED_CONFIG__.map((entry) => ({
+  hostRegex: entry.host ? new RegExp(entry.host.s, entry.host.f || "") : null,
+  pathRegex: entry.path ? new RegExp(entry.path.s, entry.path.f || "") : null,
+  config: entry.config || {},
+}));
 const POW_API_PREFIX = DEFAULTS.POW_API_PREFIX;
 const PROOF_COOKIE = "__Host-proof";
 const TURNSTILE_SITEVERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
