@@ -358,7 +358,7 @@ const runPowFlow = async (
   if (!authBinding) {
     throw new Error("Bad Binding");
   }
-  const powBinding = turnToken ? `${authBinding}&tb=${await tbFromToken(turnToken)}` : authBinding;
+  const powBinding = turnToken ? `${authBinding}|${await tbFromToken(turnToken)}` : authBinding;
 
   const workerCode = await fetch(workerUrl).then(r => r.text());
   const blob = new Blob([workerCode], { type: "application/javascript" });
