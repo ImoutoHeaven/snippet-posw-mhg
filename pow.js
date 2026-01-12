@@ -1775,7 +1775,8 @@ const handleTurn = async (request, url, nowSeconds) => {
   const turnToken = validateTurnToken(token);
   if (!turnToken) return S(400);
 
-  if (!validateTicket(ticket, config, nowSeconds)) return deny();
+  const powVersion = validateTicket(ticket, config, nowSeconds);
+  if (!powVersion) return deny();
 
   const normalizedPathHash = normalizePathHash(pathHash, config);
   if (!normalizedPathHash) return S(400);
