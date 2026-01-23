@@ -1923,6 +1923,13 @@ const handlePowChallenge = async (request, url, nowSeconds) => {
   if (config.powcheck !== true) return S(500);
   if (!(await verifyCommit(commit, ticket, config, powSecret, nowSeconds))) return deny();
   if (!Number.isFinite(ticket.L) || ticket.L <= 0) return deny();
+  const bindingValues = await getPowBindingValuesWithPathHash(
+    request,
+    commit.pathHash,
+    config
+  );
+  if (!bindingValues) return deny();
+  if (!(await verifyTicketMac(ticket, url, bindingValues, powSecret))) return deny();
   const sid = await derivePowSid(powSecret, ticket.cfgId, commit.mac);
   const sample = await buildPowSample(config, powSecret, ticket, commit.mac, sid);
   if (!sample) return deny();
