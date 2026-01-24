@@ -9,6 +9,238 @@ const decodeB64Url = (str) => {
   }
 };
 
+const I18N = {
+  en: {
+    title_verifying: "Verifying...",
+    title_redirecting: "Redirecting...",
+    title_done: "Done",
+    title_failed: "Failed",
+    ticker_text:
+      "This process is automatic unless turnstile asks you to click the box, you will be redirected after verification is done.",
+    initializing: "Initializing...",
+    connection_retry: "Connection error. Retrying in {ms}ms...",
+    request_failed: "Request Failed",
+    bad_ticket: "Bad Ticket",
+    turnstile_load_failed: "Turnstile Load Failed",
+    loading_turnstile: "Loading Turnstile...",
+    turnstile_missing: "Turnstile Missing",
+    waiting_turnstile: "Waiting for Turnstile...",
+    turnstile_expired_retry: "Turnstile expired. Retrying...",
+    submitting_turnstile: "Submitting Turnstile...",
+    submitting_turnstile_done: "Submitting Turnstile... {done}",
+    turnstile_done: "Turnstile... {done}",
+    turnstile_rejected_retry: "Turnstile rejected. Please try again.",
+    turnstile_rejected: "Turnstile Rejected",
+    turnstile_failed: "Turnstile Failed",
+    turnstile_expired: "Turnstile Expired",
+    loading_solver: "Loading solver...",
+    worker_missing: "Worker Missing",
+    bad_binding: "Bad Binding",
+    computing_hash_chain: "Computing hash chain...",
+    screening_hash_attempt: "Screening hash (attempt {n})...",
+    screening_hash_done: "Screening hash... {done}",
+    computing_hash_chain_done: "Computing hash chain... {done}",
+    submitting_commit: "Submitting commit...",
+    requesting_challenge: "Requesting challenge...",
+    challenge_failed: "Challenge Failed",
+    verifying_batch: "Verifying #{round} ({count})...",
+    verifying_done: "Verifying... {done}",
+    pow_done: "PoW... {done}",
+    no_challenge: "No Challenge",
+    turnstile_solved_pow: "Turnstile solved. Starting PoW...",
+    consume_missing: "Consume Missing",
+    access_granted_close: "Access granted. You may close this window.",
+    access_granted_redirecting: "Access granted. {redirect}",
+    session_expired_reload: "Session expired. Reloading...",
+    error_prefix: "ERROR: {message}",
+    done: "done",
+    redirecting: "Redirecting...",
+    failed: "Failed",
+    no_workers: "No workers",
+    commit_failed: "Commit failed",
+    worker_error: "Worker error",
+    worker_message_error: "Worker message error",
+  },
+  zh: {
+    title_verifying: "验证中...",
+    title_redirecting: "正在跳转...",
+    title_done: "完成",
+    title_failed: "失败",
+    ticker_text: "此过程全自动，除非 Turnstile 要求你勾选，否则验证完成后会自动跳转。",
+    initializing: "初始化中...",
+    connection_retry: "连接错误，{ms}ms 后重试...",
+    request_failed: "请求失败",
+    bad_ticket: "票据无效",
+    turnstile_load_failed: "Turnstile 加载失败",
+    loading_turnstile: "加载 Turnstile...",
+    turnstile_missing: "Turnstile 不可用",
+    waiting_turnstile: "等待 Turnstile...",
+    turnstile_expired_retry: "Turnstile 已过期，正在重试...",
+    submitting_turnstile: "提交 Turnstile...",
+    submitting_turnstile_done: "提交 Turnstile... {done}",
+    turnstile_done: "Turnstile... {done}",
+    turnstile_rejected_retry: "Turnstile 被拒绝，请重试。",
+    turnstile_rejected: "Turnstile 被拒绝",
+    turnstile_failed: "Turnstile 失败",
+    turnstile_expired: "Turnstile 已过期",
+    loading_solver: "加载求解器...",
+    worker_missing: "Worker 不可用",
+    bad_binding: "绑定无效",
+    computing_hash_chain: "计算哈希链...",
+    screening_hash_attempt: "筛选哈希（第 {n} 次）...",
+    screening_hash_done: "筛选哈希... {done}",
+    computing_hash_chain_done: "计算哈希链... {done}",
+    submitting_commit: "提交 commit...",
+    requesting_challenge: "请求 challenge...",
+    challenge_failed: "Challenge 失败",
+    verifying_batch: "校验第 {round} 轮（{count}）...",
+    verifying_done: "校验中... {done}",
+    pow_done: "PoW... {done}",
+    no_challenge: "没有挑战",
+    turnstile_solved_pow: "Turnstile 已完成，开始 PoW...",
+    consume_missing: "缺少 consume",
+    access_granted_close: "已通过验证，可关闭此窗口。",
+    access_granted_redirecting: "已通过验证。{redirect}",
+    session_expired_reload: "会话已过期，正在刷新...",
+    error_prefix: "错误：{message}",
+    done: "完成",
+    redirecting: "正在跳转...",
+    failed: "失败",
+    no_workers: "没有可用的 worker",
+    commit_failed: "Commit 失败",
+    worker_error: "Worker 错误",
+    worker_message_error: "Worker 消息错误",
+  },
+  ja: {
+    title_verifying: "確認中...",
+    title_redirecting: "リダイレクト中...",
+    title_done: "完了",
+    title_failed: "失敗",
+    ticker_text:
+      "この処理は自動です。Turnstile がチェックを求める場合を除き、検証完了後に自動でリダイレクトされます。",
+    initializing: "初期化中...",
+    connection_retry: "接続エラー。{ms}ms 後に再試行します...",
+    request_failed: "リクエスト失敗",
+    bad_ticket: "無効なチケット",
+    turnstile_load_failed: "Turnstile の読み込みに失敗しました",
+    loading_turnstile: "Turnstile を読み込み中...",
+    turnstile_missing: "Turnstile が見つかりません",
+    waiting_turnstile: "Turnstile を待機中...",
+    turnstile_expired_retry: "Turnstile の有効期限切れ。再試行します...",
+    submitting_turnstile: "Turnstile を送信中...",
+    submitting_turnstile_done: "Turnstile を送信中... {done}",
+    turnstile_done: "Turnstile... {done}",
+    turnstile_rejected_retry: "Turnstile が拒否されました。再試行してください。",
+    turnstile_rejected: "Turnstile が拒否されました",
+    turnstile_failed: "Turnstile 失敗",
+    turnstile_expired: "Turnstile の有効期限切れ",
+    loading_solver: "ソルバーを読み込み中...",
+    worker_missing: "Worker が見つかりません",
+    bad_binding: "無効なバインド",
+    computing_hash_chain: "ハッシュチェーンを計算中...",
+    screening_hash_attempt: "ハッシュを選別中（{n} 回目）...",
+    screening_hash_done: "ハッシュ選別... {done}",
+    computing_hash_chain_done: "ハッシュチェーン... {done}",
+    submitting_commit: "commit を送信中...",
+    requesting_challenge: "チャレンジを要求中...",
+    challenge_failed: "チャレンジ失敗",
+    verifying_batch: "検証 #{round}（{count}）...",
+    verifying_done: "検証中... {done}",
+    pow_done: "PoW... {done}",
+    no_challenge: "チャレンジなし",
+    turnstile_solved_pow: "Turnstile 解決。PoW を開始...",
+    consume_missing: "consume がありません",
+    access_granted_close: "認証に成功しました。このウィンドウを閉じてください。",
+    access_granted_redirecting: "認証に成功しました。{redirect}",
+    session_expired_reload: "セッション期限切れ。再読み込み中...",
+    error_prefix: "エラー: {message}",
+    done: "完了",
+    redirecting: "リダイレクト中...",
+    failed: "失敗",
+    no_workers: "利用可能な worker がありません",
+    commit_failed: "commit 失敗",
+    worker_error: "Worker エラー",
+    worker_message_error: "Worker メッセージエラー",
+  },
+};
+
+const normalizeLocale = (value) => {
+  if (!value) return "";
+  const lower = String(value).toLowerCase();
+  if (lower.startsWith("zh")) return "zh";
+  if (lower.startsWith("ja")) return "ja";
+  if (lower.startsWith("en")) return "en";
+  return "";
+};
+
+const resolveLocale = (languages) => {
+  const list = Array.isArray(languages) ? languages : languages ? [languages] : [];
+  for (const lang of list) {
+    const normalized = normalizeLocale(lang);
+    if (normalized) return normalized;
+  }
+  return "en";
+};
+
+const readNavigatorLanguages = () => {
+  if (typeof navigator === "undefined") return [];
+  if (Array.isArray(navigator.languages) && navigator.languages.length > 0) {
+    return navigator.languages;
+  }
+  if (typeof navigator.language === "string" && navigator.language) {
+    return [navigator.language];
+  }
+  return [];
+};
+
+let activeLocale = resolveLocale(readNavigatorLanguages());
+const getLocale = () => activeLocale;
+const setLocale = (next) => {
+  const normalized = normalizeLocale(next);
+  if (normalized) activeLocale = normalized;
+};
+
+const translate = (locale, key, vars) => {
+  const dict = I18N[locale] || I18N.en;
+  const fallback = I18N.en;
+  const template = dict[key] || fallback[key] || key;
+  if (!vars) return template;
+  return template.replace(/\{(\w+)\}/gu, (match, name) => {
+    if (!Object.prototype.hasOwnProperty.call(vars, name)) return match;
+    return String(vars[name]);
+  });
+};
+
+const t = (key, vars) => translate(activeLocale, key, vars);
+
+const wrapSpan = (klass, text) => `<span class="${klass}">${text}</span>`;
+const doneMark = () => wrapSpan("green", t("done"));
+const yellowMark = (text) => wrapSpan("yellow", text);
+
+const ERROR_KEY_BY_MESSAGE = {
+  "Request Failed": "request_failed",
+  "Bad Ticket": "bad_ticket",
+  "Turnstile Load Failed": "turnstile_load_failed",
+  "Turnstile Missing": "turnstile_missing",
+  "Turnstile Failed": "turnstile_failed",
+  "Turnstile Expired": "turnstile_expired",
+  "Turnstile Rejected": "turnstile_rejected",
+  "Worker Missing": "worker_missing",
+  "Bad Binding": "bad_binding",
+  "Challenge Failed": "challenge_failed",
+  "No Challenge": "no_challenge",
+  "Consume Missing": "consume_missing",
+  "No workers": "no_workers",
+  "Commit failed": "commit_failed",
+  "Worker error": "worker_error",
+  "Worker message error": "worker_message_error",
+};
+
+const localizeErrorMessage = (message) => {
+  const key = ERROR_KEY_BY_MESSAGE[message];
+  return key ? t(key) : message;
+};
+
 const encoder = new TextEncoder();
 const base64UrlEncodeNoPad = (bytes) =>
   btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
@@ -66,7 +298,7 @@ const postJson = async (url, body, retries = 3) => {
       if (err && err.message === "403") throw err;
       if (i === retries) throw err;
       const delay = 500 * Math.pow(2, i);
-      log("Connection error. Retrying in " + delay + "ms...");
+      log(t("connection_retry", { ms: delay }));
       await new Promise((r) => setTimeout(r, delay));
     }
   }
@@ -189,8 +421,11 @@ const initUi = () => {
     "@keyframes scroll-left{from{transform:translate(100vw,-50%);}to{transform:translate(-100%,-50%);}}"
   ].join("");
   (document.head || document.documentElement).appendChild(style);
+  const titleText = t("title_verifying");
+  const tickerText = t("ticker_text");
   document.body.innerHTML =
-    '<div class="card"><h1 id="t">Verifying...</h1><div id="log"></div><div id="ts"></div></div><div id="ticker"><div id="ticker-text">This process is automatic unless turnstile asks you to click the box, you will be redirected after verification is done.</div></div>';
+    `<div class="card"><h1 id="t">${titleText}</h1><div id="log"></div><div id="ts"></div></div>` +
+    `<div id="ticker"><div id="ticker-text">${tickerText}</div></div>`;
   return {
     logEl: document.getElementById("log"),
     tEl: document.getElementById("t"),
@@ -203,7 +438,7 @@ const initUi = () => {
 const ui = initUi();
 const lines = [];
 const MAX_VISIBLE_LINES = 6;
-document.title = "Verifying...";
+document.title = t("title_verifying");
 
 // Start ticker animation after 1.5 seconds
 setTimeout(() => {
@@ -245,15 +480,15 @@ const update = (idx, msg) => {
 
 const setStatus = (ok) => {
   if (ok) {
-    ui.tEl.textContent = "Redirecting...";
+    ui.tEl.textContent = t("title_redirecting");
     ui.tEl.style.color = "#4ade80";
   } else {
-    ui.tEl.textContent = "Failed";
+    ui.tEl.textContent = t("title_failed");
     ui.tEl.style.color = "#f87171";
   }
 };
 
-log("Initializing...");
+log(t("initializing"));
 
 const getTicketMac = (ticketB64) => {
   const raw = decodeB64Url(String(ticketB64 || ""));
@@ -282,7 +517,7 @@ const loadTurnstile = () => {
 const runTurnstile = async (ticketB64, sitekey, submitToken) => {
   const ticketMac = getTicketMac(ticketB64);
   if (!ticketMac) throw new Error("Bad Ticket");
-  log("Loading Turnstile...");
+  log(t("loading_turnstile"));
   const ts = await loadTurnstile();
   if (!ts || typeof ts.render !== "function") {
     throw new Error("Turnstile Missing");
@@ -291,7 +526,7 @@ const runTurnstile = async (ticketB64, sitekey, submitToken) => {
   if (el) {
     el.innerHTML = "";
   }
-  log("Waiting for Turnstile...");
+  log(t("waiting_turnstile"));
   const container = document.createElement("div");
   if (el) {
     el.appendChild(container);
@@ -336,7 +571,7 @@ const runTurnstile = async (ticketB64, sitekey, submitToken) => {
       token = await tokenPromise;
     } catch (e) {
       if (e && e.message === "Turnstile Expired") {
-        log("Turnstile expired. Retrying...");
+        log(t("turnstile_expired_retry"));
         if (el) {
           void el.offsetHeight;
           requestAnimationFrame(() => {
@@ -354,11 +589,13 @@ const runTurnstile = async (ticketB64, sitekey, submitToken) => {
       el.classList.add("hide");
       el.classList.remove("show");
     }
-    const submitLine = submitToken ? log("Submitting Turnstile...") : -1;
+    const submitLine = submitToken ? log(t("submitting_turnstile")) : -1;
     try {
       if (submitToken) await submitToken(token);
-      if (submitLine !== -1) update(submitLine, "Submitting Turnstile... <span class=\"green\">done</span>");
-      log("Turnstile... <span class=\"green\">done</span>");
+      if (submitLine !== -1) {
+        update(submitLine, t("submitting_turnstile_done", { done: doneMark() }));
+      }
+      log(t("turnstile_done", { done: doneMark() }));
       if (el) {
         el.classList.add("hide");
         el.classList.remove("show");
@@ -376,7 +613,7 @@ const runTurnstile = async (ticketB64, sitekey, submitToken) => {
       return token;
     } catch (e) {
       if (submitToken && e && e.message === "403") {
-        update(submitLine, "Turnstile rejected. Please try again.");
+        update(submitLine, t("turnstile_rejected_retry"));
         if (el) {
           void el.offsetHeight;
           requestAnimationFrame(() => {
@@ -406,7 +643,7 @@ const runPowFlow = async (
   esmUrlB64,
   turnToken
 ) => {
-  log("Loading solver...");
+  log(t("loading_solver"));
   const esmUrl = decodeB64Url(String(esmUrlB64 || ""));
   const module = await import(esmUrl);
   const workerUrl = module.workerUrl;
@@ -443,11 +680,11 @@ const runPowFlow = async (
     const onProgress = (source, progress) => {
       if (source !== activeWorker) return;
       if (progress.phase === "chain" && spinIndex === -1) {
-        spinIndex = log("Computing hash chain...");
+        spinIndex = log(t("computing_hash_chain"));
         spinTimer = setInterval(() => {
-          let msg = "Computing hash chain...";
+          let msg = t("computing_hash_chain");
           if (attemptCount > 0) {
-            msg = "Screening hash (attempt " + attemptCount + ")...";
+            msg = t("screening_hash_attempt", { n: attemptCount });
           }
           const spinner =
             '<span class="yellow">' + spinChars[spinFrame++ % spinChars.length] + "</span>";
@@ -534,12 +771,12 @@ const runPowFlow = async (
     if (spinIndex !== -1) {
       const doneText =
         attemptCount > 0
-          ? "Screening hash... <span class=\"green\">done</span>"
-          : "Computing hash chain... <span class=\"green\">done</span>";
+          ? t("screening_hash_done", { done: doneMark() })
+          : t("computing_hash_chain_done", { done: doneMark() });
       update(spinIndex, doneText);
     }
 
-    log("Submitting commit...");
+    log(t("submitting_commit"));
     const commitBody = {
       ticketB64,
       rootB64: commitRes.result.rootB64,
@@ -549,7 +786,7 @@ const runPowFlow = async (
     if (turnToken) commitBody.token = turnToken;
     await postJson(apiPrefix + "/commit", commitBody);
 
-    log("Requesting challenge...");
+    log(t("requesting_challenge"));
     let state = await postJson(apiPrefix + "/challenge", {});
     if (
       !state ||
@@ -567,7 +804,7 @@ const runPowFlow = async (
       if (!Array.isArray(state.indices) || state.indices.length === 0) {
         throw new Error("Challenge Failed");
       }
-      verifyBaseMsg = "Verifying #" + round + " (" + state.indices.length + ")...";
+      verifyBaseMsg = t("verifying_batch", { round, count: state.indices.length });
       if (verifyLine === -1) {
         verifyLine = log(verifyBaseMsg);
         verifySpinTimer = setInterval(() => {
@@ -608,8 +845,8 @@ const runPowFlow = async (
       }
     }
     if (verifySpinTimer) clearInterval(verifySpinTimer);
-    if (verifyLine !== -1) update(verifyLine, "Verifying... <span class=\"green\">done</span>");
-    log("PoW... <span class=\"green\">done</span>");
+    if (verifyLine !== -1) update(verifyLine, t("verifying_done", { done: doneMark() }));
+    log(t("pow_done", { done: doneMark() }));
     return state;
   } finally {
     if (spinTimer) clearInterval(spinTimer);
@@ -678,9 +915,9 @@ export default async function runPow(
         const headers = { [H_TURN]: turnToken, [H_TICKET]: ticketB64 };
         if (embedded) {
           postAtomicMessage({ mode: "turn", turnToken, ticketB64, headers, query });
-          log("Access granted. You may close this window.");
+          log(t("access_granted_close"));
           setStatus(true);
-          document.title = "Done";
+          document.title = t("title_done");
           return;
         }
         const cookieValue = `1|t|${turnToken}|${ticketB64}`;
@@ -689,15 +926,15 @@ export default async function runPow(
           canUseCookie(C_NAME, cookieValue) &&
           setAtomicCookie(C_NAME, cookieValue, 5, cookiePath)
         ) {
-          log("Access granted. <span class=\"yellow\">Redirecting...</span>");
+          log(t("access_granted_redirecting", { redirect: yellowMark(t("redirecting")) }));
           setStatus(true);
-          document.title = "Redirecting";
+          document.title = t("title_redirecting");
           window.location.replace(target);
           return;
         }
-        log("Access granted. <span class=\"yellow\">Redirecting...</span>");
+        log(t("access_granted_redirecting", { redirect: yellowMark(t("redirecting")) }));
         setStatus(true);
-        document.title = "Redirecting";
+        document.title = t("title_redirecting");
         window.location.replace(addQuery(target, query));
         return;
       }
@@ -718,7 +955,7 @@ export default async function runPow(
       );
     } else {
       const turnToken = await runTurnstile(ticketB64, turnSiteKey);
-      log("Turnstile solved. Starting PoW...");
+      log(t("turnstile_solved_pow"));
       const state = await runPowFlow(
         apiPrefix,
         bindingB64,
@@ -737,9 +974,9 @@ export default async function runPow(
         const headers = { [H_TURN]: turnToken, [H_CONSUME]: consume };
         if (embedded) {
           postAtomicMessage({ mode: "combine", turnToken, consume, headers, query });
-          log("Access granted. You may close this window.");
+          log(t("access_granted_close"));
           setStatus(true);
-          document.title = "Done";
+          document.title = t("title_done");
           return;
         }
         const cookieValue = `1|c|${turnToken}|${consume}`;
@@ -748,30 +985,33 @@ export default async function runPow(
           canUseCookie(C_NAME, cookieValue) &&
           setAtomicCookie(C_NAME, cookieValue, 5, cookiePath)
         ) {
-          log("Access granted. <span class=\"yellow\">Redirecting...</span>");
+          log(t("access_granted_redirecting", { redirect: yellowMark(t("redirecting")) }));
           setStatus(true);
-          document.title = "Redirecting";
+          document.title = t("title_redirecting");
           window.location.replace(target);
           return;
         }
-        log("Access granted. <span class=\"yellow\">Redirecting...</span>");
+        log(t("access_granted_redirecting", { redirect: yellowMark(t("redirecting")) }));
         setStatus(true);
-        document.title = "Redirecting";
+        document.title = t("title_redirecting");
         window.location.replace(addQuery(target, query));
         return;
       }
     }
-    log("Access granted. <span class=\"yellow\">Redirecting...</span>");
+    log(t("access_granted_redirecting", { redirect: yellowMark(t("redirecting")) }));
     setStatus(true);
-    document.title = "Redirecting";
+    document.title = t("title_redirecting");
     window.location.replace(target);
   } catch (e) {
     if (e && e.message === "403") {
-      log("Session expired. Reloading...");
+      log(t("session_expired_reload"));
       setTimeout(() => window.location.reload(), 1000);
       return;
     }
-    log("ERROR: " + (e && e.message ? e.message : String(e)));
+    const raw = e && e.message ? e.message : String(e);
+    log(t("error_prefix", { message: localizeErrorMessage(raw) }));
     setStatus(false);
   }
 }
+
+export { resolveLocale, translate, getLocale, setLocale, t };
