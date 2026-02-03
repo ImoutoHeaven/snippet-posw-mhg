@@ -9,16 +9,17 @@ import { runInNewContext } from "node:vm";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-const entry = resolve(__dirname, "pow.js");
+const powEntry = resolve(__dirname, "pow.js");
+const powConfigEntry = resolve(__dirname, "pow-config.js");
 const templatePath = resolve(__dirname, "template.html");
 const outdir = resolve(__dirname, "dist");
-const outfile = resolve(outdir, "pow_snippet.js");
+const powOutfile = resolve(outdir, "pow_snippet.js");
+const powConfigOutfile = resolve(outdir, "pow_config_snippet.js");
 
 const extractConfigLiteral = (source) => {
-  const marker = "const CONFIG";
-  const idx = source.indexOf(marker);
-  if (idx === -1) return null;
-  const start = source.indexOf("[", idx);
+  const match = source.match(/^\s*const\s+CONFIG\s*=/m);
+  if (!match || match.index === undefined) return null;
+  const start = source.indexOf("[", match.index + match[0].length);
   if (start === -1) return null;
   let depth = 0;
   let inSingle = false;
@@ -170,11 +171,11 @@ const compileConfigEntry = (entry) => {
   return { hostRegex, pathRegex, config };
 };
 
-const buildCompiledConfig = async () => {
-  const source = await readFile(entry, "utf-8");
+const buildCompiledConfig = async (sourcePath) => {
+  const source = await readFile(sourcePath, "utf-8");
   const literal = extractConfigLiteral(source);
   if (!literal) {
-    throw new Error("CONFIG not found");
+    throw new Error(`CONFIG not found in ${sourcePath}`);
   }
   const config = runInNewContext(`(${literal})`);
   if (!Array.isArray(config)) {
@@ -230,54 +231,74 @@ console.log(
   )}% reduction)`
 );
 
-const compiledConfig = await buildCompiledConfig();
+const compiledConfig = await buildCompiledConfig(powConfigEntry);
 
 await mkdir(outdir, { recursive: true });
-await rm(outfile, { force: true });
+await rm(powOutfile, { force: true });
+await rm(powConfigOutfile, { force: true });
 
-await build({
-  entryPoints: [entry],
-  outfile,
-  bundle: true,
-  format: "esm",
-  target: "es2022",
-  platform: "neutral",
-  minify: true,
-  legalComments: "none",
-  charset: "ascii",
+const buildSnippet = async ({ entryPoints, outfile, define }) => {
+  await build({
+    entryPoints,
+    outfile,
+    bundle: true,
+    format: "esm",
+    target: "es2022",
+    platform: "neutral",
+    minify: true,
+    legalComments: "none",
+    charset: "ascii",
+    define,
+  });
+};
+
+const minifyAndCheck = async (path) => {
+  const built = await readFile(path, "utf-8");
+  const terserResult = await minifyJs(built, {
+    ecma: 2022,
+    module: true,
+    compress: {
+      passes: 3,
+      toplevel: true,
+      unsafe: true,
+      unsafe_arrows: true,
+      unsafe_comps: true,
+      unsafe_Function: true,
+      unsafe_math: true,
+      unsafe_methods: true,
+      unsafe_proto: true,
+      unsafe_regexp: true,
+      unsafe_undefined: true,
+      unsafe_symbols: true,
+    },
+    mangle: { toplevel: true },
+    format: { ascii_only: true },
+  });
+  if (terserResult && typeof terserResult.code === "string") {
+    await writeFile(path, terserResult.code);
+  }
+
+  const { size } = await stat(path);
+  const limit = 32 * 1024;
+  const status = size <= limit ? "OK" : "OVER";
+  console.log(`Built snippet: ${path} (${size} bytes, ${status} ${limit} bytes)`);
+  if (size > limit) process.exitCode = 1;
+};
+
+await buildSnippet({
+  entryPoints: [powConfigEntry],
+  outfile: powConfigOutfile,
   define: {
-    __HTML_TEMPLATE__: JSON.stringify(minifiedHtml),
     __COMPILED_CONFIG__: compiledConfig,
   },
 });
-
-const built = await readFile(outfile, "utf-8");
-const terserResult = await minifyJs(built, {
-  ecma: 2022,
-  module: true,
-  compress: {
-    passes: 3,
-    toplevel: true,
-    unsafe: true,
-    unsafe_arrows: true,
-    unsafe_comps: true,
-    unsafe_Function: true,
-    unsafe_math: true,
-    unsafe_methods: true,
-    unsafe_proto: true,
-    unsafe_regexp: true,
-    unsafe_undefined: true,
-    unsafe_symbols: true,
+await buildSnippet({
+  entryPoints: [powEntry],
+  outfile: powOutfile,
+  define: {
+    __HTML_TEMPLATE__: JSON.stringify(minifiedHtml),
   },
-  mangle: { toplevel: true },
-  format: { ascii_only: true },
 });
-if (terserResult && typeof terserResult.code === "string") {
-  await writeFile(outfile, terserResult.code);
-}
 
-const { size } = await stat(outfile);
-const limit = 32 * 1024;
-const status = size <= limit ? "OK" : "OVER";
-console.log(`Built snippet: ${outfile} (${size} bytes, ${status} ${limit} bytes)`);
-if (size > limit) process.exitCode = 1;
+await minifyAndCheck(powConfigOutfile);
+await minifyAndCheck(powOutfile);

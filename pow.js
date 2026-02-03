@@ -59,41 +59,14 @@ const DEFAULTS = {
     "https://cdn.jsdelivr.net/gh/ImoutoHeaven/snippet-posw@412f7fcc71c319b62a614e4252280f2bb3d7302b/glue.js",
 };
 
-const CONFIG = [
-  { pattern: "example.com/**", config: { POW_TOKEN: "replace-me", powcheck: true } },
-];
-
-const COMPILED_CONFIG = __COMPILED_CONFIG__.map((entry) => ({
-  hostRegex: entry.host ? new RegExp(entry.host.s, entry.host.f || "") : null,
-  pathRegex: entry.path ? new RegExp(entry.path.s, entry.path.f || "") : null,
-  config: entry.config || {},
-}));
 const POW_API_PREFIX = DEFAULTS.POW_API_PREFIX;
 const PROOF_COOKIE = "__Host-proof";
 const TURNSTILE_SITEVERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
-
-const pickConfigWithId = (hostname, path) => {
-  const host = typeof hostname === "string" ? hostname.toLowerCase() : "";
-  const requestPath = typeof path === "string" ? path : "";
-  if (!host) return null;
-  for (let i = 0; i < COMPILED_CONFIG.length; i++) {
-    const rule = COMPILED_CONFIG[i];
-    if (!rule || !rule.hostRegex) continue;
-    if (!rule.hostRegex.test(host)) continue;
-    if (rule.pathRegex && !rule.pathRegex.test(requestPath)) continue;
-    return { cfgId: i, config: rule.config || null };
-  }
-  return null;
-};
-
-const getConfigById = (cfgId) => {
-  if (cfgId === -1) return DEFAULTS;
-  if (!Number.isInteger(cfgId) || cfgId < 0 || cfgId >= COMPILED_CONFIG.length) {
-    return null;
-  }
-  const entry = COMPILED_CONFIG[cfgId];
-  return entry && entry.config ? entry.config : null;
-};
+const INNER_HEADER = "X-Pow-Inner";
+const INNER_MAC = "X-Pow-Inner-Mac";
+const CONFIG_SECRET = "replace-me";
+const isPlaceholderConfigSecret = (value) =>
+  typeof value !== "string" || !value.trim() || value === "replace-me";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -137,6 +110,37 @@ const base64UrlDecodeToBytes = (b64u) => {
   } catch {
     return null;
   }
+};
+
+const readInnerPayload = async (request) => {
+  if (isPlaceholderConfigSecret(CONFIG_SECRET)) return null;
+  const payload = request.headers.get(INNER_HEADER) || "";
+  const mac = request.headers.get(INNER_MAC) || "";
+  if (!payload || !mac) return null;
+  const expected = await hmacSha256Base64UrlNoPad(CONFIG_SECRET, payload);
+  if (!timingSafeEqual(expected, mac)) return null;
+  const bytes = base64UrlDecodeToBytes(payload);
+  if (!bytes) return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(decoder.decode(bytes));
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object") return null;
+  if (parsed.v !== 1) return null;
+  const id = Number.isInteger(parsed.id) ? parsed.id : null;
+  const config = parsed.c && typeof parsed.c === "object" ? parsed.c : null;
+  const derived = parsed.d && typeof parsed.d === "object" ? parsed.d : null;
+  if (id === null || !config || !derived) return null;
+  return { id, c: config, d: derived };
+};
+
+const stripInnerHeaders = (request) => {
+  const headers = new Headers(request.headers);
+  headers.delete(INNER_HEADER);
+  headers.delete(INNER_MAC);
+  return new Request(request, { headers });
 };
 
 const BASE64URL_RE = /^[A-Za-z0-9_-]+$/;
@@ -1138,7 +1142,7 @@ const makeProofMac = async (powSecret, ticketB64, iat, last, n, m) =>
 const computePathHash = async (canonicalPath) =>
   base64UrlEncodeNoPad(await sha256Bytes(canonicalPath));
 
-const getPowBindingValuesWithPathHash = async (request, pathHash, config) => {
+const getPowBindingValuesWithPathHash = async (request, pathHash, config, derived) => {
   const bindPath = config.POW_BIND_PATH !== false;
   const bindIp = config.POW_BIND_IPRANGE !== false;
   const bindCountry = config.POW_BIND_COUNTRY === true;
@@ -1147,32 +1151,44 @@ const getPowBindingValuesWithPathHash = async (request, pathHash, config) => {
   const normalizedPathHash =
     bindPath && typeof pathHash === "string" && pathHash ? pathHash : bindPath ? "" : "any";
   if (bindPath && !normalizedPathHash) return null;
-  const ipScope = bindIp ? computeIpScope(getClientIP(request), config) : "any";
-  const cf = getRequestCf(request);
-  const country = bindCountry ? normalizeCountry(cf && cf.country) : "any";
-  const asn = bindAsn ? normalizeAsn(cf && cf.asn) : "any";
-  let tlsFingerprint = "any";
-  if (bindTls) {
-    tlsFingerprint = await buildTlsFingerprintHash(request);
-    if (!tlsFingerprint) {
-      return null;
-    }
-  }
-  return { pathHash: normalizedPathHash, ipScope, country, asn, tlsFingerprint };
+  const source = derived && typeof derived === "object" ? derived : null;
+  const ipScope = bindIp && source && typeof source.ipScope === "string" ? source.ipScope : "";
+  if (bindIp && !ipScope) return null;
+  const country =
+    bindCountry && source && typeof source.country === "string" ? source.country : "";
+  if (bindCountry && !country) return null;
+  const asn = bindAsn && source && typeof source.asn === "string" ? source.asn : "";
+  if (bindAsn && !asn) return null;
+  const tlsFingerprint =
+    bindTls && source && typeof source.tlsFingerprint === "string"
+      ? source.tlsFingerprint
+      : "";
+  if (bindTls && !tlsFingerprint) return null;
+  return {
+    pathHash: normalizedPathHash,
+    ipScope: bindIp ? ipScope : "any",
+    country: bindCountry ? country : "any",
+    asn: bindAsn ? asn : "any",
+    tlsFingerprint: bindTls ? tlsFingerprint : "any",
+  };
 };
 
-const getPowBindingValues = async (request, canonicalPath, config) => {
+const getPowBindingValues = async (request, canonicalPath, config, derived) => {
   const bindPath = config.POW_BIND_PATH !== false;
   const pathHash = bindPath ? await computePathHash(canonicalPath) : "any";
-  return getPowBindingValuesWithPathHash(request, pathHash, config);
+  return getPowBindingValuesWithPathHash(request, pathHash, config, derived);
 };
 
-const loadConfigFromTicket = (ticket) => {
-  const baseConfig = getConfigById(ticket.cfgId);
+const loadConfigFromInner = (inner) => {
+  if (!inner || typeof inner !== "object") return null;
+  const baseConfig = inner.c && typeof inner.c === "object" ? inner.c : null;
   if (!baseConfig) return null;
   const config = { ...DEFAULTS, ...baseConfig };
-  return { config, powSecret: getPowSecret(config) };
+  return { config, powSecret: getPowSecret(config), derived: inner.d, cfgId: inner.id };
 };
+
+const ticketMatchesInner = (ticket, cfgId) =>
+  Boolean(ticket && Number.isInteger(cfgId) && ticket.cfgId === cfgId);
 
 const loadCommitFromRequest = (request) => {
   const cookies = parseCookieHeader(request.headers.get("Cookie"));
@@ -1239,6 +1255,7 @@ const loadAtomicTicket = async (
   canonicalPath,
   config,
   powSecret,
+  derived,
   cfgId,
   nowSeconds
 ) => {
@@ -1247,7 +1264,7 @@ const loadAtomicTicket = async (
   if (ticket.cfgId !== cfgId) return null;
   if (!Number.isFinite(ticket.L) || ticket.L <= 0) return null;
   if (!validateTicket(ticket, config, nowSeconds)) return null;
-  const bindingValues = await getPowBindingValues(request, canonicalPath, config);
+  const bindingValues = await getPowBindingValues(request, canonicalPath, config, derived);
   if (!bindingValues) return null;
   if (!(await verifyTicketMac(ticket, url, bindingValues, powSecret))) return null;
   return ticket;
@@ -1359,6 +1376,7 @@ const verifyProofCookie = async (
   nowSeconds,
   config,
   powSecret,
+  derived,
   cfgId,
   requiredMask
 ) => {
@@ -1374,7 +1392,7 @@ const verifyProofCookie = async (
   if (!Number.isFinite(ticket.L) || ticket.L <= 0) return null;
   if (ticket.cfgId !== cfgId) return null;
   if (proof.last > ticket.e) return null;
-  const bindingValues = await getPowBindingValues(request, canonicalPath, config);
+  const bindingValues = await getPowBindingValues(request, canonicalPath, config, derived);
   if (!bindingValues) return null;
   if (!(await verifyTicketMac(ticket, url, bindingValues, powSecret))) return null;
   const expectedProofMac = await makeProofMac(
@@ -1506,6 +1524,7 @@ const respondPowChallengeHtml = async (
   nowSeconds,
   config,
   powSecret,
+  derived,
   cfgId,
   requirements
 ) => {
@@ -1529,7 +1548,7 @@ const respondPowChallengeHtml = async (
   const segSpec = needPow
     ? parseSegmentLenSpec(config.POW_SEGMENT_LEN, DEFAULTS.POW_SEGMENT_LEN)
     : { mode: "fixed", fixed: 1 };
-  const bindingValues = await getPowBindingValues(request, canonicalPath, config);
+  const bindingValues = await getPowBindingValues(request, canonicalPath, config, derived);
   if (!bindingValues) return deny();
   const { pathHash, ipScope, country, asn, tlsFingerprint } = bindingValues;
   const powVersion = getPowVersion(config);
@@ -1788,7 +1807,9 @@ const sampleIndicesDeterministicV2 = ({
   return result;
 };
 
-const handlePowCommit = async (request, url, nowSeconds) => {
+const handlePowCommit = async (request, url, nowSeconds, innerCtx) => {
+  if (!innerCtx) return S(500);
+  const { config, powSecret, derived, cfgId } = innerCtx;
   const body = await readJsonBody(request);
   if (!body || typeof body !== "object") {
     return S(400);
@@ -1808,9 +1829,7 @@ const handlePowCommit = async (request, url, nowSeconds) => {
   }
   const ticket = parsePowTicket(ticketB64);
   if (!ticket) return deny();
-  const ctx = loadConfigFromTicket(ticket);
-  if (!ctx) return deny();
-  const { config, powSecret } = ctx;
+  if (!ticketMatchesInner(ticket, cfgId)) return deny();
   if (!powSecret) return S(500);
   if (config.powcheck !== true) return S(500);
   const needTurn = config.turncheck === true;
@@ -1826,7 +1845,8 @@ const handlePowCommit = async (request, url, nowSeconds) => {
   const bindingValues = await getPowBindingValuesWithPathHash(
     request,
     normalizedPathHash,
-    config
+    config,
+    derived
   );
   if (!bindingValues) return deny();
   if (!(await verifyTicketMac(ticket, url, bindingValues, powSecret))) return deny();
@@ -1854,7 +1874,9 @@ const handlePowCommit = async (request, url, nowSeconds) => {
   return new Response(null, { status: 200, headers });
 };
 
-const handleTurn = async (request, url, nowSeconds) => {
+const handleTurn = async (request, url, nowSeconds, innerCtx) => {
+  if (!innerCtx) return S(500);
+  const { config, powSecret, derived, cfgId } = innerCtx;
   const body = await readJsonBody(request);
   if (!body || typeof body !== "object") return S(400);
   const ticketB64 = typeof body.ticketB64 === "string" ? body.ticketB64 : "";
@@ -1866,9 +1888,7 @@ const handleTurn = async (request, url, nowSeconds) => {
 
   const ticket = parsePowTicket(ticketB64);
   if (!ticket) return deny();
-  const ctx = loadConfigFromTicket(ticket);
-  if (!ctx) return deny();
-  const { config, powSecret } = ctx;
+  if (!ticketMatchesInner(ticket, cfgId)) return deny();
   if (!powSecret) return S(500);
   const needPow = config.powcheck === true;
   const needTurn = config.turncheck === true;
@@ -1887,7 +1907,8 @@ const handleTurn = async (request, url, nowSeconds) => {
   const bindingValues = await getPowBindingValuesWithPathHash(
     request,
     normalizedPathHash,
-    config
+    config,
+    derived
   );
   if (!bindingValues) return deny();
   if (!(await verifyTicketMac(ticket, url, bindingValues, powSecret))) return deny();
@@ -1913,13 +1934,13 @@ const handleTurn = async (request, url, nowSeconds) => {
   return new Response(null, { status: 200, headers });
 };
 
-const handlePowChallenge = async (request, url, nowSeconds) => {
+const handlePowChallenge = async (request, url, nowSeconds, innerCtx) => {
+  if (!innerCtx) return S(500);
+  const { config, powSecret, derived, cfgId } = innerCtx;
   const commitCtx = loadCommitFromRequest(request);
   if (!commitCtx) return deny();
   const { commit, ticket } = commitCtx;
-  const ctx = loadConfigFromTicket(ticket);
-  if (!ctx) return deny();
-  const { config, powSecret } = ctx;
+  if (!ticketMatchesInner(ticket, cfgId)) return deny();
   if (!powSecret) return S(500);
   if (config.powcheck !== true) return S(500);
   if (!(await verifyCommit(commit, ticket, config, powSecret, nowSeconds))) return deny();
@@ -1927,7 +1948,8 @@ const handlePowChallenge = async (request, url, nowSeconds) => {
   const bindingValues = await getPowBindingValuesWithPathHash(
     request,
     commit.pathHash,
-    config
+    config,
+    derived
   );
   if (!bindingValues) return deny();
   if (!(await verifyTicketMac(ticket, url, bindingValues, powSecret))) return deny();
@@ -1951,13 +1973,13 @@ const handlePowChallenge = async (request, url, nowSeconds) => {
   return J(batchResp);
 };
 
-const handlePowOpen = async (request, url, nowSeconds) => {
+const handlePowOpen = async (request, url, nowSeconds, innerCtx) => {
+  if (!innerCtx) return S(500);
+  const { config, powSecret, derived, cfgId } = innerCtx;
   const commitCtx = loadCommitFromRequest(request);
   if (!commitCtx) return deny();
   const { commit, ticket } = commitCtx;
-  const ctx = loadConfigFromTicket(ticket);
-  if (!ctx) return deny();
-  const { config, powSecret } = ctx;
+  if (!ticketMatchesInner(ticket, cfgId)) return deny();
   if (!powSecret) return S(500);
   if (config.powcheck !== true) return S(500);
   const needTurn = config.turncheck === true;
@@ -2109,7 +2131,8 @@ const handlePowOpen = async (request, url, nowSeconds) => {
   const bindingValues = await getPowBindingValuesWithPathHash(
     request,
     commit.pathHash,
-    config
+    config,
+    derived
   );
   if (!bindingValues) return deny();
   const bindingString = await verifyTicketMac(ticket, url, bindingValues, powSecret);
@@ -2250,7 +2273,7 @@ const handlePowOpen = async (request, url, nowSeconds) => {
   return J({ done: true }, 200, headers);
 };
 
-const handlePowApi = async (request, url, nowSeconds) => {
+const handlePowApi = async (request, url, nowSeconds, innerCtx) => {
   if (request.method !== "POST") {
     return S(405);
   }
@@ -2260,49 +2283,52 @@ const handlePowApi = async (request, url, nowSeconds) => {
   }
   const action = path.slice(POW_API_PREFIX.length);
   if (action === "/commit") {
-    return handlePowCommit(request, url, nowSeconds);
+    return handlePowCommit(request, url, nowSeconds, innerCtx);
   }
   if (action === "/challenge") {
-    return handlePowChallenge(request, url, nowSeconds);
+    return handlePowChallenge(request, url, nowSeconds, innerCtx);
   }
   if (action === "/open") {
-    return handlePowOpen(request, url, nowSeconds);
+    return handlePowOpen(request, url, nowSeconds, innerCtx);
   }
   if (action === "/turn") {
-    return handleTurn(request, url, nowSeconds);
+    return handleTurn(request, url, nowSeconds, innerCtx);
   }
   return S(404);
 };
 
+export { hmacSha256Base64UrlNoPad };
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
-    const hostname = url.hostname;
+    const nowSeconds = Math.floor(Date.now() / 1000);
+
+    const requestPath = normalizePath(url.pathname);
+    if (!requestPath) return S(400);
+
+    const inner = await readInnerPayload(request);
+    if (!inner) return S(500);
+    const innerCtx = loadConfigFromInner(inner);
+    if (!innerCtx) return S(500);
+    const { config, powSecret, derived, cfgId } = innerCtx;
 
     if (request.method === "OPTIONS") {
       return S(204);
     }
 
-    const nowSeconds = Math.floor(Date.now() / 1000);
-
-    const requestPath = normalizePath(url.pathname);
-    if (!requestPath) return S(400);
     if (requestPath.startsWith(`${POW_API_PREFIX}/`)) {
-      return handlePowApi(request, url, nowSeconds);
+      return handlePowApi(request, url, nowSeconds, innerCtx);
     }
-
-    const selected = pickConfigWithId(hostname, requestPath);
-    const cfgId = selected ? selected.cfgId : -1;
-    const config = selected ? { ...DEFAULTS, ...selected.config } : DEFAULTS;
 
     const needPow = config.powcheck === true;
     const needTurn = config.turncheck === true;
     if (!needPow && !needTurn) {
-      return fetch(request);
+      return fetch(stripInnerHeaders(request));
     }
     const bypass = resolveBypassRequest(request, url, config);
     if (bypass.bypass) {
-      return fetch(bypass.forwardRequest);
+      return fetch(stripInnerHeaders(bypass.forwardRequest));
     }
 
     const bindRes = resolveBindPathForPow(request, url, requestPath, config);
@@ -2312,7 +2338,6 @@ export default {
       return S(500);
     }
 
-    const powSecret = getPowSecret(config);
     if (!powSecret) return S(500);
     if (needPow && !config.POW_ESM_URL) return S(500);
     if (needTurn) {
@@ -2332,13 +2357,14 @@ export default {
           nowSeconds,
           config,
           powSecret,
+          derived,
           cfgId,
           requiredMask
         )
       : null;
 
     if (proofMeta) {
-      let response = await fetch(bindRes.forwardRequest);
+      let response = await fetch(stripInnerHeaders(bindRes.forwardRequest));
       response = await maybeRenewProof(
         request,
         url,
@@ -2365,6 +2391,7 @@ export default {
             nowSeconds,
             config,
             powSecret,
+            derived,
             cfgId,
             { needPow, needTurn }
           );
@@ -2394,6 +2421,7 @@ export default {
             bindRes.canonicalPath,
             config,
             powSecret,
+            derived,
             cfgId,
             nowSeconds
           );
@@ -2401,7 +2429,7 @@ export default {
           if (!(await verifyTurnstileForTicket(baseRequest, turnSecret, turnToken, ticket))) {
             return await fail(deny());
           }
-          const response = await fetch(atomic.forwardRequest);
+          const response = await fetch(stripInnerHeaders(atomic.forwardRequest));
           return atomic.fromCookie ? withClearedCookie(response, atomic.cookieName) : response;
         }
         const ticket = await loadAtomicTicket(
@@ -2411,6 +2439,7 @@ export default {
           bindRes.canonicalPath,
           config,
           powSecret,
+          derived,
           cfgId,
           nowSeconds
         );
@@ -2418,7 +2447,7 @@ export default {
         if (!(await verifyTurnstileForTicket(baseRequest, turnSecret, turnToken, ticket))) {
           return await fail(deny());
         }
-        const response = await fetch(atomic.forwardRequest);
+        const response = await fetch(stripInnerHeaders(atomic.forwardRequest));
         return atomic.fromCookie ? withClearedCookie(response, atomic.cookieName) : response;
       }
     }
@@ -2435,6 +2464,7 @@ export default {
       nowSeconds,
       config,
       powSecret,
+      derived,
       cfgId,
       { needPow, needTurn }
     );
