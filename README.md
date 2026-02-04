@@ -117,6 +117,56 @@ Each `CONFIG` entry looks like:
 | `stripInnerAuthQuery` | `boolean` | `false` | Remove the bypass query param before proxying (only when bypass matched). |
 | `stripInnerAuthHeader` | `boolean` | `false` | Remove the bypass header before proxying (only when bypass matched). |
 
+### `when` conditions
+
+Each `CONFIG` entry may include an optional `when` field to gate the rule on request properties. Supported fields include `country`, `asn`, `ip`, `method`, `ua`, `path`, `tls`, `header`, `cookie`, and `query`. The `when` expression supports boolean logic and nesting:
+
+- `and`: array of conditions, all must match
+- `or`: array of conditions, any may match
+- `not`: single condition to negate
+- multiple keys inside the same condition object are an implicit AND (all keys must match)
+
+String matching semantics:
+
+- `ua`: string values use case-insensitive substring match; regex values are tested as-is
+- `path`: string values use case-sensitive exact match; regex values are tested as-is
+- `country`, `asn`, `method`: string values use case-insensitive exact match
+
+Arrays and regex:
+
+- `ua`, `path`, `header`, `cookie`, `query` accept a string, regex, or array of those; arrays match if any entry matches
+- `query` values are multi-valued; when present, any value that matches is accepted
+
+Existence checks:
+
+- `header`, `cookie`, `query` support `{ exists: true }` or `{ exists: false }` on a key to test presence
+
+IP matching:
+
+- `ip` accepts a single IP, CIDR, or an array of those
+- CIDR supports IPv4 and IPv6
+
+Examples:
+
+```js
+{ pattern: "example.com/**", when: {
+  and: [
+    { ua: "mobile" },
+    { header: { "x-debug": { exists: false } } },
+    { ip: ["203.0.113.0/24", "2001:db8::/32"] },
+  ],
+}, config: { powcheck: true } }
+```
+
+```js
+{ pattern: "example.com/**", when: {
+  or: [
+    { path: "/healthz" },
+    { query: { "probe": { exists: true } } },
+  ],
+}, config: { turncheck: true } }
+```
+
 ## Proof Cookie (`__Host-proof`)
 
 The gate issues a single proof cookie with a mode mask:
