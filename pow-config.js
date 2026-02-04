@@ -60,14 +60,34 @@ const DEFAULTS = {
     "https://cdn.jsdelivr.net/gh/ImoutoHeaven/snippet-posw@412f7fcc71c319b62a614e4252280f2bb3d7302b/glue.js",
 };
 
-let COMPILED_CONFIG = (
-  typeof __COMPILED_CONFIG__ === "undefined" ? [] : __COMPILED_CONFIG__
-).map((entry) => ({
-  hostRegex: entry.host ? new RegExp(entry.host.s, entry.host.f || "") : null,
-  pathRegex: entry.path ? new RegExp(entry.path.s, entry.path.f || "") : null,
+const normalizeCompiledEntry = (entry) => ({
+  hostRegex:
+    entry.hostRegex instanceof RegExp
+      ? entry.hostRegex
+      : entry.host
+        ? new RegExp(entry.host.s, entry.host.f || "")
+        : null,
+  pathRegex:
+    entry.pathRegex instanceof RegExp
+      ? entry.pathRegex
+      : entry.path
+        ? new RegExp(entry.path.s, entry.path.f || "")
+        : null,
+  hostType: entry.hostType,
+  hostExact: entry.hostExact,
+  hostLabels: entry.hostLabels,
+  hostLabelCount: entry.hostLabelCount,
+  pathType: entry.pathType,
+  pathExact: entry.pathExact,
+  pathPrefix: entry.pathPrefix,
+  whenNeeds: entry.whenNeeds,
   when: entry.when ?? null,
   config: entry.config || {},
-}));
+});
+
+let COMPILED_CONFIG = (
+  typeof __COMPILED_CONFIG__ === "undefined" ? [] : __COMPILED_CONFIG__
+).map(normalizeCompiledEntry);
 
 const INNER_HEADER = "X-Pow-Inner";
 const INNER_MAC = "X-Pow-Inner-Mac";
@@ -620,7 +640,7 @@ const normalizeTlsFingerprint = (value) => {
   return value.trim();
 };
 
-const buildEvalContext = (request, url, hostname, path) => {
+const buildEvalContext = (request, url, hostname, path, whenNeeds) => {
   const headers = request && request.headers ? request.headers : new Headers();
   const cf = getRequestCf(request);
   const ua = headers.get("User-Agent") || "";
@@ -631,7 +651,8 @@ const buildEvalContext = (request, url, hostname, path) => {
   const tls = Boolean(
     cf && cf.tlsClientExtensionsSha1 && cf.tlsClientCiphersSha1
   );
-  const cookie = parseCookieHeader(headers.get("Cookie"));
+  const needsCookie = !whenNeeds || whenNeeds.cookie === true;
+  const cookie = needsCookie ? parseCookieHeader(headers.get("Cookie")) : null;
   const query = url && url.searchParams ? url.searchParams : new URLSearchParams();
   const host = typeof hostname === "string" ? hostname : "";
   return {
@@ -647,6 +668,54 @@ const buildEvalContext = (request, url, hostname, path) => {
     cookie,
     query,
   };
+};
+
+const matchHostFast = (host, rule) => {
+  if (!host || !rule) return false;
+  if (rule.hostType === "exact") {
+    if (typeof rule.hostExact === "string") return host === rule.hostExact;
+    if (rule.hostRegex) return rule.hostRegex.test(host);
+    return false;
+  }
+  if (rule.hostType === "wildcard") {
+    if (!Array.isArray(rule.hostLabels)) {
+      if (rule.hostRegex) return rule.hostRegex.test(host);
+      return false;
+    }
+    const labels = host.split(".");
+    const expectedCount =
+      typeof rule.hostLabelCount === "number" ? rule.hostLabelCount : rule.hostLabels.length;
+    if (labels.length !== expectedCount) return false;
+    for (let i = 0; i < expectedCount; i++) {
+      const expected = rule.hostLabels[i];
+      if (expected === "*") continue;
+      if (labels[i] !== expected) return false;
+    }
+    return true;
+  }
+  if (rule.hostRegex) return rule.hostRegex.test(host);
+  return false;
+};
+
+const matchPathFast = (path, rule) => {
+  if (!rule) return false;
+  if (rule.pathType === "exact") {
+    if (typeof rule.pathExact === "string") return path === rule.pathExact;
+    if (rule.pathRegex) return rule.pathRegex.test(path);
+    return false;
+  }
+  if (rule.pathType === "prefix") {
+    if (typeof rule.pathPrefix !== "string") {
+      if (rule.pathRegex) return rule.pathRegex.test(path);
+      return false;
+    }
+    if (rule.pathPrefix === "/") {
+      return path.startsWith("/") || (rule.pathRegex ? rule.pathRegex.test(path) : false);
+    }
+    return path === rule.pathPrefix || path.startsWith(`${rule.pathPrefix}/`);
+  }
+  if (rule.pathRegex) return rule.pathRegex.test(path);
+  return false;
 };
 
 const buildTlsFingerprintHash = async (request) => {
@@ -875,11 +944,18 @@ const pickConfigWithId = (request, url, hostname, path) => {
   let context = null;
   for (let i = 0; i < COMPILED_CONFIG.length; i++) {
     const rule = COMPILED_CONFIG[i];
-    if (!rule || !rule.hostRegex) continue;
-    if (!rule.hostRegex.test(host)) continue;
-    if (rule.pathRegex && !rule.pathRegex.test(requestPath)) continue;
+    if (!rule) continue;
+    if (!matchHostFast(host, rule)) continue;
+    if (rule.pathRegex || rule.pathType) {
+      if (!matchPathFast(requestPath, rule)) continue;
+    }
     if (rule.when) {
-      if (!context) context = buildEvalContext(request, url, host, requestPath);
+      const needsCookie = !rule.whenNeeds || rule.whenNeeds.cookie === true;
+      if (!context) {
+        context = buildEvalContext(request, url, host, requestPath, rule.whenNeeds);
+      } else if (needsCookie && context.cookie === null) {
+        context.cookie = parseCookieHeader(context.header.get("Cookie"));
+      }
       if (!evaluateCondition(rule.when, context)) continue;
     }
     return { cfgId: i, config: rule.config || null };
@@ -889,7 +965,7 @@ const pickConfigWithId = (request, url, hostname, path) => {
 
 const setCompiledConfigForTest = (compiled) => {
   const previous = COMPILED_CONFIG;
-  COMPILED_CONFIG = Array.isArray(compiled) ? compiled : [];
+  COMPILED_CONFIG = Array.isArray(compiled) ? compiled.map(normalizeCompiledEntry) : [];
   return () => {
     COMPILED_CONFIG = previous;
   };

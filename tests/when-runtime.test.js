@@ -146,3 +146,185 @@ test("pickConfigWithId filters configs by when", () => {
     restore();
   }
 });
+
+test("pickConfigWithId uses matcher metadata without changing results", () => {
+  const { __test } = powConfig;
+  assert.equal(typeof __test?.setCompiledConfigForTest, "function");
+  assert.equal(typeof __test?.pickConfigWithId, "function");
+  const compiled = [
+    {
+      host: { s: "^example\\.com$", f: "" },
+      path: { s: "^/foo(?:/.*)?$", f: "" },
+      hostType: "exact",
+      hostExact: "example.com",
+      pathType: "prefix",
+      pathPrefix: "/foo",
+      when: { ua: "bot" },
+      whenNeeds: { ua: true },
+      config: { powcheck: true },
+    },
+    {
+      host: { s: "^[^.]*\\.example\\.com$", f: "" },
+      path: { s: "^/bar$", f: "" },
+      hostType: "wildcard",
+      hostLabels: ["*", "example", "com"],
+      hostLabelCount: 3,
+      pathType: "exact",
+      pathExact: "/bar",
+      when: null,
+      config: { turncheck: true },
+    },
+  ];
+  const restore = __test.setCompiledConfigForTest(compiled);
+  try {
+    const request0 = new Request("https://example.com/foo", {
+      headers: { "user-agent": "bot" },
+    });
+    const url0 = new URL(request0.url);
+    const selected0 = __test.pickConfigWithId(
+      request0,
+      url0,
+      url0.hostname,
+      url0.pathname
+    );
+    assert.equal(selected0?.cfgId, 0);
+
+    const request1 = new Request("https://a.example.com/bar", {
+      headers: { "user-agent": "browser" },
+    });
+    const url1 = new URL(request1.url);
+    const selected1 = __test.pickConfigWithId(
+      request1,
+      url1,
+      url1.hostname,
+      url1.pathname
+    );
+    assert.equal(selected1?.cfgId, 1);
+  } finally {
+    restore();
+  }
+});
+
+test("pickConfigWithId matches cookie when whenNeeds is missing", () => {
+  const { __test } = powConfig;
+  assert.equal(typeof __test?.setCompiledConfigForTest, "function");
+  assert.equal(typeof __test?.pickConfigWithId, "function");
+  const compiled = [
+    {
+      host: { s: "^example\\.com$", f: "" },
+      path: { s: "^/foo$", f: "" },
+      hostType: "exact",
+      hostExact: "example.com",
+      pathType: "exact",
+      pathExact: "/foo",
+      when: { cookie: { session: "abc" } },
+      config: { powcheck: true },
+    },
+  ];
+  const restore = __test.setCompiledConfigForTest(compiled);
+  try {
+    const request = new Request("https://example.com/foo", {
+      headers: { cookie: "session=abc" },
+    });
+    const url = new URL(request.url);
+    const selected = __test.pickConfigWithId(request, url, url.hostname, url.pathname);
+    assert.equal(selected?.cfgId, 0);
+  } finally {
+    restore();
+  }
+});
+
+test("pickConfigWithId parses cookie for later rules", () => {
+  const { __test } = powConfig;
+  assert.equal(typeof __test?.setCompiledConfigForTest, "function");
+  assert.equal(typeof __test?.pickConfigWithId, "function");
+  const compiled = [
+    {
+      host: { s: "^example\\.com$", f: "" },
+      path: { s: "^/foo$", f: "" },
+      hostType: "exact",
+      hostExact: "example.com",
+      pathType: "exact",
+      pathExact: "/foo",
+      when: { ua: "bot" },
+      whenNeeds: { ua: true },
+      config: { id: "ua" },
+    },
+    {
+      host: { s: "^example\\.com$", f: "" },
+      path: { s: "^/foo$", f: "" },
+      hostType: "exact",
+      hostExact: "example.com",
+      pathType: "exact",
+      pathExact: "/foo",
+      when: { cookie: { session: "abc" } },
+      whenNeeds: { cookie: true },
+      config: { id: "cookie" },
+    },
+  ];
+  const restore = __test.setCompiledConfigForTest(compiled);
+  try {
+    const request = new Request("https://example.com/foo", {
+      headers: { "user-agent": "browser", cookie: "session=abc" },
+    });
+    const url = new URL(request.url);
+    const selected = __test.pickConfigWithId(request, url, url.hostname, url.pathname);
+    assert.equal(selected?.config?.id, "cookie");
+  } finally {
+    restore();
+  }
+});
+
+test("pickConfigWithId matches prefix root path", () => {
+  const { __test } = powConfig;
+  assert.equal(typeof __test?.setCompiledConfigForTest, "function");
+  assert.equal(typeof __test?.pickConfigWithId, "function");
+  const compiled = [
+    {
+      host: { s: "^example\\.com$", f: "" },
+      path: { s: "^/(?:.*)?$", f: "" },
+      hostType: "exact",
+      hostExact: "example.com",
+      pathType: "prefix",
+      pathPrefix: "/",
+      when: null,
+      config: { turncheck: true },
+    },
+  ];
+  const restore = __test.setCompiledConfigForTest(compiled);
+  try {
+    const request = new Request("https://example.com/foo");
+    const url = new URL(request.url);
+    const selected = __test.pickConfigWithId(request, url, url.hostname, url.pathname);
+    assert.equal(selected?.cfgId, 0);
+  } finally {
+    restore();
+  }
+});
+
+test("pickConfigWithId falls back to regex when metadata missing", () => {
+  const { __test } = powConfig;
+  assert.equal(typeof __test?.setCompiledConfigForTest, "function");
+  assert.equal(typeof __test?.pickConfigWithId, "function");
+  const compiled = [
+    {
+      host: { s: "^example\\.com$", f: "" },
+      path: { s: "^/foo$", f: "" },
+      hostType: "exact",
+      hostExact: null,
+      pathType: "exact",
+      pathExact: null,
+      when: null,
+      config: { powcheck: true },
+    },
+  ];
+  const restore = __test.setCompiledConfigForTest(compiled);
+  try {
+    const request = new Request("https://example.com/foo");
+    const url = new URL(request.url);
+    const selected = __test.pickConfigWithId(request, url, url.hostname, url.pathname);
+    assert.equal(selected?.cfgId, 0);
+  } finally {
+    restore();
+  }
+});
