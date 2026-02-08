@@ -72,6 +72,8 @@ const base64UrlDecode = (value) => {
   }
 };
 
+const encodeAtomicCookie = (value) => encodeURIComponent(value);
+
 const assertExpireWindow = (expireHeader) => {
   const expire = Number.parseInt(expireHeader, 10);
   assert.ok(Number.isSafeInteger(expire), "expire is integer seconds");
@@ -80,6 +82,14 @@ const assertExpireWindow = (expireHeader) => {
     expire >= now && expire <= now + 3,
     "expire within expected window"
   );
+};
+
+const assertPayloadSections = (parsed) => {
+  assert.ok(parsed && parsed.s && typeof parsed.s === "object", "payload includes s section");
+  assert.ok(parsed.s.nav && typeof parsed.s.nav === "object");
+  assert.ok(parsed.s.bypass && typeof parsed.s.bypass === "object");
+  assert.ok(parsed.s.bind && typeof parsed.s.bind === "object");
+  assert.ok(parsed.s.atomic && typeof parsed.s.atomic === "object");
 };
 
 const readInnerPayload = (headers) => {
@@ -204,6 +214,7 @@ test("pow-config injects signed header", async () => {
     const parsed = JSON.parse(decoded);
     assert.equal(parsed.v, 1);
     assert.equal(parsed.id, 0);
+    assertPayloadSections(parsed);
 
     assertExpireWindow(expireHeader);
 
@@ -264,6 +275,7 @@ test("pow-config injects chunked inner headers when payload is large", async () 
     assert.equal(parsed.v, 1);
     assert.equal(parsed.id, 0);
     assert.ok(parsed.c && typeof parsed.c.POW_GLUE_URL === "string");
+    assertPayloadSections(parsed);
 
     assertExpireWindow(expireHeader);
 
@@ -598,6 +610,278 @@ test("pow-config normalizes range string POW_SEGMENT_LEN for pow.js", async () =
       })
     );
     assert.equal(powRes.status, 204);
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreGlobals();
+  }
+});
+
+test("pow-config rejects oversized atomic snapshot with 431 and empty body", async () => {
+  const restoreGlobals = ensureGlobals();
+  const modulePath = await buildConfigModule("config-secret");
+  const mod = await import(`${pathToFileURL(modulePath).href}?v=${Date.now()}`);
+  const handler = mod.default.fetch;
+  let forwarded = null;
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async (request) => {
+      forwarded = request;
+      return new Response("ok", { status: 200 });
+    };
+
+    const req = new Request(`https://example.com/protected?__ts=${"a".repeat(5000)}`, {
+      headers: {
+        "CF-Connecting-IP": "1.2.3.4",
+      },
+    });
+    const res = await handler(req);
+    assert.equal(res.status, 431);
+    assert.equal(forwarded, null);
+    assert.equal(await res.text(), "");
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreGlobals();
+  }
+});
+
+test("pow-config rejects invalid atomic format with 400 and empty body", async () => {
+  const restoreGlobals = ensureGlobals();
+  const modulePath = await buildConfigModule("config-secret");
+  const mod = await import(`${pathToFileURL(modulePath).href}?v=${Date.now()}`);
+  const handler = mod.default.fetch;
+  let forwarded = null;
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async (request) => {
+      forwarded = request;
+      return new Response("ok", { status: 200 });
+    };
+
+    const req = new Request("https://example.com/protected?__tt=bad*ticket", {
+      headers: {
+        "CF-Connecting-IP": "1.2.3.4",
+      },
+    });
+    const res = await handler(req);
+    assert.equal(res.status, 400);
+    assert.equal(forwarded, null);
+    assert.equal(await res.text(), "");
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreGlobals();
+  }
+});
+
+test("pow-config rejects oversized atomic snapshot when combined fields exceed 4096", async () => {
+  const restoreGlobals = ensureGlobals();
+  const modulePath = await buildConfigModule("config-secret");
+  const mod = await import(`${pathToFileURL(modulePath).href}?v=${Date.now()}`);
+  const handler = mod.default.fetch;
+  let forwarded = null;
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async (request) => {
+      forwarded = request;
+      return new Response("ok", { status: 200 });
+    };
+
+    const turn = "t".repeat(2048);
+    const ticket = "a".repeat(2048);
+    const req = new Request(
+      `https://example.com/protected?__ts=${turn}&__tt=${ticket}`,
+      {
+        headers: {
+          "CF-Connecting-IP": "1.2.3.4",
+        },
+      }
+    );
+    const res = await handler(req);
+    assert.equal(res.status, 431);
+    assert.equal(forwarded, null);
+    assert.equal(await res.text(), "");
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreGlobals();
+  }
+});
+
+test("pow-config enforces turnToken length boundary at max and max+1", async () => {
+  const restoreGlobals = ensureGlobals();
+  const modulePath = await buildConfigModule("config-secret");
+  const mod = await import(`${pathToFileURL(modulePath).href}?v=${Date.now()}`);
+  const handler = mod.default.fetch;
+  const originalFetch = globalThis.fetch;
+  try {
+    let forwarded = null;
+    globalThis.fetch = async (request) => {
+      forwarded = request;
+      return new Response("ok", { status: 200 });
+    };
+
+    const atMaxReq = new Request(`https://example.com/protected?__ts=${"t".repeat(2048)}`, {
+      headers: {
+        "CF-Connecting-IP": "1.2.3.4",
+      },
+    });
+    const atMaxRes = await handler(atMaxReq);
+    assert.equal(atMaxRes.status, 200);
+    assert.ok(forwarded, "request is forwarded at boundary max");
+    assert.equal(await atMaxRes.text(), "ok");
+
+    forwarded = null;
+    const overReq = new Request(`https://example.com/protected?__ts=${"t".repeat(2049)}`, {
+      headers: {
+        "CF-Connecting-IP": "1.2.3.4",
+      },
+    });
+    const overRes = await handler(overReq);
+    assert.equal(overRes.status, 431);
+    assert.equal(forwarded, null);
+    assert.equal(await overRes.text(), "");
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreGlobals();
+  }
+});
+
+test("pow-config enforces ticketB64 length boundary at max and max+1", async () => {
+  const restoreGlobals = ensureGlobals();
+  const modulePath = await buildConfigModule("config-secret");
+  const mod = await import(`${pathToFileURL(modulePath).href}?v=${Date.now()}`);
+  const handler = mod.default.fetch;
+  const originalFetch = globalThis.fetch;
+  try {
+    let forwarded = null;
+    globalThis.fetch = async (request) => {
+      forwarded = request;
+      return new Response("ok", { status: 200 });
+    };
+
+    const atMaxReq = new Request(`https://example.com/protected?__tt=${"a".repeat(2048)}`, {
+      headers: {
+        "CF-Connecting-IP": "1.2.3.4",
+      },
+    });
+    const atMaxRes = await handler(atMaxReq);
+    assert.equal(atMaxRes.status, 200);
+    assert.ok(forwarded, "request is forwarded at boundary max");
+    assert.equal(await atMaxRes.text(), "ok");
+
+    forwarded = null;
+    const overReq = new Request(`https://example.com/protected?__tt=${"a".repeat(2049)}`, {
+      headers: {
+        "CF-Connecting-IP": "1.2.3.4",
+      },
+    });
+    const overRes = await handler(overReq);
+    assert.equal(overRes.status, 431);
+    assert.equal(forwarded, null);
+    assert.equal(await overRes.text(), "");
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreGlobals();
+  }
+});
+
+test("pow-config marks oversized bindPath input as invalid", async () => {
+  const restoreGlobals = ensureGlobals();
+  const modulePath = await buildConfigModule("config-secret", {
+    configOverrides: {
+      bindPathMode: "query",
+      bindPathQueryName: "path",
+    },
+  });
+  const mod = await import(`${pathToFileURL(modulePath).href}?v=${Date.now()}`);
+  const handler = mod.default.fetch;
+  let forwarded = null;
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async (request) => {
+      forwarded = request;
+      return new Response("ok", { status: 200 });
+    };
+
+    const tooLongPath = `/${"a".repeat(2048)}`;
+    const req = new Request(
+      `https://example.com/protected?path=${encodeURIComponent(tooLongPath)}`,
+      {
+        headers: {
+          "CF-Connecting-IP": "1.2.3.4",
+        },
+      }
+    );
+    const res = await handler(req);
+    assert.equal(res.status, 200);
+    assert.ok(forwarded, "request is still forwarded with bind invalid strategy");
+
+    const { payload } = readInnerPayload(forwarded.headers);
+    const decoded = base64UrlDecode(payload);
+    assert.ok(decoded, "payload decodes");
+    const parsed = JSON.parse(decoded);
+    assert.equal(parsed.s.bind.ok, false);
+    assert.equal(parsed.s.bind.code, "invalid");
+    assert.equal(parsed.s.bind.canonicalPath, "/protected");
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreGlobals();
+  }
+});
+
+test("pow-config frontloads atomic strategy with cookie priority and strips request", async () => {
+  const restoreGlobals = ensureGlobals();
+  const modulePath = await buildConfigModule("config-secret", {
+    configOverrides: {
+      bindPathMode: "query",
+      bindPathQueryName: "path",
+      STRIP_ATOMIC_QUERY: true,
+      STRIP_ATOMIC_HEADERS: true,
+    },
+  });
+  const mod = await import(`${pathToFileURL(modulePath).href}?v=${Date.now()}`);
+  const handler = mod.default.fetch;
+  let forwarded = null;
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async (request) => {
+      forwarded = request;
+      return new Response("ok", { status: 200 });
+    };
+
+    const req = new Request(
+      "https://example.com/protected?__ts=q-turn&__tt=q-ticket&__ct=1&path=%2Fbound&keep=1",
+      {
+        headers: {
+          "CF-Connecting-IP": "1.2.3.4",
+          "x-turnstile": "h-turn",
+          "x-ticket": "h-ticket",
+          "x-consume": "1",
+          Cookie: `a=1; __Secure-pow_a=${encodeAtomicCookie("1|t|c-turn|c-ticket")}`,
+        },
+      }
+    );
+    const res = await handler(req);
+    assert.equal(res.status, 200);
+    assert.ok(forwarded, "fetch called with modified request");
+
+    assert.equal(forwarded.headers.get("x-turnstile"), null);
+    assert.equal(forwarded.headers.get("x-ticket"), null);
+    assert.equal(forwarded.headers.get("x-consume"), null);
+    const forwardedUrl = new URL(forwarded.url);
+    assert.equal(forwardedUrl.searchParams.get("__ts"), null);
+    assert.equal(forwardedUrl.searchParams.get("__tt"), null);
+    assert.equal(forwardedUrl.searchParams.get("__ct"), null);
+    assert.equal(forwardedUrl.searchParams.get("keep"), "1");
+
+    const { payload } = readInnerPayload(forwarded.headers);
+    const decoded = base64UrlDecode(payload);
+    assert.ok(decoded, "payload decodes");
+    const parsed = JSON.parse(decoded);
+    assert.equal(parsed.s.atomic.turnToken, "c-turn");
+    assert.equal(parsed.s.atomic.ticketB64, "c-ticket");
+    assert.equal(parsed.s.atomic.consumeToken, "");
+    assert.equal(parsed.s.atomic.fromCookie, true);
+    assert.ok(parsed.s.bypass && typeof parsed.s.bypass === "object");
+    assert.ok(parsed.s.bind && typeof parsed.s.bind === "object");
   } finally {
     globalThis.fetch = originalFetch;
     restoreGlobals();

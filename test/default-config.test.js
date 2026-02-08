@@ -119,6 +119,19 @@ const FULL_CONFIG = {
     "https://cdn.jsdelivr.net/gh/ImoutoHeaven/snippet-posw@412f7fcc71c319b62a614e4252280f2bb3d7302b/glue.js",
 };
 
+const FULL_STRATEGY = {
+  nav: {},
+  bypass: { bypass: false },
+  bind: { ok: true, code: "", canonicalPath: "/path" },
+  atomic: {
+    turnToken: "",
+    ticketB64: "",
+    consumeToken: "",
+    fromCookie: false,
+    cookieName: "__Secure-pow_a",
+  },
+};
+
 const buildInnerHeaders = (payloadObj, secret, expOverride) => {
   const payload = base64Url(Buffer.from(JSON.stringify(payloadObj), "utf8"));
   const exp = Number.isFinite(expOverride)
@@ -189,6 +202,7 @@ test("pow.js rejects placeholder CONFIG_SECRET", async () => {
         id: 0,
         c: { ...FULL_CONFIG, POW_TOKEN: "test" },
         d: { ipScope: "any", country: "any", asn: "any", tlsFingerprint: "any" },
+        s: FULL_STRATEGY,
       },
       "replace-me"
     );
@@ -228,6 +242,7 @@ test("valid inner header passes through", async () => {
         id: 0,
         c: { ...FULL_CONFIG, POW_TOKEN: "test" },
         d: { ipScope: "any", country: "any", asn: "any", tlsFingerprint: "any" },
+        s: FULL_STRATEGY,
       },
       "config-secret"
     );
@@ -269,6 +284,7 @@ test("pow.js rejects expired inner header", async () => {
         id: 0,
         c: { ...FULL_CONFIG, POW_TOKEN: "test" },
         d: { ipScope: "any", country: "any", asn: "any", tlsFingerprint: "any" },
+        s: FULL_STRATEGY,
       },
       "config-secret",
       expiredExp
@@ -311,6 +327,7 @@ test("pow.js rejects future inner header", async () => {
         id: 0,
         c: { ...FULL_CONFIG, POW_TOKEN: "test" },
         d: { ipScope: "any", country: "any", asn: "any", tlsFingerprint: "any" },
+        s: FULL_STRATEGY,
       },
       "config-secret",
       futureExp
@@ -326,6 +343,182 @@ test("pow.js rejects future inner header", async () => {
     );
     assert.equal(res.status, 500);
     assert.equal(calls, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreGlobals();
+  }
+});
+
+test("pow.js fails closed when inner strategy snapshot is missing", async () => {
+  const restoreGlobals = ensureGlobals();
+  const modulePath = await buildTestModule();
+  const mod = await import(`${pathToFileURL(modulePath).href}?v=${Date.now()}`);
+  const handler = mod.default.fetch;
+  let calls = 0;
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async () => {
+      calls += 1;
+      return new Response("ok", { status: 200 });
+    };
+
+    const { payload, mac, exp } = buildInnerHeaders(
+      {
+        v: 1,
+        id: 0,
+        c: { ...FULL_CONFIG, POW_TOKEN: "test" },
+        d: { ipScope: "any", country: "any", asn: "any", tlsFingerprint: "any" },
+      },
+      "config-secret"
+    );
+
+    const res = await handler(
+      new Request("https://no-match.test/path", {
+        headers: {
+          "X-Pow-Inner": payload,
+          "X-Pow-Inner-Mac": mac,
+          "X-Pow-Inner-Expire": exp.toString(10),
+        },
+      })
+    );
+    assert.equal(res.status, 500);
+    assert.equal(calls, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreGlobals();
+  }
+});
+
+test("pow.js fails closed when inner strategy is malformed", async () => {
+  const restoreGlobals = ensureGlobals();
+  const modulePath = await buildTestModule();
+  const mod = await import(`${pathToFileURL(modulePath).href}?v=${Date.now()}`);
+  const handler = mod.default.fetch;
+  let calls = 0;
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async () => {
+      calls += 1;
+      return new Response("ok", { status: 200 });
+    };
+
+    const { payload, mac, exp } = buildInnerHeaders(
+      {
+        v: 1,
+        id: 0,
+        c: { ...FULL_CONFIG, POW_TOKEN: "test" },
+        d: { ipScope: "any", country: "any", asn: "any", tlsFingerprint: "any" },
+        s: {
+          ...FULL_STRATEGY,
+          bind: { ok: "true", code: "", canonicalPath: "/path" },
+        },
+      },
+      "config-secret"
+    );
+
+    const res = await handler(
+      new Request("https://no-match.test/path", {
+        headers: {
+          "X-Pow-Inner": payload,
+          "X-Pow-Inner-Mac": mac,
+          "X-Pow-Inner-Expire": exp.toString(10),
+        },
+      })
+    );
+    assert.equal(res.status, 500);
+    assert.equal(calls, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreGlobals();
+  }
+});
+
+test("pow.js fail-closes bind missing/invalid from inner.s with 400", async () => {
+  const restoreGlobals = ensureGlobals();
+  const modulePath = await buildTestModule();
+  const mod = await import(`${pathToFileURL(modulePath).href}?v=${Date.now()}`);
+  const handler = mod.default.fetch;
+  let calls = 0;
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async () => {
+      calls += 1;
+      return new Response("ok", { status: 200 });
+    };
+
+    for (const code of ["missing", "invalid"]) {
+      const { payload, mac, exp } = buildInnerHeaders(
+        {
+          v: 1,
+          id: 0,
+          c: { ...FULL_CONFIG, powcheck: true, POW_BIND_TLS: false, POW_TOKEN: "test" },
+          d: { ipScope: "any", country: "any", asn: "any", tlsFingerprint: "any" },
+          s: {
+            ...FULL_STRATEGY,
+            bind: { ok: false, code, canonicalPath: "/path" },
+          },
+        },
+        "config-secret"
+      );
+
+      const res = await handler(
+        new Request("https://no-match.test/path", {
+          headers: {
+            "X-Pow-Inner": payload,
+            "X-Pow-Inner-Mac": mac,
+            "X-Pow-Inner-Expire": exp.toString(10),
+          },
+        })
+      );
+      assert.equal(res.status, 400);
+    }
+
+    assert.equal(calls, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreGlobals();
+  }
+});
+
+test("pow.js bypasses directly when inner.s.bypass.bypass is true", async () => {
+  const restoreGlobals = ensureGlobals();
+  const modulePath = await buildTestModule();
+  const mod = await import(`${pathToFileURL(modulePath).href}?v=${Date.now()}`);
+  const handler = mod.default.fetch;
+  let calls = 0;
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async () => {
+      calls += 1;
+      return new Response("ok", { status: 200 });
+    };
+
+    const { payload, mac, exp } = buildInnerHeaders(
+      {
+        v: 1,
+        id: 0,
+        c: { ...FULL_CONFIG, powcheck: true, POW_BIND_TLS: false, POW_TOKEN: "test" },
+        d: { ipScope: "any", country: "any", asn: "any", tlsFingerprint: "any" },
+        s: {
+          ...FULL_STRATEGY,
+          bypass: { bypass: true },
+          bind: { ok: false, code: "missing", canonicalPath: "/path" },
+        },
+      },
+      "config-secret"
+    );
+
+    const res = await handler(
+      new Request("https://no-match.test/path", {
+        headers: {
+          "X-Pow-Inner": payload,
+          "X-Pow-Inner-Mac": mac,
+          "X-Pow-Inner-Expire": exp.toString(10),
+        },
+      })
+    );
+    assert.equal(res.status, 200);
+    assert.equal(calls, 1);
   } finally {
     globalThis.fetch = originalFetch;
     restoreGlobals();

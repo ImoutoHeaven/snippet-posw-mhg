@@ -99,8 +99,9 @@ const readInnerPayload = async (request) => {
   const id = Number.isInteger(parsed.id) ? parsed.id : null;
   const config = parsed.c && typeof parsed.c === "object" ? parsed.c : null;
   const derived = parsed.d && typeof parsed.d === "object" ? parsed.d : null;
-  if (id === null || !config || !derived) return null;
-  return { id, c: config, d: derived };
+  const strategy = parsed.s && typeof parsed.s === "object" ? parsed.s : null;
+  if (id === null || !config || !derived || !strategy) return null;
+  return { id, c: config, d: derived, s: strategy };
 };
 
 const stripInnerHeaders = (request) => {
@@ -167,54 +168,6 @@ const validateTurnToken = (value) => {
   if (token.length < TURN_TOKEN_MIN_LEN || token.length > TURN_TOKEN_MAX_LEN) return null;
   if (CONTROL_CHAR_RE.test(token)) return null;
   return token;
-};
-
-const normalizeBindPathInput = (raw) => {
-  let decoded;
-  try {
-    decoded = decodeURIComponent(raw);
-  } catch {
-    return null;
-  }
-  const canonical = decoded[0] === "/" ? decoded : `/${decoded}`;
-  if (canonical.length > 4096) return null;
-  if (CONTROL_CHAR_RE.test(canonical)) return null;
-  return canonical;
-};
-
-const resolveBindPathForPow = (request, url, requestPath, config) => {
-  if (config.POW_BIND_PATH === false) {
-    return { ok: true, canonicalPath: requestPath, forwardRequest: request };
-  }
-  const mode = config.bindPathMode;
-  if (!mode || mode === "none") {
-    return { ok: true, canonicalPath: requestPath, forwardRequest: request };
-  }
-  if (mode === "query") {
-    const name = config.bindPathQueryName.trim();
-    if (!name) return { ok: false, code: "misconfigured" };
-    const raw = url.searchParams.get(name);
-    if (!raw) return { ok: false, code: "missing" };
-    const canonical = normalizeBindPathInput(raw);
-    if (!canonical) return { ok: false, code: "invalid" };
-    return { ok: true, canonicalPath: canonical, forwardRequest: request };
-  }
-  if (mode === "header") {
-    const name = config.bindPathHeaderName.trim();
-    if (!name) return { ok: false, code: "misconfigured" };
-    const raw = request.headers.get(name);
-    if (!raw) return { ok: false, code: "missing" };
-    const canonical = normalizeBindPathInput(raw);
-    if (!canonical) return { ok: false, code: "invalid" };
-    if (config.stripBindPathHeader === true) {
-      const headers = new Headers(request.headers);
-      headers.delete(name);
-      const forwardRequest = new Request(request, { headers });
-      return { ok: true, canonicalPath: canonical, forwardRequest };
-    }
-    return { ok: true, canonicalPath: canonical, forwardRequest: request };
-  }
-  return { ok: false, code: "misconfigured" };
 };
 
 const hmacSha256Base64UrlNoPad = async (secret, data) => {
@@ -347,142 +300,6 @@ const getClientIP = (request) =>
   request.headers.get("cf-connecting-ip") ||
   "0.0.0.0";
 
-
-const resolveBypassRequest = (request, url, config) => {
-  const queryName = config.INNER_AUTH_QUERY_NAME.trim();
-  const queryValue = config.INNER_AUTH_QUERY_VALUE;
-  const headerName = config.INNER_AUTH_HEADER_NAME.trim();
-  const headerValue = config.INNER_AUTH_HEADER_VALUE;
-  const queryConfigured = Boolean(queryName && queryValue);
-  const headerConfigured = Boolean(headerName && headerValue);
-  const queryMatch = queryConfigured
-    ? (() => {
-        const got = url.searchParams.get(queryName);
-        return typeof got === "string" && timingSafeEqual(got, queryValue);
-      })()
-    : false;
-  const headerMatch = headerConfigured
-    ? (() => {
-        const got = request.headers.get(headerName);
-        return typeof got === "string" && timingSafeEqual(got, headerValue);
-      })()
-    : false;
-
-  const bypass =
-    queryConfigured && headerConfigured
-      ? queryMatch && headerMatch
-      : queryConfigured
-        ? queryMatch
-        : headerConfigured
-          ? headerMatch
-          : false;
-
-  if (!bypass) {
-    return { bypass: false, forwardRequest: request };
-  }
-
-  const stripQuery = queryMatch && config.stripInnerAuthQuery === true;
-  const stripHeader = headerMatch && config.stripInnerAuthHeader === true;
-  let forwardRequest = request;
-
-  if (stripQuery) {
-    const nextUrl = new URL(url.toString());
-    nextUrl.searchParams.delete(queryName);
-    forwardRequest = new Request(nextUrl, request);
-  }
-
-  if (stripHeader) {
-    const headers = new Headers(forwardRequest.headers);
-    headers.delete(headerName);
-    forwardRequest = new Request(forwardRequest, { headers });
-  }
-
-  return { bypass: true, forwardRequest };
-};
-
-const extractAtomicAuth = (request, url, config) => {
-  const qTurn = config.ATOMIC_TURN_QUERY.trim();
-  const qTicket = config.ATOMIC_TICKET_QUERY.trim();
-  const qConsume = config.ATOMIC_CONSUME_QUERY.trim();
-  const hTurn = config.ATOMIC_TURN_HEADER.trim();
-  const hTicket = config.ATOMIC_TICKET_HEADER.trim();
-  const hConsume = config.ATOMIC_CONSUME_HEADER.trim();
-  const cookieName = config.ATOMIC_COOKIE_NAME.trim();
-
-  let turnToken = "";
-  let ticketB64 = "";
-  let consumeToken = "";
-  let fromCookie = false;
-  if (cookieName) {
-    const cookies = parseCookieHeader(request.headers.get("Cookie"));
-    const raw = cookies.get(cookieName) || "";
-    const parsed = parseAtomicCookie(raw);
-    if (parsed) {
-      turnToken = parsed.turnToken;
-      ticketB64 = parsed.ticketB64;
-      consumeToken = parsed.consumeToken;
-      fromCookie = true;
-    }
-  }
-  if (!fromCookie) {
-    const headerTurn = hTurn ? request.headers.get(hTurn) : "";
-    if (headerTurn) {
-      turnToken = headerTurn;
-      ticketB64 = hTicket ? request.headers.get(hTicket) || "" : "";
-      consumeToken = hConsume ? request.headers.get(hConsume) || "" : "";
-    } else {
-      turnToken = qTurn ? url.searchParams.get(qTurn) || "" : "";
-      ticketB64 = qTicket ? url.searchParams.get(qTicket) || "" : "";
-      consumeToken = qConsume ? url.searchParams.get(qConsume) || "" : "";
-    }
-  }
-
-  const stripQuery = config.STRIP_ATOMIC_QUERY !== false;
-  const stripHeader = config.STRIP_ATOMIC_HEADERS !== false;
-  let forwardRequest = request;
-
-  if (stripQuery && (qTurn || qTicket || qConsume)) {
-    const nextUrl = new URL(url.toString());
-    let changed = false;
-    if (qTurn && nextUrl.searchParams.has(qTurn)) {
-      nextUrl.searchParams.delete(qTurn);
-      changed = true;
-    }
-    if (qTicket && nextUrl.searchParams.has(qTicket)) {
-      nextUrl.searchParams.delete(qTicket);
-      changed = true;
-    }
-    if (qConsume && nextUrl.searchParams.has(qConsume)) {
-      nextUrl.searchParams.delete(qConsume);
-      changed = true;
-    }
-    if (changed) {
-      forwardRequest = new Request(nextUrl, request);
-    }
-  }
-
-  if (stripHeader && (hTurn || hTicket || hConsume)) {
-    const headers = new Headers(forwardRequest.headers);
-    let changed = false;
-    if (hTurn && headers.has(hTurn)) {
-      headers.delete(hTurn);
-      changed = true;
-    }
-    if (hTicket && headers.has(hTicket)) {
-      headers.delete(hTicket);
-      changed = true;
-    }
-    if (hConsume && headers.has(hConsume)) {
-      headers.delete(hConsume);
-      changed = true;
-    }
-    if (changed) {
-      forwardRequest = new Request(forwardRequest, { headers });
-    }
-  }
-
-  return { turnToken, ticketB64, consumeToken, forwardRequest, fromCookie, cookieName };
-};
 
 const getPowSteps = (config) => {
   const base = config.POW_DIFFICULTY_BASE;
@@ -897,26 +714,13 @@ const parseConsumeToken = (value) => {
   return { ticketB64, exp, tb, m, mac };
 };
 
-const parseAtomicCookie = (value) => {
-  if (!value) return null;
-  const parts = value.split("|");
-  if (parts[0] !== "1" || parts.length < 4) return null;
-  const mode = parts[1];
-  const turnToken = parts[2] || "";
-  const payload = parts[3] || "";
-  if (!turnToken || !payload) return null;
-  if (mode === "t") return { turnToken, ticketB64: payload, consumeToken: "" };
-  if (mode === "c") return { turnToken, ticketB64: "", consumeToken: payload };
-  return null;
-};
-
 const makeProofMac = async (powSecret, ticketB64, iat, last, n, m) =>
   hmacSha256Base64UrlNoPad(powSecret, `O|${ticketB64}|${iat}|${last}|${n}|${m}`);
 
 const computePathHash = async (canonicalPath) =>
   base64UrlEncodeNoPad(await sha256Bytes(canonicalPath));
 
-const getPowBindingValuesWithPathHash = async (request, pathHash, config, derived) => {
+const getPowBindingValuesWithPathHash = async (pathHash, config, derived) => {
   const bindPath = config.POW_BIND_PATH !== false;
   const bindIp = config.POW_BIND_IPRANGE !== false;
   const bindCountry = config.POW_BIND_COUNTRY === true;
@@ -947,140 +751,58 @@ const getPowBindingValuesWithPathHash = async (request, pathHash, config, derive
   };
 };
 
-const getPowBindingValues = async (request, canonicalPath, config, derived) => {
+const getPowBindingValues = async (canonicalPath, config, derived) => {
   const bindPath = config.POW_BIND_PATH !== false;
   const pathHash = bindPath ? await computePathHash(canonicalPath) : "any";
-  return getPowBindingValuesWithPathHash(request, pathHash, config, derived);
+  return getPowBindingValuesWithPathHash(pathHash, config, derived);
 };
 
-const isFiniteNumber = (value) => typeof value === "number" && Number.isFinite(value);
-const isString = (value) => typeof value === "string";
-const isNonEmptyString = (value) => isString(value) && value.trim().length > 0;
-const isBoolean = (value) => typeof value === "boolean";
-const isSegmentLenValue = (value) =>
-  (typeof value === "string" && value.trim().length > 0) || isFiniteNumber(value);
-
-const validateConfig = (config) => {
-  const stringFields = [
-    "bindPathMode",
-    "bindPathQueryName",
-    "bindPathHeaderName",
-    "INNER_AUTH_QUERY_NAME",
-    "INNER_AUTH_QUERY_VALUE",
-    "INNER_AUTH_HEADER_NAME",
-    "INNER_AUTH_HEADER_VALUE",
-    "ATOMIC_TURN_QUERY",
-    "ATOMIC_TICKET_QUERY",
-    "ATOMIC_CONSUME_QUERY",
-    "ATOMIC_TURN_HEADER",
-    "ATOMIC_TICKET_HEADER",
-    "ATOMIC_CONSUME_HEADER",
-    "ATOMIC_COOKIE_NAME",
-    "POW_API_PREFIX",
-    "POW_COMMIT_COOKIE",
-    "POW_ESM_URL",
-    "POW_GLUE_URL",
-  ];
-  for (const key of stringFields) {
-    if (!isString(config[key])) return false;
-  }
-  const optionalStringFields = ["POW_TOKEN", "TURNSTILE_SITEKEY", "TURNSTILE_SECRET"];
-  for (const key of optionalStringFields) {
-    if (key in config && config[key] !== undefined && !isString(config[key])) {
-      return false;
-    }
-  }
-  const booleanFields = [
-    "powcheck",
-    "turncheck",
-    "stripBindPathHeader",
-    "POW_FORCE_EDGE_1",
-    "POW_FORCE_EDGE_LAST",
-    "PROOF_RENEW_ENABLE",
-    "ATOMIC_CONSUME",
-    "STRIP_ATOMIC_QUERY",
-    "STRIP_ATOMIC_HEADERS",
-    "stripInnerAuthQuery",
-    "stripInnerAuthHeader",
-    "POW_BIND_PATH",
-    "POW_BIND_IPRANGE",
-    "POW_BIND_COUNTRY",
-    "POW_BIND_ASN",
-    "POW_BIND_TLS",
-  ];
-  for (const key of booleanFields) {
-    if (!isBoolean(config[key])) return false;
-  }
-  const numberFields = [
-    "POW_VERSION",
-    "POW_DIFFICULTY_BASE",
-    "POW_DIFFICULTY_COEFF",
-    "POW_MIN_STEPS",
-    "POW_MAX_STEPS",
-    "POW_HASHCASH_BITS",
-    "POW_SAMPLE_K",
-    "POW_SPINE_K",
-    "POW_CHAL_ROUNDS",
-    "POW_OPEN_BATCH",
-    "POW_COMMIT_TTL_SEC",
-    "POW_TICKET_TTL_SEC",
-    "PROOF_TTL_SEC",
-    "PROOF_RENEW_MAX",
-    "PROOF_RENEW_WINDOW_SEC",
-    "PROOF_RENEW_MIN_SEC",
-  ];
-  for (const key of numberFields) {
-    if (!isFiniteNumber(config[key])) return false;
-  }
-  if (!isSegmentLenValue(config.POW_SEGMENT_LEN)) return false;
-  if (!parseSegmentLenSpec(config.POW_SEGMENT_LEN)) return false;
-  const modeValues = new Set(["none", "query", "header"]);
-  if (!modeValues.has(config.bindPathMode)) return false;
-  if (config.bindPathMode === "query" && !isNonEmptyString(config.bindPathQueryName)) {
-    return false;
-  }
-  if (config.bindPathMode === "header" && !isNonEmptyString(config.bindPathHeaderName)) {
-    return false;
-  }
-  if (!isNonEmptyString(config.POW_API_PREFIX)) return false;
-  if (!isNonEmptyString(config.POW_COMMIT_COOKIE)) return false;
-  if (!isNonEmptyString(config.ATOMIC_TURN_QUERY)) return false;
-  if (!isNonEmptyString(config.ATOMIC_TICKET_QUERY)) return false;
-  if (!isNonEmptyString(config.ATOMIC_CONSUME_QUERY)) return false;
-  if (!isNonEmptyString(config.ATOMIC_TURN_HEADER)) return false;
-  if (!isNonEmptyString(config.ATOMIC_TICKET_HEADER)) return false;
-  if (!isNonEmptyString(config.ATOMIC_CONSUME_HEADER)) return false;
-  if (!isNonEmptyString(config.ATOMIC_COOKIE_NAME)) return false;
-  if ((config.powcheck === true || config.turncheck === true) && !isNonEmptyString(config.POW_TOKEN)) {
-    return false;
-  }
-  if ((config.powcheck === true || config.turncheck === true) && !isNonEmptyString(config.POW_GLUE_URL)) {
-    return false;
-  }
-  if (config.powcheck === true && !isNonEmptyString(config.POW_ESM_URL)) {
-    return false;
-  }
-  if (config.turncheck === true) {
-    if (
-      !isNonEmptyString(config.TURNSTILE_SITEKEY) ||
-      !isNonEmptyString(config.TURNSTILE_SECRET)
-    ) {
-      return false;
-    }
-  }
-  return true;
+const normalizeInnerStrategy = (snapshot) => {
+  if (!snapshot || typeof snapshot !== "object") return null;
+  const nav = snapshot.nav && typeof snapshot.nav === "object" ? snapshot.nav : null;
+  const bypassRaw = snapshot.bypass && typeof snapshot.bypass === "object" ? snapshot.bypass : null;
+  const bindRaw = snapshot.bind && typeof snapshot.bind === "object" ? snapshot.bind : null;
+  const atomicRaw = snapshot.atomic && typeof snapshot.atomic === "object" ? snapshot.atomic : null;
+  if (!nav || !bypassRaw || !bindRaw || !atomicRaw) return null;
+  if (typeof bypassRaw.bypass !== "boolean") return null;
+  if (typeof bindRaw.ok !== "boolean") return null;
+  if (typeof bindRaw.code !== "string") return null;
+  if (typeof bindRaw.canonicalPath !== "string") return null;
+  if (typeof atomicRaw.turnToken !== "string") return null;
+  if (typeof atomicRaw.ticketB64 !== "string") return null;
+  if (typeof atomicRaw.consumeToken !== "string") return null;
+  if (typeof atomicRaw.fromCookie !== "boolean") return null;
+  if (typeof atomicRaw.cookieName !== "string") return null;
+  return {
+    nav,
+    bypass: { bypass: bypassRaw.bypass },
+    bind: {
+      ok: bindRaw.ok,
+      code: bindRaw.code,
+      canonicalPath: bindRaw.canonicalPath,
+    },
+    atomic: {
+      turnToken: atomicRaw.turnToken,
+      ticketB64: atomicRaw.ticketB64,
+      consumeToken: atomicRaw.consumeToken,
+      fromCookie: atomicRaw.fromCookie,
+      cookieName: atomicRaw.cookieName,
+    },
+  };
 };
 
 const loadConfigFromInner = (inner) => {
   if (!inner || typeof inner !== "object") return null;
   const baseConfig = inner.c && typeof inner.c === "object" ? inner.c : null;
+  const strategy = normalizeInnerStrategy(inner.s);
   if (!baseConfig) return null;
-  if (!validateConfig(baseConfig)) return null;
+  if (!strategy) return null;
   return {
     config: baseConfig,
     powSecret: getPowSecret(baseConfig),
     derived: inner.d,
     cfgId: inner.id,
+    strategy,
   };
 };
 
@@ -1097,12 +819,8 @@ const loadCommitFromRequest = (request, config) => {
   return { commit, ticket };
 };
 
-const getPowVersion = (config) => config.POW_VERSION;
-
-const getTurnSecret = (config) => config.TURNSTILE_SECRET;
-
 const validateTicket = (ticket, config, nowSeconds) => {
-  const powVersion = getPowVersion(config);
+  const powVersion = config.POW_VERSION;
   if (ticket.v !== powVersion) return 0;
   if (isExpired(ticket.e, nowSeconds)) return 0;
   return powVersion;
@@ -1145,7 +863,6 @@ const verifyConsumeToken = async (consumeToken, powSecret, nowSeconds, requiredM
 
 const loadAtomicTicket = async (
   ticketB64,
-  request,
   url,
   canonicalPath,
   config,
@@ -1159,7 +876,7 @@ const loadAtomicTicket = async (
   if (ticket.cfgId !== cfgId) return null;
   if (!Number.isFinite(ticket.L) || ticket.L <= 0) return null;
   if (!validateTicket(ticket, config, nowSeconds)) return null;
-  const bindingValues = await getPowBindingValues(request, canonicalPath, config, derived);
+  const bindingValues = await getPowBindingValues(canonicalPath, config, derived);
   if (!bindingValues) return null;
   if (!(await verifyTicketMac(ticket, url, bindingValues, powSecret))) return null;
   return ticket;
@@ -1281,13 +998,13 @@ const verifyProofCookie = async (
   if (!proof) return null;
   const ticket = parsePowTicket(proof.ticketB64);
   if (!ticket) return null;
-  const powVersion = getPowVersion(config);
+  const powVersion = config.POW_VERSION;
   if (ticket.v !== powVersion) return null;
   if (!Number.isFinite(ticket.e) || ticket.e <= nowSeconds) return null;
   if (!Number.isFinite(ticket.L) || ticket.L <= 0) return null;
   if (ticket.cfgId !== cfgId) return null;
   if (proof.last > ticket.e) return null;
-  const bindingValues = await getPowBindingValues(request, canonicalPath, config, derived);
+  const bindingValues = await getPowBindingValues(canonicalPath, config, derived);
   if (!bindingValues) return null;
   if (!(await verifyTicketMac(ticket, url, bindingValues, powSecret))) return null;
   const expectedProofMac = await makeProofMac(
@@ -1430,10 +1147,10 @@ const respondPowChallengeHtml = async (
     ? parseSegmentLenSpec(config.POW_SEGMENT_LEN)
     : { mode: "fixed", fixed: 1 };
   if (needPow && !segSpec) return S(500);
-  const bindingValues = await getPowBindingValues(request, canonicalPath, config, derived);
+  const bindingValues = await getPowBindingValues(canonicalPath, config, derived);
   if (!bindingValues) return deny();
   const { pathHash, ipScope, country, asn, tlsFingerprint } = bindingValues;
-  const powVersion = getPowVersion(config);
+  const powVersion = config.POW_VERSION;
   const ticket = {
     v: powVersion,
     e: exp,
@@ -1703,12 +1420,7 @@ const handlePowCommit = async (request, url, nowSeconds, innerCtx) => {
   if (!powVersion) return deny();
   const normalizedPathHash = normalizePathHash(pathHash, config);
   if (!normalizedPathHash) return S(400);
-  const bindingValues = await getPowBindingValuesWithPathHash(
-    request,
-    normalizedPathHash,
-    config,
-    derived
-  );
+  const bindingValues = await getPowBindingValuesWithPathHash(normalizedPathHash, config, derived);
   if (!bindingValues) return deny();
   if (!(await verifyTicketMac(ticket, url, bindingValues, powSecret))) return deny();
   const rootBytes = base64UrlDecodeToBytes(rootB64);
@@ -1754,7 +1466,7 @@ const handleTurn = async (request, url, nowSeconds, innerCtx) => {
   const needPow = config.powcheck === true;
   const needTurn = config.turncheck === true;
   if (!needTurn || needPow || config.ATOMIC_CONSUME === true) return S(404);
-  const turnSecret = getTurnSecret(config);
+  const turnSecret = config.TURNSTILE_SECRET;
   if (!turnSecret) return S(500);
   const turnToken = validateTurnToken(token);
   if (!turnToken) return S(400);
@@ -1765,12 +1477,7 @@ const handleTurn = async (request, url, nowSeconds, innerCtx) => {
   const normalizedPathHash = normalizePathHash(pathHash, config);
   if (!normalizedPathHash) return S(400);
 
-  const bindingValues = await getPowBindingValuesWithPathHash(
-    request,
-    normalizedPathHash,
-    config,
-    derived
-  );
+  const bindingValues = await getPowBindingValuesWithPathHash(normalizedPathHash, config, derived);
   if (!bindingValues) return deny();
   if (!(await verifyTicketMac(ticket, url, bindingValues, powSecret))) return deny();
 
@@ -1806,12 +1513,7 @@ const handlePowChallenge = async (request, url, nowSeconds, innerCtx) => {
   if (config.powcheck !== true) return S(500);
   if (!(await verifyCommit(commit, ticket, config, powSecret, nowSeconds))) return deny();
   if (!Number.isFinite(ticket.L) || ticket.L <= 0) return deny();
-  const bindingValues = await getPowBindingValuesWithPathHash(
-    request,
-    commit.pathHash,
-    config,
-    derived
-  );
+  const bindingValues = await getPowBindingValuesWithPathHash(commit.pathHash, config, derived);
   if (!bindingValues) return deny();
   if (!(await verifyTicketMac(ticket, url, bindingValues, powSecret))) return deny();
   const sid = await derivePowSid(powSecret, ticket.cfgId, commit.mac);
@@ -1989,12 +1691,7 @@ const handlePowOpen = async (request, url, nowSeconds, innerCtx) => {
     }
     batch.push({ idx, open, requiresMid, segLen });
   }
-  const bindingValues = await getPowBindingValuesWithPathHash(
-    request,
-    commit.pathHash,
-    config,
-    derived
-  );
+  const bindingValues = await getPowBindingValuesWithPathHash(commit.pathHash, config, derived);
   if (!bindingValues) return deny();
   const bindingString = await verifyTicketMac(ticket, url, bindingValues, powSecret);
   if (!bindingString) return deny();
@@ -2107,7 +1804,7 @@ const handlePowOpen = async (request, url, nowSeconds, innerCtx) => {
   }
 
   if (needTurn) {
-    const turnSecret = getTurnSecret(config);
+    const turnSecret = config.TURNSTILE_SECRET;
     if (!turnSecret) return S(500);
     const finalToken = validateTurnToken(turnToken);
     if (!finalToken) return deny();
@@ -2174,7 +1871,7 @@ export default {
     if (!inner) return S(500);
     const innerCtx = loadConfigFromInner(inner);
     if (!innerCtx) return S(500);
-    const { config, powSecret, derived, cfgId } = innerCtx;
+    const { config, powSecret, derived, cfgId, strategy } = innerCtx;
 
     if (request.method === "OPTIONS") {
       return S(204);
@@ -2189,12 +1886,11 @@ export default {
     if (!needPow && !needTurn) {
       return fetch(stripInnerHeaders(request));
     }
-    const bypass = resolveBypassRequest(request, url, config);
-    if (bypass.bypass) {
-      return fetch(stripInnerHeaders(bypass.forwardRequest));
+    if (strategy.bypass.bypass) {
+      return fetch(stripInnerHeaders(request));
     }
 
-    const bindRes = resolveBindPathForPow(request, url, requestPath, config);
+    const bindRes = strategy.bind;
     if (!bindRes.ok) {
       if (bindRes.code === "missing") return S(400);
       if (bindRes.code === "invalid") return S(400);
@@ -2205,7 +1901,7 @@ export default {
     if (needPow && !config.POW_ESM_URL) return S(500);
     if (needTurn) {
       const sitekey = config.TURNSTILE_SITEKEY;
-      const secret = getTurnSecret(config);
+      const secret = config.TURNSTILE_SECRET;
       if (!sitekey || !secret) return S(500);
     }
 
@@ -2226,7 +1922,7 @@ export default {
       : null;
 
     if (proofMeta) {
-      let response = await fetch(stripInnerHeaders(bindRes.forwardRequest));
+      let response = await fetch(stripInnerHeaders(request));
       response = await maybeRenewProof(
         request,
         url,
@@ -2241,9 +1937,9 @@ export default {
     }
 
     if (needTurn && config.ATOMIC_CONSUME === true) {
-      const baseRequest = bindRes.forwardRequest;
-      const baseUrl = new URL(baseRequest.url);
-      const atomic = extractAtomicAuth(baseRequest, baseUrl, config);
+      const baseRequest = request;
+      const baseUrl = url;
+      const atomic = strategy.atomic;
       const fail = async (resp, allowChallenge = true) => {
         if (allowChallenge && isNavigationRequest(request)) {
           const challenge = await respondPowChallengeHtml(
@@ -2264,7 +1960,7 @@ export default {
       if (atomic.turnToken) {
         const turnToken = validateTurnToken(atomic.turnToken);
         if (!turnToken) return await fail(deny());
-        const turnSecret = getTurnSecret(config);
+        const turnSecret = config.TURNSTILE_SECRET;
         if (!turnSecret) return await fail(S(500), false);
         if (needPow) {
           const consume = await verifyConsumeToken(
@@ -2278,7 +1974,6 @@ export default {
           if (tb !== consume.tb) return await fail(deny());
           const ticket = await loadAtomicTicket(
             consume.ticketB64,
-            baseRequest,
             baseUrl,
             bindRes.canonicalPath,
             config,
@@ -2291,12 +1986,11 @@ export default {
           if (!(await verifyTurnstileForTicket(baseRequest, turnSecret, turnToken, ticket))) {
             return await fail(deny());
           }
-          const response = await fetch(stripInnerHeaders(atomic.forwardRequest));
+          const response = await fetch(stripInnerHeaders(baseRequest));
           return atomic.fromCookie ? withClearedCookie(response, atomic.cookieName) : response;
         }
         const ticket = await loadAtomicTicket(
           atomic.ticketB64,
-          baseRequest,
           baseUrl,
           bindRes.canonicalPath,
           config,
@@ -2309,7 +2003,7 @@ export default {
         if (!(await verifyTurnstileForTicket(baseRequest, turnSecret, turnToken, ticket))) {
           return await fail(deny());
         }
-        const response = await fetch(stripInnerHeaders(atomic.forwardRequest));
+        const response = await fetch(stripInnerHeaders(baseRequest));
         return atomic.fromCookie ? withClearedCookie(response, atomic.cookieName) : response;
       }
     }

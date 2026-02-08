@@ -11,8 +11,8 @@ This project provides a self-contained L7 front gate that:
 
 ## Files
 
-- `pow-config.js`: front snippet (match config + derived binding values + signed inner header).
-- `pow.js`: core gate snippet (PoW API + gate), requires the signed inner header.
+- `pow-config.js`: policy frontload layer (rule match + bypass/bindPath/atomic derivation + signed inner snapshot).
+- `pow.js`: verification execution layer (PoW/Turnstile state machine + ticket/cookie verification), consumes `inner.s` only.
 - `glue.js`: browser-side UI + orchestration (loaded by the challenge page).
 - `esm/esm.js`: browser-side PoW solver (`computePoswCommit`).
 - `template.html`: minimal challenge page template injected into the build.
@@ -40,10 +40,17 @@ Notes:
   - `TURNSTILE_SECRET`
 - Rule matching is first-match-wins; put more specific rules first.
 - `pow.js` does not embed `DEFAULTS/CONFIG/COMPILED`; configuration is entirely supplied by `pow-config`.
+- Inner payload is `{ v, id, c, d, s }` with `v=1`; `s` is mandatory and carries frontloaded strategy (`nav/bypass/bind/atomic`). Missing `s` fails closed (`500`) with no legacy fallback.
 - The inner header supports sharding via `X-Pow-Inner-Count` + `X-Pow-Inner-0..N-1`.
 - The inner header includes `X-Pow-Inner-Expire`; the MAC is computed over `payload + "." + exp`.
 - `POW_API_PREFIX` and `POW_COMMIT_COOKIE` are treated as global constants; `pow-config` supplies fixed defaults and per-entry overrides are ignored.
 - `pow.js` has no fallback: missing/invalid inner header, missing/out-of-window expire header, or failed signature returns `500`.
+
+## Architecture split
+
+- `pow-config` is the only policy decision point: it computes strategy and strips transient inputs before proxying.
+- `pow.js` is execution-only: it validates signed inner payload and runs PoW/Turnstile verification paths.
+- Compatibility/migration branches are intentionally removed (`no compat`, `no migrate`, `no dead code`).
 
 ## Config Reference
 
@@ -102,7 +109,7 @@ Each `CONFIG` entry looks like:
 | `PROOF_RENEW_MAX` | `number` | `2` | Max renewal count (hard cap; signed). |
 | `PROOF_RENEW_WINDOW_SEC` | `number` | `90` | Only renew when `exp - now <= window`. |
 | `PROOF_RENEW_MIN_SEC` | `number` | `30` | Minimum seconds between renewals. |
-| `POW_BIND_PATH` | `boolean` | `true` | Bind to canonical path hash; when enabled and `bindPathMode` is `query`/`header`, missing/invalid bindPath returns `400`. |
+| `POW_BIND_PATH` | `boolean` | `true` | Bind to canonical path hash; when enabled and `bindPathMode` is `query`/`header`, missing/invalid/oversized bindPath returns `400` (fail-closed). |
 | `bindPathMode` | `"none", "query", "header"` | `"none"` | How to derive canonical path for binding (proxy-style endpoints). |
 | `bindPathQueryName` | `string` | `"path"` | Query param name when `bindPathMode: "query"`. |
 | `bindPathHeaderName` | `string` | `""` | Header name when `bindPathMode: "header"`. |
@@ -231,6 +238,7 @@ Atomic consume (`ATOMIC_CONSUME=true`):
 - **Turn-only**: `/__pow/turn` is disabled (404). Client attaches `turnToken + ticket` to the business request and the snippet verifies + forwards the original request.
 - **Combined**: `/__pow/open` returns `{ done: true, consume: "v2..." }` and does **not** set `__Host-proof`. Client attaches `turnToken + consume` to the business request; the snippet verifies consume (HMAC + tb), binding, then `siteverify`.
 - **Transport**: cookie > header > query (header preferred over query when both present). Navigation tries a short-lived cookie first (Max-Age 5s, Path = target), then falls back to query; embedded flows use `postMessage` for header replay. Tokens are stripped when `STRIP_ATOMIC_QUERY/STRIP_ATOMIC_HEADERS` are `true`. The cookie is cleared after use.
+- **Fail-closed validation**: malformed atomic fields return `400` with empty body; oversized atomic fields/snapshots return `431` with empty body. No legacy fallback is used.
 - **Navigation failure**: if atomic validation fails, navigation requests fall back to the challenge page (non-navigation still returns 403).
 - **Embedding**: the challenge page forbids iframe embedding (CSP/XFO). Atomic `postMessage` is restricted to same-origin parent/opener and uses a concrete origin.
 

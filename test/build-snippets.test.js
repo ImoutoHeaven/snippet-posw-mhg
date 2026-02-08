@@ -1,21 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-import { fileURLToPath } from "node:url";
 import { join } from "node:path";
-import { readFile, rm, stat } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
+import { runBuild, distDir } from "../lib/build-lock.js";
 
-const execFileAsync = promisify(execFile);
-const repoRoot = fileURLToPath(new URL("..", import.meta.url));
-const distDir = join(repoRoot, "dist");
 const powConfigSnippet = join(distDir, "pow_config_snippet.js");
 const powSnippet = join(distDir, "pow_snippet.js");
 
 test("build emits pow-config and pow snippets", async () => {
-  await rm(distDir, { recursive: true, force: true });
-
-  await execFileAsync(process.execPath, ["build.mjs"], { cwd: repoRoot });
+  await runBuild({ cleanDist: true });
 
   const [configStat, powStat] = await Promise.all([
     stat(powConfigSnippet),

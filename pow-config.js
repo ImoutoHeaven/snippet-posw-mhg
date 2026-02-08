@@ -171,6 +171,12 @@ const sha256Bytes = async (data) => {
 const BASE64URL_RE = /^[A-Za-z0-9_-]+$/;
 const B64_HASH_MAX_LEN = 64;
 const B64_TICKET_MAX_LEN = 256;
+const BIND_PATH_INPUT_MAX_LEN = 2048;
+const ATOMIC_TURN_MAX_LEN = 2048;
+const ATOMIC_TICKET_MAX_LEN = 2048;
+const ATOMIC_CONSUME_MAX_LEN = 256;
+const ATOMIC_COOKIE_NAME_MAX_LEN = 128;
+const ATOMIC_SNAPSHOT_MAX_LEN = 4096;
 const NONCE_MIN_LEN = 16;
 const NONCE_MAX_LEN = 64;
 const SPINE_SEED_MIN_LEN = 16;
@@ -238,6 +244,35 @@ const normalizePath = (pathname) => {
   return decoded.startsWith("/") ? decoded : `/${decoded}`;
 };
 
+const CONTROL_CHAR_RE = /[\u0000-\u001F\u007F]/;
+
+const timingSafeEqual = (a, b) => {
+  const aNorm = typeof a === "string" ? a : "";
+  const bNorm = typeof b === "string" ? b : "";
+  if (aNorm.length !== bNorm.length) return false;
+  let diff = 0;
+  for (let i = 0; i < aNorm.length; i++) {
+    diff |= aNorm.charCodeAt(i) ^ bNorm.charCodeAt(i);
+  }
+  return diff === 0;
+};
+
+const normalizeBindPathInput = (raw) => {
+  if (typeof raw !== "string" || raw.length === 0 || raw.length > BIND_PATH_INPUT_MAX_LEN) {
+    return null;
+  }
+  let decoded;
+  try {
+    decoded = decodeURIComponent(raw);
+  } catch {
+    return null;
+  }
+  const canonical = decoded[0] === "/" ? decoded : `/${decoded}`;
+  if (canonical.length > BIND_PATH_INPUT_MAX_LEN) return null;
+  if (CONTROL_CHAR_RE.test(canonical)) return null;
+  return canonical;
+};
+
 const parseCookieHeader = (cookieHeader) => {
   const out = new Map();
   if (!cookieHeader) return out;
@@ -258,6 +293,233 @@ const parseCookieHeader = (cookieHeader) => {
     out.set(key, value);
   }
   return out;
+};
+
+const resolveBypassRequest = (request, url, config) => {
+  const queryName = config.INNER_AUTH_QUERY_NAME.trim();
+  const queryValue = config.INNER_AUTH_QUERY_VALUE;
+  const headerName = config.INNER_AUTH_HEADER_NAME.trim();
+  const headerValue = config.INNER_AUTH_HEADER_VALUE;
+  const queryConfigured = Boolean(queryName && queryValue);
+  const headerConfigured = Boolean(headerName && headerValue);
+  const queryMatch = queryConfigured
+    ? (() => {
+        const got = url.searchParams.get(queryName);
+        return typeof got === "string" && timingSafeEqual(got, queryValue);
+      })()
+    : false;
+  const headerMatch = headerConfigured
+    ? (() => {
+        const got = request.headers.get(headerName);
+        return typeof got === "string" && timingSafeEqual(got, headerValue);
+      })()
+    : false;
+
+  const bypass =
+    queryConfigured && headerConfigured
+      ? queryMatch && headerMatch
+      : queryConfigured
+        ? queryMatch
+        : headerConfigured
+          ? headerMatch
+          : false;
+
+  if (!bypass) {
+    return { bypass: false, forwardRequest: request };
+  }
+
+  const stripQuery = queryMatch && config.stripInnerAuthQuery === true;
+  const stripHeader = headerMatch && config.stripInnerAuthHeader === true;
+  let forwardRequest = request;
+
+  if (stripQuery) {
+    const nextUrl = new URL(url.toString());
+    nextUrl.searchParams.delete(queryName);
+    forwardRequest = new Request(nextUrl, request);
+  }
+
+  if (stripHeader) {
+    const headers = new Headers(forwardRequest.headers);
+    headers.delete(headerName);
+    forwardRequest = new Request(forwardRequest, { headers });
+  }
+
+  return { bypass: true, forwardRequest };
+};
+
+const resolveBindPathForPow = (request, url, requestPath, config) => {
+  if (config.POW_BIND_PATH === false) {
+    return { ok: true, canonicalPath: requestPath, forwardRequest: request };
+  }
+  const mode = config.bindPathMode;
+  if (!mode || mode === "none") {
+    return { ok: true, canonicalPath: requestPath, forwardRequest: request };
+  }
+  if (mode === "query") {
+    const name = config.bindPathQueryName.trim();
+    if (!name) return { ok: false, code: "misconfigured", forwardRequest: request };
+    const raw = url.searchParams.get(name);
+    if (!raw) return { ok: false, code: "missing", forwardRequest: request };
+    const canonical = normalizeBindPathInput(raw);
+    if (!canonical) return { ok: false, code: "invalid", forwardRequest: request };
+    return { ok: true, canonicalPath: canonical, forwardRequest: request };
+  }
+  if (mode === "header") {
+    const name = config.bindPathHeaderName.trim();
+    if (!name) return { ok: false, code: "misconfigured", forwardRequest: request };
+    const raw = request.headers.get(name);
+    if (!raw) return { ok: false, code: "missing", forwardRequest: request };
+    const canonical = normalizeBindPathInput(raw);
+    if (!canonical) return { ok: false, code: "invalid", forwardRequest: request };
+    if (config.stripBindPathHeader === true) {
+      const headers = new Headers(request.headers);
+      headers.delete(name);
+      const forwardRequest = new Request(request, { headers });
+      return { ok: true, canonicalPath: canonical, forwardRequest };
+    }
+    return { ok: true, canonicalPath: canonical, forwardRequest: request };
+  }
+  return { ok: false, code: "misconfigured", forwardRequest: request };
+};
+
+const parseAtomicCookie = (value) => {
+  if (!value) return null;
+  const parts = value.split("|");
+  if (parts[0] !== "1" || parts.length < 4) return null;
+  const mode = parts[1];
+  const turnToken = parts[2] || "";
+  const payload = parts[3] || "";
+  if (!turnToken || !payload) return null;
+  if (mode === "t") return { turnToken, ticketB64: payload, consumeToken: "" };
+  if (mode === "c") return { turnToken, ticketB64: "", consumeToken: payload };
+  return null;
+};
+
+const extractAtomicAuth = (request, url, config) => {
+  const qTurn = config.ATOMIC_TURN_QUERY.trim();
+  const qTicket = config.ATOMIC_TICKET_QUERY.trim();
+  const qConsume = config.ATOMIC_CONSUME_QUERY.trim();
+  const hTurn = config.ATOMIC_TURN_HEADER.trim();
+  const hTicket = config.ATOMIC_TICKET_HEADER.trim();
+  const hConsume = config.ATOMIC_CONSUME_HEADER.trim();
+  const cookieName = config.ATOMIC_COOKIE_NAME.trim();
+
+  let turnToken = "";
+  let ticketB64 = "";
+  let consumeToken = "";
+  let fromCookie = false;
+  if (cookieName) {
+    const cookies = parseCookieHeader(request.headers.get("Cookie"));
+    const raw = cookies.get(cookieName) || "";
+    const parsed = parseAtomicCookie(raw);
+    if (parsed) {
+      turnToken = parsed.turnToken;
+      ticketB64 = parsed.ticketB64;
+      consumeToken = parsed.consumeToken;
+      fromCookie = true;
+    }
+  }
+  if (!fromCookie) {
+    const headerTurn = hTurn ? request.headers.get(hTurn) : "";
+    if (headerTurn) {
+      turnToken = headerTurn;
+      ticketB64 = hTicket ? request.headers.get(hTicket) || "" : "";
+      consumeToken = hConsume ? request.headers.get(hConsume) || "" : "";
+    } else {
+      turnToken = qTurn ? url.searchParams.get(qTurn) || "" : "";
+      ticketB64 = qTicket ? url.searchParams.get(qTicket) || "" : "";
+      consumeToken = qConsume ? url.searchParams.get(qConsume) || "" : "";
+    }
+  }
+
+  const stripQuery = config.STRIP_ATOMIC_QUERY !== false;
+  const stripHeader = config.STRIP_ATOMIC_HEADERS !== false;
+  let forwardRequest = request;
+
+  if (stripQuery && (qTurn || qTicket || qConsume)) {
+    const nextUrl = new URL(url.toString());
+    let changed = false;
+    if (qTurn && nextUrl.searchParams.has(qTurn)) {
+      nextUrl.searchParams.delete(qTurn);
+      changed = true;
+    }
+    if (qTicket && nextUrl.searchParams.has(qTicket)) {
+      nextUrl.searchParams.delete(qTicket);
+      changed = true;
+    }
+    if (qConsume && nextUrl.searchParams.has(qConsume)) {
+      nextUrl.searchParams.delete(qConsume);
+      changed = true;
+    }
+    if (changed) {
+      forwardRequest = new Request(nextUrl, request);
+    }
+  }
+
+  if (stripHeader && (hTurn || hTicket || hConsume)) {
+    const headers = new Headers(forwardRequest.headers);
+    let changed = false;
+    if (hTurn && headers.has(hTurn)) {
+      headers.delete(hTurn);
+      changed = true;
+    }
+    if (hTicket && headers.has(hTicket)) {
+      headers.delete(hTicket);
+      changed = true;
+    }
+    if (hConsume && headers.has(hConsume)) {
+      headers.delete(hConsume);
+      changed = true;
+    }
+    if (changed) {
+      forwardRequest = new Request(forwardRequest, { headers });
+    }
+  }
+
+  return { turnToken, ticketB64, consumeToken, fromCookie, cookieName, forwardRequest };
+};
+
+const validateAtomicSnapshot = (atomic) => {
+  if (!atomic || typeof atomic !== "object") {
+    return { ok: false, status: 400 };
+  }
+  if (
+    typeof atomic.turnToken !== "string" ||
+    typeof atomic.ticketB64 !== "string" ||
+    typeof atomic.consumeToken !== "string" ||
+    typeof atomic.fromCookie !== "boolean" ||
+    typeof atomic.cookieName !== "string"
+  ) {
+    return { ok: false, status: 400 };
+  }
+
+  if (
+    atomic.turnToken.length > ATOMIC_TURN_MAX_LEN ||
+    atomic.ticketB64.length > ATOMIC_TICKET_MAX_LEN ||
+    atomic.consumeToken.length > ATOMIC_CONSUME_MAX_LEN ||
+    atomic.cookieName.length > ATOMIC_COOKIE_NAME_MAX_LEN
+  ) {
+    return { ok: false, status: 431 };
+  }
+
+  if (
+    CONTROL_CHAR_RE.test(atomic.turnToken) ||
+    CONTROL_CHAR_RE.test(atomic.consumeToken) ||
+    CONTROL_CHAR_RE.test(atomic.cookieName)
+  ) {
+    return { ok: false, status: 400 };
+  }
+
+  if (atomic.ticketB64 && !BASE64URL_RE.test(atomic.ticketB64)) {
+    return { ok: false, status: 400 };
+  }
+
+  const atomicSize = utf8ToBytes(JSON.stringify(atomic)).length;
+  if (atomicSize > ATOMIC_SNAPSHOT_MAX_LEN) {
+    return { ok: false, status: 431 };
+  }
+
+  return { ok: true };
 };
 
 const isPlainObject = (value) => {
@@ -1062,10 +1324,15 @@ const buildDerivedBindings = async (request, config) => {
   return { ipScope, country, asn, tlsFingerprint };
 };
 
-const buildSignedInnerPayload = async (request, cfgId, config) => {
-  const normalizedConfig = normalizeConfig(config);
+const buildSignedInnerPayload = async (request, cfgId, normalizedConfig, strategySnapshot) => {
   const derived = await buildDerivedBindings(request, normalizedConfig);
-  const payloadObj = { v: 1, id: cfgId, c: normalizedConfig, d: derived };
+  const payloadObj = {
+    v: 1,
+    id: cfgId,
+    c: normalizedConfig,
+    d: derived,
+    s: strategySnapshot,
+  };
   const payload = base64UrlEncodeNoPad(utf8ToBytes(JSON.stringify(payloadObj)));
   const exp = Math.floor(Date.now() / 1000) + 3;
   const mac = await hmacSha256Base64UrlNoPad(CONFIG_SECRET, `${payload}.${exp}`);
@@ -1102,16 +1369,52 @@ export default {
     }
 
     const resolved = await resolveConfig(request, url, requestPath);
+    const normalizedConfig = normalizeConfig(resolved.config);
+
+    const bypass = resolveBypassRequest(request, url, normalizedConfig);
+    let forwardRequest = bypass.forwardRequest;
+    let forwardUrl = new URL(forwardRequest.url);
+
+    const bind = resolveBindPathForPow(forwardRequest, forwardUrl, requestPath, normalizedConfig);
+    forwardRequest = bind.forwardRequest;
+    forwardUrl = new URL(forwardRequest.url);
+
+    const atomic = extractAtomicAuth(forwardRequest, forwardUrl, normalizedConfig);
+    forwardRequest = atomic.forwardRequest;
+
+    const strategySnapshot = {
+      nav: {},
+      bypass: { bypass: bypass.bypass },
+      bind: {
+        ok: bind.ok,
+        code: bind.code || "",
+        canonicalPath: bind.canonicalPath || requestPath,
+      },
+      atomic: {
+        turnToken: atomic.turnToken,
+        ticketB64: atomic.ticketB64,
+        consumeToken: atomic.consumeToken,
+        fromCookie: atomic.fromCookie,
+        cookieName: atomic.cookieName,
+      },
+    };
+
+    const atomicValidation = validateAtomicSnapshot(strategySnapshot.atomic);
+    if (!atomicValidation.ok) {
+      return new Response(null, { status: atomicValidation.status });
+    }
+
     const { payload, mac, exp } = await buildSignedInnerPayload(
-      request,
+      forwardRequest,
       resolved.cfgId,
-      resolved.config
+      normalizedConfig,
+      strategySnapshot
     );
 
-    const headers = stripInnerHeaders(new Headers(request.headers));
+    const headers = stripInnerHeaders(new Headers(forwardRequest.headers));
     writeInnerHeaders(headers, payload, mac, exp);
 
-    const forward = new Request(request, { headers });
+    const forward = new Request(forwardRequest, { headers });
     return fetch(forward);
   },
 };
