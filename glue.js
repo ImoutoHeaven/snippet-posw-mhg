@@ -31,6 +31,16 @@ const I18N = {
     turnstile_rejected: "Turnstile Rejected",
     turnstile_failed: "Turnstile Failed",
     turnstile_expired: "Turnstile Expired",
+    recaptcha_load_failed: "reCAPTCHA Load Failed",
+    loading_recaptcha: "Loading reCAPTCHA...",
+    waiting_recaptcha: "Waiting for reCAPTCHA...",
+    recaptcha_retrying: "reCAPTCHA failed. Retrying...",
+    submitting_recaptcha: "Submitting reCAPTCHA...",
+    submitting_recaptcha_done: "Submitting reCAPTCHA... {done}",
+    recaptcha_done: "reCAPTCHA... {done}",
+    recaptcha_rejected_retry: "reCAPTCHA rejected. Please try again.",
+    recaptcha_rejected: "reCAPTCHA Rejected",
+    recaptcha_failed: "reCAPTCHA Failed",
     loading_solver: "Loading solver...",
     worker_missing: "Worker Missing",
     bad_binding: "Bad Binding",
@@ -80,6 +90,16 @@ const I18N = {
     turnstile_rejected: "Turnstile 被拒绝",
     turnstile_failed: "Turnstile 失败",
     turnstile_expired: "Turnstile 已过期",
+    recaptcha_load_failed: "reCAPTCHA 加载失败",
+    loading_recaptcha: "加载 reCAPTCHA...",
+    waiting_recaptcha: "等待 reCAPTCHA...",
+    recaptcha_retrying: "reCAPTCHA 失败，正在重试...",
+    submitting_recaptcha: "提交 reCAPTCHA...",
+    submitting_recaptcha_done: "提交 reCAPTCHA... {done}",
+    recaptcha_done: "reCAPTCHA... {done}",
+    recaptcha_rejected_retry: "reCAPTCHA 被拒绝，请重试。",
+    recaptcha_rejected: "reCAPTCHA 被拒绝",
+    recaptcha_failed: "reCAPTCHA 失败",
     loading_solver: "加载求解器...",
     worker_missing: "Worker 不可用",
     bad_binding: "绑定无效",
@@ -129,6 +149,16 @@ const I18N = {
     turnstile_rejected: "Turnstile が拒否されました",
     turnstile_failed: "Turnstile 失敗",
     turnstile_expired: "Turnstile の有効期限切れ",
+    recaptcha_load_failed: "reCAPTCHA の読み込みに失敗しました",
+    loading_recaptcha: "reCAPTCHA を読み込み中...",
+    waiting_recaptcha: "reCAPTCHA を待機中...",
+    recaptcha_retrying: "reCAPTCHA に失敗しました。再試行します...",
+    submitting_recaptcha: "reCAPTCHA を送信中...",
+    submitting_recaptcha_done: "reCAPTCHA を送信中... {done}",
+    recaptcha_done: "reCAPTCHA... {done}",
+    recaptcha_rejected_retry: "reCAPTCHA が拒否されました。再試行してください。",
+    recaptcha_rejected: "reCAPTCHA が拒否されました",
+    recaptcha_failed: "reCAPTCHA 失敗",
     loading_solver: "ソルバーを読み込み中...",
     worker_missing: "Worker が見つかりません",
     bad_binding: "無効なバインド",
@@ -220,6 +250,9 @@ const ERROR_KEY_BY_MESSAGE = {
   "Turnstile Failed": "turnstile_failed",
   "Turnstile Expired": "turnstile_expired",
   "Turnstile Rejected": "turnstile_rejected",
+  "reCAPTCHA Load Failed": "recaptcha_load_failed",
+  "reCAPTCHA Failed": "recaptcha_failed",
+  "reCAPTCHA Rejected": "recaptcha_rejected",
   "Worker Missing": "worker_missing",
   "Bad Binding": "bad_binding",
   "Challenge Failed": "challenge_failed",
@@ -252,7 +285,7 @@ const sha256Bytes = async (value) => {
   const buf = await crypto.subtle.digest("SHA-256", bytes);
   return new Uint8Array(buf);
 };
-const tbFromToken = async (token) =>
+const captchaTagFromToken = async (token) =>
   base64UrlEncodeNoPad((await sha256Bytes(token)).slice(0, 12));
 
 const parseAtomicCfg = (raw) => {
@@ -993,6 +1026,43 @@ const loadTurnstile = () => {
   return turnstilePromise;
 };
 
+let recaptchaPromise;
+const loadRecaptcha = () => {
+  if (window.grecaptcha) return Promise.resolve(window.grecaptcha);
+  if (recaptchaPromise) return recaptchaPromise;
+  recaptchaPromise = new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "https://www.google.com/recaptcha/api.js?render=explicit";
+    script.async = true;
+    script.defer = true;
+    script.onload = () => resolve(window.grecaptcha);
+    script.onerror = () => {
+      recaptchaPromise = null;
+      reject(new Error("reCAPTCHA Load Failed"));
+    };
+    (document.head || document.documentElement).appendChild(script);
+  });
+  return recaptchaPromise;
+};
+
+const executeRecaptcha = async (sitekey, action) => {
+  const grecaptcha = await loadRecaptcha();
+  if (!grecaptcha || typeof grecaptcha.ready !== "function" || typeof grecaptcha.execute !== "function") {
+    throw new Error("reCAPTCHA Load Failed");
+  }
+  return await new Promise((resolve, reject) => {
+    try {
+      grecaptcha.ready(() => {
+        Promise.resolve(grecaptcha.execute(sitekey, { action }))
+          .then((token) => resolve(token))
+          .catch(() => reject(new Error("reCAPTCHA Failed")));
+      });
+    } catch {
+      reject(new Error("reCAPTCHA Failed"));
+    }
+  });
+};
+
 const runTurnstile = async (ticketB64, sitekey, submitToken) => {
   const ticketMac = getTicketMac(ticketB64);
   if (!ticketMac) throw new Error("Bad Ticket");
@@ -1111,6 +1181,103 @@ const runTurnstile = async (ticketB64, sitekey, submitToken) => {
   return null;
 };
 
+const runRecaptchaV3 = async (sitekey, action, submitToken) => {
+  log(t("loading_recaptcha"));
+  const maxAttempts = 5;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    log(t("waiting_recaptcha"));
+    let token = "";
+    try {
+      token = String(await executeRecaptcha(sitekey, action));
+    } catch (error) {
+      if (attempt >= maxAttempts) throw error;
+      log(t("recaptcha_retrying"));
+      continue;
+    }
+    if (!token) {
+      if (attempt >= maxAttempts) throw new Error("reCAPTCHA Failed");
+      log(t("recaptcha_retrying"));
+      continue;
+    }
+    const submitLine = submitToken ? log(t("submitting_recaptcha")) : -1;
+    try {
+      if (submitToken) await submitToken(token);
+      if (submitLine !== -1) {
+        update(submitLine, t("submitting_recaptcha_done", { done: doneMark() }));
+      }
+      log(t("recaptcha_done", { done: doneMark() }));
+      return token;
+    } catch (error) {
+      if (submitToken && error && error.message === "403") {
+        if (submitLine !== -1) update(submitLine, t("recaptcha_rejected_retry"));
+        if (attempt >= maxAttempts) throw new Error("reCAPTCHA Rejected");
+        continue;
+      }
+      throw error;
+    }
+  }
+  return "";
+};
+
+const buildCaptchaEnvelope = (tokens) => {
+  const out = {};
+  if (tokens && typeof tokens.turnstile === "string" && tokens.turnstile) {
+    out.turnstile = tokens.turnstile;
+  }
+  if (tokens && typeof tokens.recaptcha_v3 === "string" && tokens.recaptcha_v3) {
+    out.recaptcha_v3 = tokens.recaptcha_v3;
+  }
+  return JSON.stringify(out);
+};
+
+const runCaptcha = async (ticketB64, captchaCfg, submitToken) => {
+  const hasTurn = Boolean(
+    captchaCfg &&
+      captchaCfg.turnstile &&
+      typeof captchaCfg.turnstile.sitekey === "string" &&
+      captchaCfg.turnstile.sitekey
+  );
+  const hasRecaptcha = Boolean(
+    captchaCfg &&
+      captchaCfg.recaptcha_v3 &&
+      typeof captchaCfg.recaptcha_v3.sitekey === "string" &&
+      captchaCfg.recaptcha_v3.sitekey
+  );
+  if (!hasTurn && !hasRecaptcha) {
+    throw new Error("No Challenge");
+  }
+
+  if (hasTurn && !hasRecaptcha) {
+    const turnToken = await runTurnstile(
+      ticketB64,
+      captchaCfg.turnstile.sitekey,
+      submitToken
+        ? async (token) => submitToken(buildCaptchaEnvelope({ turnstile: token }))
+        : undefined
+    );
+    return buildCaptchaEnvelope({ turnstile: turnToken });
+  }
+
+  if (!hasTurn && hasRecaptcha) {
+    const recap = captchaCfg.recaptcha_v3;
+    const recapToken = await runRecaptchaV3(
+      recap.sitekey,
+      recap.action || "submit",
+      submitToken
+        ? async (token) => submitToken(buildCaptchaEnvelope({ recaptcha_v3: token }))
+        : undefined
+    );
+    return buildCaptchaEnvelope({ recaptcha_v3: recapToken });
+  }
+
+  const turnToken = await runTurnstile(ticketB64, captchaCfg.turnstile.sitekey);
+  const recapCfg = captchaCfg.recaptcha_v3;
+  const recapToken = await runRecaptchaV3(recapCfg.sitekey, recapCfg.action || "submit");
+  const envelope = buildCaptchaEnvelope({ turnstile: turnToken, recaptcha_v3: recapToken });
+  if (submitToken) await submitToken(envelope);
+  return envelope;
+};
+
 const runPowFlow = async (
   apiPrefix,
   bindingB64,
@@ -1120,6 +1287,7 @@ const runPowFlow = async (
   hashcashBits,
   segmentLen,
   esmUrlB64,
+  captchaToken,
   turnToken
 ) => {
   log(t("loading_solver"));
@@ -1133,7 +1301,24 @@ const runPowFlow = async (
   if (!authBinding) {
     throw new Error("Bad Binding");
   }
-  const powBinding = turnToken ? `${authBinding}|${await tbFromToken(turnToken)}` : authBinding;
+  let captchaBindingToken = "";
+  if (turnToken) {
+    captchaBindingToken = turnToken;
+  } else if (captchaToken) {
+    try {
+      const parsed = JSON.parse(captchaToken);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        if (typeof parsed.turnstile === "string" && parsed.turnstile) {
+          captchaBindingToken = parsed.turnstile;
+        } else if (typeof parsed.recaptcha_v3 === "string" && parsed.recaptcha_v3) {
+          captchaBindingToken = parsed.recaptcha_v3;
+        }
+      }
+    } catch {}
+  }
+  const powBinding = captchaBindingToken
+    ? `${authBinding}|${await captchaTagFromToken(captchaBindingToken)}`
+    : authBinding;
 
   const workerCode = await fetch(workerUrl).then((r) => r.text());
   const blob = new Blob([workerCode], { type: "application/javascript" });
@@ -1269,7 +1454,7 @@ const runPowFlow = async (
       pathHash,
       nonce: commitRes.result.nonce,
     };
-    if (turnToken) commitBody.token = turnToken;
+    if (captchaToken) commitBody.captchaToken = captchaToken;
     await postJson(apiPrefix + "/commit", commitBody);
 
     log(t("requesting_challenge"));
@@ -1317,7 +1502,7 @@ const runPowFlow = async (
         spinePos,
         opens: openRes.opens,
       };
-      if (turnToken) openBody.turnToken = turnToken;
+      if (captchaToken) openBody.captchaToken = captchaToken;
       state = await postJson(apiPrefix + "/open", openBody);
       if (state && state.done === true) break;
       if (
@@ -1370,7 +1555,7 @@ export default async function runPow(
   reloadUrlB64,
   apiPrefixB64,
   esmUrlB64,
-  turnSiteKeyB64,
+  captchaCfgB64,
   atomicCfg
 ) {
   try {
@@ -1378,35 +1563,56 @@ export default async function runPow(
     const target = decodeB64Url(String(reloadUrlB64 || "")) || "/";
 
     const needPow = Number(steps) > 0;
-    const turnSiteKey = decodeB64Url(String(turnSiteKeyB64 || "")) || "";
-    const needTurn = !!turnSiteKey;
+    const captchaCfgRaw = decodeB64Url(String(captchaCfgB64 || "")) || "";
+    let captchaCfg = {};
+    if (captchaCfgRaw) {
+      try {
+        const parsed = JSON.parse(captchaCfgRaw);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          captchaCfg = parsed;
+        }
+      } catch {}
+    }
+    const needTurn = Boolean(
+      captchaCfg &&
+        captchaCfg.turnstile &&
+        typeof captchaCfg.turnstile.sitekey === "string" &&
+        captchaCfg.turnstile.sitekey
+    );
+    const needRecaptcha = Boolean(
+      captchaCfg &&
+        captchaCfg.recaptcha_v3 &&
+        typeof captchaCfg.recaptcha_v3.sitekey === "string" &&
+        captchaCfg.recaptcha_v3.sitekey
+    );
+    const needCaptcha = needTurn || needRecaptcha;
     const cfg = parseAtomicCfg(atomicCfg);
     const atomicEnabled = cfg.atomic;
-    const Q_TURN = cfg.q.ts;
+    const Q_CAPTCHA = cfg.q.ts;
     const Q_TICKET = cfg.q.tt;
     const Q_CONSUME = cfg.q.ct;
-    const H_TURN = cfg.h.ts;
+    const H_CAPTCHA = cfg.h.ts;
     const H_TICKET = cfg.h.tt;
     const H_CONSUME = cfg.h.ct;
     const C_NAME = cfg.c;
 
-    if (!needPow && !needTurn) throw new Error("No Challenge");
+    if (!needPow && !needCaptcha) throw new Error("No Challenge");
 
     const embedded = window.parent !== window;
 
-    if (needTurn && !needPow) {
+    if (!needPow && needCaptcha) {
       if (atomicEnabled) {
-        const turnToken = await runTurnstile(ticketB64, turnSiteKey);
-        const query = { [Q_TURN]: turnToken, [Q_TICKET]: ticketB64 };
-        const headers = { [H_TURN]: turnToken, [H_TICKET]: ticketB64 };
+        const captchaToken = await runCaptcha(ticketB64, captchaCfg);
+        const query = { [Q_CAPTCHA]: captchaToken, [Q_TICKET]: ticketB64 };
+        const headers = { [H_CAPTCHA]: captchaToken, [H_TICKET]: ticketB64 };
         if (embedded) {
-          postAtomicMessage({ mode: "turn", turnToken, ticketB64, headers, query });
+          postAtomicMessage({ mode: "turn", captchaToken, ticketB64, headers, query });
           log(t("access_granted_close"));
           setStatus(true);
           document.title = t("title_done");
           return;
         }
-        const cookieValue = `1|t|${turnToken}|${ticketB64}`;
+        const cookieValue = `1|t|${captchaToken}|${ticketB64}`;
         const cookiePath = cookiePathForTarget(target);
         if (
           canUseCookie(C_NAME, cookieValue) &&
@@ -1424,10 +1630,10 @@ export default async function runPow(
         window.location.replace(addQuery(target, query));
         return;
       }
-      await runTurnstile(ticketB64, turnSiteKey, async (token) => {
-        await postJson(apiPrefix + "/turn", { ticketB64, pathHash, token });
+      await runCaptcha(ticketB64, captchaCfg, async (captchaToken) => {
+        await postJson(apiPrefix + "/cap", { ticketB64, pathHash, captchaToken });
       });
-    } else if (needPow && !needTurn) {
+    } else if (needPow && !needCaptcha) {
       await runPowFlow(
         apiPrefix,
         bindingB64,
@@ -1437,11 +1643,19 @@ export default async function runPow(
         hashcashBits,
         segmentLen,
         esmUrlB64,
+        "",
         ""
       );
     } else {
-      const turnToken = await runTurnstile(ticketB64, turnSiteKey);
-      log(t("turnstile_solved_pow"));
+      const captchaToken = await runCaptcha(ticketB64, captchaCfg);
+      let turnToken = "";
+      try {
+        const parsedCaptcha = JSON.parse(captchaToken);
+        turnToken = typeof parsedCaptcha.turnstile === "string" ? parsedCaptcha.turnstile : "";
+      } catch {}
+      if (needTurn) {
+        log(t("turnstile_solved_pow"));
+      }
       const state = await runPowFlow(
         apiPrefix,
         bindingB64,
@@ -1451,21 +1665,22 @@ export default async function runPow(
         hashcashBits,
         segmentLen,
         esmUrlB64,
+        captchaToken,
         turnToken
       );
       if (atomicEnabled) {
         const consume = state && state.consume;
         if (!consume) throw new Error("Consume Missing");
-        const query = { [Q_TURN]: turnToken, [Q_CONSUME]: consume };
-        const headers = { [H_TURN]: turnToken, [H_CONSUME]: consume };
+        const query = { [Q_CAPTCHA]: captchaToken, [Q_CONSUME]: consume };
+        const headers = { [H_CAPTCHA]: captchaToken, [H_CONSUME]: consume };
         if (embedded) {
-          postAtomicMessage({ mode: "combine", turnToken, consume, headers, query });
+          postAtomicMessage({ mode: "combine", captchaToken, consume, headers, query });
           log(t("access_granted_close"));
           setStatus(true);
           document.title = t("title_done");
           return;
         }
-        const cookieValue = `1|c|${turnToken}|${consume}`;
+        const cookieValue = `1|c|${captchaToken}|${consume}`;
         const cookiePath = cookiePathForTarget(target);
         if (
           canUseCookie(C_NAME, cookieValue) &&

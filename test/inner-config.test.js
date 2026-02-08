@@ -522,6 +522,87 @@ test("pow-config normalizes non-string turnstile keys", async () => {
   }
 });
 
+test("pow-config preserves recaptcha keys for recaptchaEnabled", async () => {
+  const restoreGlobals = ensureGlobals();
+  const modulePath = await buildConfigModule("config-secret", {
+    configOverrides: {
+      recaptchaEnabled: true,
+      RECAPTCHA_PAIRS: [{ sitekey: "rk1", secret: "rs1" }],
+      RECAPTCHA_MIN_SCORE: 0.7,
+    },
+  });
+  const mod = await import(`${pathToFileURL(modulePath).href}?v=${Date.now()}`);
+  const handler = mod.default.fetch;
+  let forwarded = null;
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async (request) => {
+      forwarded = request;
+      return new Response("ok", { status: 200 });
+    };
+
+    const req = new Request("https://example.com/protected", {
+      headers: {
+        "CF-Connecting-IP": "1.2.3.4",
+      },
+    });
+    const res = await handler(req);
+    assert.equal(res.status, 200);
+    assert.ok(forwarded, "fetch called with modified request");
+
+    const { payload } = readInnerPayload(forwarded.headers);
+    const decoded = base64UrlDecode(payload);
+    assert.ok(decoded, "payload decodes");
+    const parsed = JSON.parse(decoded);
+    assert.equal(parsed.c.recaptchaEnabled, true);
+    assert.deepEqual(parsed.c.RECAPTCHA_PAIRS, [{ sitekey: "rk1", secret: "rs1" }]);
+    assert.equal(parsed.c.RECAPTCHA_MIN_SCORE, 0.7);
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreGlobals();
+  }
+});
+
+test("pow-config normalizes invalid recaptcha pair payload", async () => {
+  const restoreGlobals = ensureGlobals();
+  const modulePath = await buildConfigModule("config-secret", {
+    configOverrides: {
+      recaptchaEnabled: true,
+      RECAPTCHA_PAIRS: [{ sitekey: "rk1" }, { secret: "rs2" }, { sitekey: "", secret: "rs3" }],
+      RECAPTCHA_MIN_SCORE: "invalid",
+    },
+  });
+  const mod = await import(`${pathToFileURL(modulePath).href}?v=${Date.now()}`);
+  const handler = mod.default.fetch;
+  let forwarded = null;
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async (request) => {
+      forwarded = request;
+      return new Response("ok", { status: 200 });
+    };
+
+    const req = new Request("https://example.com/protected", {
+      headers: {
+        "CF-Connecting-IP": "1.2.3.4",
+      },
+    });
+    const res = await handler(req);
+    assert.equal(res.status, 200);
+    assert.ok(forwarded, "fetch called with modified request");
+
+    const { payload } = readInnerPayload(forwarded.headers);
+    const decoded = base64UrlDecode(payload);
+    assert.ok(decoded, "payload decodes");
+    const parsed = JSON.parse(decoded);
+    assert.deepEqual(parsed.c.RECAPTCHA_PAIRS, []);
+    assert.equal(parsed.c.RECAPTCHA_MIN_SCORE, 0.5);
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreGlobals();
+  }
+});
+
 test("pow-config normalizes numeric string POW_SEGMENT_LEN for pow.js", async () => {
   const restoreGlobals = ensureGlobals();
   const secret = "config-secret";
@@ -629,7 +710,7 @@ test("pow-config rejects oversized atomic snapshot with 431 and empty body", asy
       return new Response("ok", { status: 200 });
     };
 
-    const req = new Request(`https://example.com/protected?__ts=${"a".repeat(5000)}`, {
+    const req = new Request(`https://example.com/protected?__ts=${"a".repeat(9000)}`, {
       headers: {
         "CF-Connecting-IP": "1.2.3.4",
       },
@@ -672,7 +753,7 @@ test("pow-config rejects invalid atomic format with 400 and empty body", async (
   }
 });
 
-test("pow-config rejects oversized atomic snapshot when combined fields exceed 4096", async () => {
+test("pow-config accepts large combined captchaToken envelope under limits", async () => {
   const restoreGlobals = ensureGlobals();
   const modulePath = await buildConfigModule("config-secret");
   const mod = await import(`${pathToFileURL(modulePath).href}?v=${Date.now()}`);
@@ -685,10 +766,15 @@ test("pow-config rejects oversized atomic snapshot when combined fields exceed 4
       return new Response("ok", { status: 200 });
     };
 
-    const turn = "t".repeat(2048);
+    const envelope = JSON.stringify({
+      turnstile: "t".repeat(4000),
+      recaptcha_v3: "r".repeat(4000),
+    });
+    assert.ok(envelope.length < 8192, "envelope stays under captcha token max");
     const ticket = "a".repeat(2048);
+    const consume = "c".repeat(256);
     const req = new Request(
-      `https://example.com/protected?__ts=${turn}&__tt=${ticket}`,
+      `https://example.com/protected?__ts=${encodeURIComponent(envelope)}&__tt=${ticket}&__ct=${consume}`,
       {
         headers: {
           "CF-Connecting-IP": "1.2.3.4",
@@ -696,16 +782,16 @@ test("pow-config rejects oversized atomic snapshot when combined fields exceed 4
       }
     );
     const res = await handler(req);
-    assert.equal(res.status, 431);
-    assert.equal(forwarded, null);
-    assert.equal(await res.text(), "");
+    assert.equal(res.status, 200);
+    assert.ok(forwarded, "request is forwarded for large valid envelope");
+    assert.equal(await res.text(), "ok");
   } finally {
     globalThis.fetch = originalFetch;
     restoreGlobals();
   }
 });
 
-test("pow-config enforces turnToken length boundary at max and max+1", async () => {
+test("pow-config enforces captchaToken length boundary at max and max+1", async () => {
   const restoreGlobals = ensureGlobals();
   const modulePath = await buildConfigModule("config-secret");
   const mod = await import(`${pathToFileURL(modulePath).href}?v=${Date.now()}`);
@@ -718,7 +804,7 @@ test("pow-config enforces turnToken length boundary at max and max+1", async () 
       return new Response("ok", { status: 200 });
     };
 
-    const atMaxReq = new Request(`https://example.com/protected?__ts=${"t".repeat(2048)}`, {
+    const atMaxReq = new Request(`https://example.com/protected?__ts=${"t".repeat(8192)}`, {
       headers: {
         "CF-Connecting-IP": "1.2.3.4",
       },
@@ -729,7 +815,7 @@ test("pow-config enforces turnToken length boundary at max and max+1", async () 
     assert.equal(await atMaxRes.text(), "ok");
 
     forwarded = null;
-    const overReq = new Request(`https://example.com/protected?__ts=${"t".repeat(2049)}`, {
+    const overReq = new Request(`https://example.com/protected?__ts=${"t".repeat(8193)}`, {
       headers: {
         "CF-Connecting-IP": "1.2.3.4",
       },
@@ -876,7 +962,8 @@ test("pow-config frontloads atomic strategy with cookie priority and strips requ
     const decoded = base64UrlDecode(payload);
     assert.ok(decoded, "payload decodes");
     const parsed = JSON.parse(decoded);
-    assert.equal(parsed.s.atomic.turnToken, "c-turn");
+    assert.equal(parsed.s.atomic.captchaToken, "c-turn");
+    assert.equal(parsed.s.atomic.turnToken, undefined);
     assert.equal(parsed.s.atomic.ticketB64, "c-ticket");
     assert.equal(parsed.s.atomic.consumeToken, "");
     assert.equal(parsed.s.atomic.fromCookie, true);

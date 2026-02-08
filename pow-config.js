@@ -5,6 +5,7 @@ const CONFIG = [];
 const DEFAULTS = {
   powcheck: false,
   turncheck: false,
+  recaptchaEnabled: false,
   bindPathMode: "none",
   bindPathQueryName: "path",
   bindPathHeaderName: "",
@@ -58,6 +59,8 @@ const DEFAULTS = {
     "https://cdn.jsdelivr.net/gh/ImoutoHeaven/snippet-posw@412f7fcc71c319b62a614e4252280f2bb3d7302b/esm/esm.js",
   POW_GLUE_URL:
     "https://cdn.jsdelivr.net/gh/ImoutoHeaven/snippet-posw@412f7fcc71c319b62a614e4252280f2bb3d7302b/glue.js",
+  RECAPTCHA_PAIRS: [],
+  RECAPTCHA_MIN_SCORE: 0.5,
 };
 
 const normalizeCompiledEntry = (entry) => ({
@@ -172,16 +175,16 @@ const BASE64URL_RE = /^[A-Za-z0-9_-]+$/;
 const B64_HASH_MAX_LEN = 64;
 const B64_TICKET_MAX_LEN = 256;
 const BIND_PATH_INPUT_MAX_LEN = 2048;
-const ATOMIC_TURN_MAX_LEN = 2048;
+const ATOMIC_CAPTCHA_MAX_LEN = 8192;
 const ATOMIC_TICKET_MAX_LEN = 2048;
 const ATOMIC_CONSUME_MAX_LEN = 256;
 const ATOMIC_COOKIE_NAME_MAX_LEN = 128;
-const ATOMIC_SNAPSHOT_MAX_LEN = 4096;
+const ATOMIC_SNAPSHOT_MAX_LEN = 12288;
 const NONCE_MIN_LEN = 16;
 const NONCE_MAX_LEN = 64;
 const SPINE_SEED_MIN_LEN = 16;
 const SPINE_SEED_MAX_LEN = 64;
-const TB_LEN = 16;
+const CAPTCHA_TAG_LEN = 16;
 
 const isBase64Url = (value, minLen, maxLen) => {
   if (typeof value !== "string") return false;
@@ -206,6 +209,18 @@ const normalizeBoolean = (value, fallback) =>
 
 const normalizeString = (value, fallback) =>
   typeof value === "string" ? value : fallback;
+
+const normalizeRecaptchaPairs = (value) => {
+  if (!Array.isArray(value)) return [];
+  const out = [];
+  for (const pair of value) {
+    const sitekey = normalizeString(pair && pair.sitekey, "").trim();
+    const secret = normalizeString(pair && pair.secret, "").trim();
+    if (!sitekey || !secret) continue;
+    out.push({ sitekey, secret });
+  }
+  return out;
+};
 
 const clampIntRange = (value, min, max) =>
   Math.min(max, Math.max(min, Math.floor(value)));
@@ -387,11 +402,11 @@ const parseAtomicCookie = (value) => {
   const parts = value.split("|");
   if (parts[0] !== "1" || parts.length < 4) return null;
   const mode = parts[1];
-  const turnToken = parts[2] || "";
+  const captchaToken = parts[2] || "";
   const payload = parts[3] || "";
-  if (!turnToken || !payload) return null;
-  if (mode === "t") return { turnToken, ticketB64: payload, consumeToken: "" };
-  if (mode === "c") return { turnToken, ticketB64: "", consumeToken: payload };
+  if (!captchaToken || !payload) return null;
+  if (mode === "t") return { captchaToken, ticketB64: payload, consumeToken: "" };
+  if (mode === "c") return { captchaToken, ticketB64: "", consumeToken: payload };
   return null;
 };
 
@@ -404,7 +419,7 @@ const extractAtomicAuth = (request, url, config) => {
   const hConsume = config.ATOMIC_CONSUME_HEADER.trim();
   const cookieName = config.ATOMIC_COOKIE_NAME.trim();
 
-  let turnToken = "";
+  let captchaToken = "";
   let ticketB64 = "";
   let consumeToken = "";
   let fromCookie = false;
@@ -413,20 +428,20 @@ const extractAtomicAuth = (request, url, config) => {
     const raw = cookies.get(cookieName) || "";
     const parsed = parseAtomicCookie(raw);
     if (parsed) {
-      turnToken = parsed.turnToken;
+      captchaToken = parsed.captchaToken;
       ticketB64 = parsed.ticketB64;
       consumeToken = parsed.consumeToken;
       fromCookie = true;
     }
   }
   if (!fromCookie) {
-    const headerTurn = hTurn ? request.headers.get(hTurn) : "";
-    if (headerTurn) {
-      turnToken = headerTurn;
+    const headerCaptcha = hTurn ? request.headers.get(hTurn) : "";
+    if (headerCaptcha) {
+      captchaToken = headerCaptcha;
       ticketB64 = hTicket ? request.headers.get(hTicket) || "" : "";
       consumeToken = hConsume ? request.headers.get(hConsume) || "" : "";
     } else {
-      turnToken = qTurn ? url.searchParams.get(qTurn) || "" : "";
+      captchaToken = qTurn ? url.searchParams.get(qTurn) || "" : "";
       ticketB64 = qTicket ? url.searchParams.get(qTicket) || "" : "";
       consumeToken = qConsume ? url.searchParams.get(qConsume) || "" : "";
     }
@@ -476,7 +491,7 @@ const extractAtomicAuth = (request, url, config) => {
     }
   }
 
-  return { turnToken, ticketB64, consumeToken, fromCookie, cookieName, forwardRequest };
+  return { captchaToken, ticketB64, consumeToken, fromCookie, cookieName, forwardRequest };
 };
 
 const validateAtomicSnapshot = (atomic) => {
@@ -484,7 +499,7 @@ const validateAtomicSnapshot = (atomic) => {
     return { ok: false, status: 400 };
   }
   if (
-    typeof atomic.turnToken !== "string" ||
+    typeof atomic.captchaToken !== "string" ||
     typeof atomic.ticketB64 !== "string" ||
     typeof atomic.consumeToken !== "string" ||
     typeof atomic.fromCookie !== "boolean" ||
@@ -494,7 +509,7 @@ const validateAtomicSnapshot = (atomic) => {
   }
 
   if (
-    atomic.turnToken.length > ATOMIC_TURN_MAX_LEN ||
+    atomic.captchaToken.length > ATOMIC_CAPTCHA_MAX_LEN ||
     atomic.ticketB64.length > ATOMIC_TICKET_MAX_LEN ||
     atomic.consumeToken.length > ATOMIC_CONSUME_MAX_LEN ||
     atomic.cookieName.length > ATOMIC_COOKIE_NAME_MAX_LEN
@@ -503,7 +518,7 @@ const validateAtomicSnapshot = (atomic) => {
   }
 
   if (
-    CONTROL_CHAR_RE.test(atomic.turnToken) ||
+    CONTROL_CHAR_RE.test(atomic.captchaToken) ||
     CONTROL_CHAR_RE.test(atomic.consumeToken) ||
     CONTROL_CHAR_RE.test(atomic.cookieName)
   ) {
@@ -997,6 +1012,7 @@ const normalizeConfig = (baseConfig) => {
     ...merged,
     powcheck: normalizeBoolean(merged.powcheck, DEFAULTS.powcheck),
     turncheck: normalizeBoolean(merged.turncheck, DEFAULTS.turncheck),
+    recaptchaEnabled: normalizeBoolean(merged.recaptchaEnabled, DEFAULTS.recaptchaEnabled),
     bindPathMode: normalizeString(merged.bindPathMode, DEFAULTS.bindPathMode),
     bindPathQueryName: normalizeString(merged.bindPathQueryName, DEFAULTS.bindPathQueryName),
     bindPathHeaderName: normalizeString(merged.bindPathHeaderName, DEFAULTS.bindPathHeaderName),
@@ -1173,6 +1189,13 @@ const normalizeConfig = (baseConfig) => {
     POW_GLUE_URL: normalizeString(merged.POW_GLUE_URL, DEFAULTS.POW_GLUE_URL),
     TURNSTILE_SITEKEY: normalizeString(merged.TURNSTILE_SITEKEY, ""),
     TURNSTILE_SECRET: normalizeString(merged.TURNSTILE_SECRET, ""),
+    RECAPTCHA_PAIRS: normalizeRecaptchaPairs(merged.RECAPTCHA_PAIRS),
+    RECAPTCHA_MIN_SCORE: normalizeNumberClamp(
+      merged.RECAPTCHA_MIN_SCORE,
+      DEFAULTS.RECAPTCHA_MIN_SCORE,
+      0,
+      1
+    ),
     POW_TOKEN: typeof merged.POW_TOKEN === "string" ? merged.POW_TOKEN : undefined,
   };
 };
@@ -1263,7 +1286,7 @@ const parsePowCommitCookie = (value) => {
   const ticketB64 = parts[1] || "";
   const rootB64 = parts[2] || "";
   const pathHash = parts[3] || "";
-  const tb = parts[4] || "";
+  const captchaTag = parts[4] || "";
   const nonce = parts[5] || "";
   const exp = Number.parseInt(parts[6], 10);
   const spineSeed = parts[7] || "";
@@ -1271,7 +1294,9 @@ const parsePowCommitCookie = (value) => {
   if (!isBase64Url(ticketB64, 1, B64_TICKET_MAX_LEN)) return null;
   if (!isBase64Url(rootB64, 1, B64_HASH_MAX_LEN)) return null;
   if (!(pathHash === "any" || isBase64Url(pathHash, 1, B64_HASH_MAX_LEN))) return null;
-  if (!(tb === "any" || isBase64Url(tb, TB_LEN, TB_LEN))) return null;
+  if (!(captchaTag === "any" || isBase64Url(captchaTag, CAPTCHA_TAG_LEN, CAPTCHA_TAG_LEN))) {
+    return null;
+  }
   if (!isBase64Url(nonce, NONCE_MIN_LEN, NONCE_MAX_LEN)) return null;
   if (!isBase64Url(spineSeed, SPINE_SEED_MIN_LEN, SPINE_SEED_MAX_LEN)) {
     return null;
@@ -1292,7 +1317,7 @@ const readJsonBody = async (request) => {
 const resolveCfgIdFromPowApi = async (request, requestPath) => {
   if (!requestPath.startsWith(`${DEFAULTS.POW_API_PREFIX}/`)) return null;
   const action = requestPath.slice(DEFAULTS.POW_API_PREFIX.length);
-  if (action === "/commit" || action === "/turn") {
+  if (action === "/commit" || action === "/cap") {
     const body = await readJsonBody(request.clone());
     const ticketB64 = body && typeof body.ticketB64 === "string" ? body.ticketB64 : "";
     const ticket = parsePowTicket(ticketB64);
@@ -1391,7 +1416,7 @@ export default {
         canonicalPath: bind.canonicalPath || requestPath,
       },
       atomic: {
-        turnToken: atomic.turnToken,
+        captchaToken: atomic.captchaToken,
         ticketB64: atomic.ticketB64,
         consumeToken: atomic.consumeToken,
         fromCookie: atomic.fromCookie,

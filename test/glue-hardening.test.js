@@ -16,6 +16,9 @@ const base64Url = (value) =>
 const makeModuleUrl = (workerUrl) =>
   `data:text/javascript,${encodeURIComponent(`export const workerUrl = "${workerUrl}";`)}`;
 
+const encodeCaptchaCfg = (cfg) =>
+  base64Url(typeof cfg === "string" ? cfg : JSON.stringify(cfg || {}));
+
 const setupDom = ({ onScriptAppend } = {}) => {
   const makeEl = (tag = "div") => ({
     tagName: tag,
@@ -102,7 +105,7 @@ const makeRunPowArgs = (overrides = {}) => {
     reloadUrlB64: base64Url("https://example.com/"),
     apiPrefixB64: base64Url("/__pow"),
     esmUrlB64: base64Url(moduleUrl),
-    turnSiteKeyB64: base64Url(""),
+    captchaCfgB64: encodeCaptchaCfg({}),
     atomicCfg: "0",
   };
   Object.assign(params, overrides);
@@ -117,7 +120,7 @@ const makeRunPowArgs = (overrides = {}) => {
     params.reloadUrlB64,
     params.apiPrefixB64,
     params.esmUrlB64,
-    params.turnSiteKeyB64,
+    params.captchaCfgB64,
     params.atomicCfg,
   ];
 };
@@ -171,12 +174,94 @@ test("glue hardening", { concurrency: 1 }, async (t) => {
     });
     const args = makeRunPowArgs({
       steps: 0,
-      turnSiteKeyB64: base64Url("sitekey"),
+      captchaCfgB64: encodeCaptchaCfg({ turnstile: { sitekey: "sitekey" } }),
       atomicCfg: "1",
     });
     await glue.default(...args);
     await glue.default(...args);
     assert.equal(scriptCount, 2);
+  });
+
+  await t.test("recaptcha execute failure allows retry", async () => {
+    const executed = [];
+    let scriptCount = 0;
+    const glue = await importGlue({
+      onScriptAppend: (el) => {
+        if (el && el.tagName === "script") {
+          scriptCount += 1;
+          queueMicrotask(() => {
+            globalThis.window.grecaptcha = {
+              ready(cb) {
+                cb();
+              },
+              execute: async (_sitekey, { action }) => {
+                executed.push(action);
+                if (executed.length === 1) throw new Error("boom");
+                return "recaptcha-token-2";
+              },
+            };
+            if (typeof el.onload === "function") el.onload();
+          });
+        }
+      },
+    });
+    const calls = [];
+    globalThis.fetch = async (url, init) => {
+      calls.push({ url: String(url), body: init && init.body ? JSON.parse(init.body) : null });
+      return { ok: true, status: 200, json: async () => ({}) };
+    };
+    const args = makeRunPowArgs({
+      steps: 0,
+      captchaCfgB64: encodeCaptchaCfg({
+        recaptcha_v3: { sitekey: "rk-1", action: "p_deadbeef00" },
+      }),
+    });
+    await glue.default(...args);
+    assert.equal(scriptCount, 1);
+    assert.equal(executed.length, 2);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].url, "/__pow/cap");
+    assert.deepEqual(JSON.parse(calls[0].body.captchaToken), { recaptcha_v3: "recaptcha-token-2" });
+  });
+
+  await t.test("runCaptcha supports turn+recaptcha sequence", async () => {
+    const fetchCalls = [];
+    const glue = await importGlue();
+    globalThis.window.turnstile = {
+      render: (_el, opts) => {
+        queueMicrotask(() => opts.callback("turn-token"));
+        return 1;
+      },
+      reset() {},
+      remove() {},
+    };
+    globalThis.window.grecaptcha = {
+      ready(cb) {
+        cb();
+      },
+      execute: async (_sitekey, { action }) => {
+        assert.equal(action, "p_abc123");
+        return "recaptcha-token";
+      },
+    };
+    globalThis.fetch = async (url, init) => {
+      fetchCalls.push({ url: String(url), body: init && init.body ? JSON.parse(init.body) : null });
+      return { ok: true, status: 200, json: async () => ({}) };
+    };
+    const args = makeRunPowArgs({
+      steps: 0,
+      captchaCfgB64: encodeCaptchaCfg({
+        turnstile: { sitekey: "ts-1" },
+        recaptcha_v3: { sitekey: "rk-1", action: "p_abc123" },
+      }),
+    });
+    await glue.default(...args);
+    assert.equal(fetchCalls.length, 1);
+    assert.equal(fetchCalls[0].url, "/__pow/cap");
+    assert.deepEqual(JSON.parse(fetchCalls[0].body.captchaToken), {
+      turnstile: "turn-token",
+      recaptcha_v3: "recaptcha-token",
+    });
   });
 
   await t.test("error messages are escaped in logs", async () => {
@@ -215,7 +300,7 @@ test("glue hardening", { concurrency: 1 }, async (t) => {
     };
     const args = makeRunPowArgs({
       steps: 0,
-      turnSiteKeyB64: base64Url("sitekey"),
+      captchaCfgB64: encodeCaptchaCfg({ turnstile: { sitekey: "sitekey" } }),
       atomicCfg: "1",
     });
     await glue.default(...args);

@@ -228,3 +228,22 @@ test("challenge rejects binding mismatch after commit", async () => {
     restoreGlobals();
   }
 });
+
+test("pow runtime uses captchaTag naming", async () => {
+  const repoRoot = fileURLToPath(new URL("..", import.meta.url));
+  const powSource = await readFile(join(repoRoot, "pow.js"), "utf8");
+  assert.match(powSource, /CAPTCHA_TAG_LEN/u);
+  assert.match(powSource, /captchaTagFromToken/u);
+  assert.doesNotMatch(powSource, /\bTB_LEN\b/u);
+  assert.doesNotMatch(powSource, /\btbFromToken\b/u);
+});
+
+test("pow open final step uses provider-aware captcha verification", async () => {
+  const repoRoot = fileURLToPath(new URL("..", import.meta.url));
+  const powSource = await readFile(join(repoRoot, "pow.js"), "utf8");
+  const openBlockMatch = powSource.match(/const handlePowOpen = async[\s\S]+?const handlePowApi = async/u);
+  assert.ok(openBlockMatch, "handlePowOpen block exists");
+  const openBlock = openBlockMatch[0];
+  assert.match(openBlock, /verifyRequiredCaptchaForTicket\(/u);
+  assert.doesNotMatch(openBlock, /verifyTurnstileForTicket\(/u);
+});

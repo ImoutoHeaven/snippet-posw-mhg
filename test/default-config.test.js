@@ -64,6 +64,7 @@ const base64Url = (buffer) =>
 const FULL_CONFIG = {
   powcheck: false,
   turncheck: false,
+  recaptchaEnabled: false,
   bindPathMode: "none",
   bindPathQueryName: "path",
   bindPathHeaderName: "",
@@ -117,6 +118,8 @@ const FULL_CONFIG = {
     "https://cdn.jsdelivr.net/gh/ImoutoHeaven/snippet-posw@412f7fcc71c319b62a614e4252280f2bb3d7302b/esm/esm.js",
   POW_GLUE_URL:
     "https://cdn.jsdelivr.net/gh/ImoutoHeaven/snippet-posw@412f7fcc71c319b62a614e4252280f2bb3d7302b/glue.js",
+  RECAPTCHA_PAIRS: [],
+  RECAPTCHA_MIN_SCORE: 0.5,
 };
 
 const FULL_STRATEGY = {
@@ -124,7 +127,7 @@ const FULL_STRATEGY = {
   bypass: { bypass: false },
   bind: { ok: true, code: "", canonicalPath: "/path" },
   atomic: {
-    turnToken: "",
+    captchaToken: "",
     ticketB64: "",
     consumeToken: "",
     fromCookie: false,
@@ -523,4 +526,33 @@ test("pow.js bypasses directly when inner.s.bypass.bypass is true", async () => 
     globalThis.fetch = originalFetch;
     restoreGlobals();
   }
+});
+
+test("requiredMask includes recaptcha bit in main gate", async () => {
+  const repoRoot = fileURLToPath(new URL("..", import.meta.url));
+  const powSource = await readFile(join(repoRoot, "pow.js"), "utf8");
+  assert.match(
+    powSource,
+    /const requiredMask = \(needPow \? 1 : 0\) \| \(needTurn \? 2 : 0\) \| \(needRecaptcha \? 4 : 0\);/u
+  );
+});
+
+test("cap proof issuance uses computed requiredMask", async () => {
+  const repoRoot = fileURLToPath(new URL("..", import.meta.url));
+  const powSource = await readFile(join(repoRoot, "pow.js"), "utf8");
+  assert.match(
+    powSource,
+    /const handleCap = async \([\s\S]*?const requiredMask = \(needPow \? 1 : 0\) \| \(needTurn \? 2 : 0\) \| \(needRecaptcha \? 4 : 0\);[\s\S]*?await issueProofCookie\([\s\S]*?requiredMask\s*\);/u
+  );
+  assert.doesNotMatch(
+    powSource,
+    /const handleCap = async \([\s\S]*?await issueProofCookie\([\s\S]*?\n\s*2\s*\n\s*\);/u
+  );
+});
+
+test("mask enforcement keeps bitwise AND semantics", async () => {
+  const repoRoot = fileURLToPath(new URL("..", import.meta.url));
+  const powSource = await readFile(join(repoRoot, "pow.js"), "utf8");
+  assert.match(powSource, /if \(\(parsed\.m & requiredMask\) !== requiredMask\) return null;/u);
+  assert.match(powSource, /if \(\(proof\.m & requiredMask\) !== requiredMask\) return null;/u);
 });

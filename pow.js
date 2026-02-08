@@ -2,6 +2,7 @@
 // Set POW_TOKEN in config to your PoW secret.
 const PROOF_COOKIE = "__Host-proof";
 const TURNSTILE_SITEVERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
+const RECAPTCHA_SITEVERIFY_URL = "https://www.google.com/recaptcha/api/siteverify";
 const INNER_HEADER = "X-Pow-Inner";
 const INNER_MAC = "X-Pow-Inner-Mac";
 const INNER_EXPIRE_HEADER = "X-Pow-Inner-Expire";
@@ -123,7 +124,7 @@ const NONCE_MAX_LEN = 64;
 const SID_LEN = 16;
 const TOKEN_MIN_LEN = 16;
 const TOKEN_MAX_LEN = 64;
-const TB_LEN = 16;
+const CAPTCHA_TAG_LEN = 16;
 const TURN_TOKEN_MIN_LEN = 20;
 const TURN_TOKEN_MAX_LEN = 4096;
 const SPINE_SEED_MIN_LEN = 16;
@@ -180,8 +181,17 @@ const sha256Bytes = async (data) => {
   const buf = await crypto.subtle.digest("SHA-256", bytes);
   return new Uint8Array(buf);
 };
-const tbFromToken = async (token) =>
+const bytesToHex = (bytes) => Array.from(bytes || [], (b) => b.toString(16).padStart(2, "0")).join("");
+const captchaTagFromToken = async (token) =>
   base64UrlEncodeNoPad((await sha256Bytes(token)).slice(0, 12));
+
+const makeRecaptchaAction = async (bindingString, kid) => {
+  const binding = typeof bindingString === "string" ? bindingString : "";
+  const kidNum = Number.isInteger(kid) && kid >= 0 ? kid : -1;
+  if (!binding || kidNum < 0) return "";
+  const digest = await sha256Bytes(`act|${binding}|${kidNum}`);
+  return `p_${bytesToHex(digest.slice(0, 10))}`;
+};
 
 const concatBytes = (...chunks) => {
   let total = 0;
@@ -508,18 +518,18 @@ const makePowCommitMac = async (
   ticketB64,
   rootB64,
   pathHash,
-  tb,
+  captchaTag,
   nonce,
   exp,
   spineSeed
 ) =>
   hmacSha256Base64UrlNoPad(
     powSecret,
-    `C|${ticketB64}|${rootB64}|${pathHash}|${tb}|${nonce}|${exp}|${spineSeed}`
+    `C|${ticketB64}|${rootB64}|${pathHash}|${captchaTag}|${nonce}|${exp}|${spineSeed}`
   );
 
-const makeConsumeMac = async (powSecret, ticketB64, exp, tb, m) =>
-  hmacSha256Base64UrlNoPad(powSecret, `U|${ticketB64}|${exp}|${tb}|${m}`);
+const makeConsumeMac = async (powSecret, ticketB64, exp, captchaTag, m) =>
+  hmacSha256Base64UrlNoPad(powSecret, `U|${ticketB64}|${exp}|${captchaTag}|${m}`);
 
 const makePowStateToken = async (
   powSecret,
@@ -666,7 +676,7 @@ const parsePowCommitCookie = (value) => {
   const ticketB64 = parts[1] || "";
   const rootB64 = parts[2] || "";
   const pathHash = parts[3] || "";
-  const tb = parts[4] || "";
+  const captchaTag = parts[4] || "";
   const nonce = parts[5] || "";
   const exp = Number.parseInt(parts[6], 10);
   const spineSeed = parts[7] || "";
@@ -674,13 +684,15 @@ const parsePowCommitCookie = (value) => {
   if (!isBase64Url(ticketB64, 1, B64_TICKET_MAX_LEN)) return null;
   if (!isBase64Url(rootB64, 1, B64_HASH_MAX_LEN)) return null;
   if (!(pathHash === "any" || isBase64Url(pathHash, 1, B64_HASH_MAX_LEN))) return null;
-  if (!(tb === "any" || isBase64Url(tb, TB_LEN, TB_LEN))) return null;
+  if (!(captchaTag === "any" || isBase64Url(captchaTag, CAPTCHA_TAG_LEN, CAPTCHA_TAG_LEN))) {
+    return null;
+  }
   if (!isBase64Url(nonce, NONCE_MIN_LEN, NONCE_MAX_LEN)) return null;
   if (!isBase64Url(spineSeed, SPINE_SEED_MIN_LEN, SPINE_SEED_MAX_LEN)) {
     return null;
   }
   if (!isBase64Url(mac, 1, B64_HASH_MAX_LEN)) return null;
-  return { ticketB64, rootB64, pathHash, tb, nonce, exp, mac, spineSeed };
+  return { ticketB64, rootB64, pathHash, captchaTag, nonce, exp, mac, spineSeed };
 };
 
 const parseProofCookie = (value) => {
@@ -704,14 +716,14 @@ const parseConsumeToken = (value) => {
   if (parts.length !== 6 || parts[0] !== "v2") return null;
   const ticketB64 = parts[1] || "";
   const exp = Number.parseInt(parts[2], 10);
-  const tb = parts[3] || "";
+  const captchaTag = parts[3] || "";
   const m = Number.parseInt(parts[4], 10);
   const mac = parts[5] || "";
   if (exp <= 0) return null;
   if (!isBase64Url(ticketB64, 1, B64_TICKET_MAX_LEN)) return null;
-  if (!isBase64Url(tb, TB_LEN, TB_LEN)) return null;
+  if (!isBase64Url(captchaTag, CAPTCHA_TAG_LEN, CAPTCHA_TAG_LEN)) return null;
   if (!isBase64Url(mac, 1, B64_HASH_MAX_LEN)) return null;
-  return { ticketB64, exp, tb, m, mac };
+  return { ticketB64, exp, captchaTag, m, mac };
 };
 
 const makeProofMac = async (powSecret, ticketB64, iat, last, n, m) =>
@@ -768,7 +780,7 @@ const normalizeInnerStrategy = (snapshot) => {
   if (typeof bindRaw.ok !== "boolean") return null;
   if (typeof bindRaw.code !== "string") return null;
   if (typeof bindRaw.canonicalPath !== "string") return null;
-  if (typeof atomicRaw.turnToken !== "string") return null;
+  if (typeof atomicRaw.captchaToken !== "string") return null;
   if (typeof atomicRaw.ticketB64 !== "string") return null;
   if (typeof atomicRaw.consumeToken !== "string") return null;
   if (typeof atomicRaw.fromCookie !== "boolean") return null;
@@ -782,7 +794,7 @@ const normalizeInnerStrategy = (snapshot) => {
       canonicalPath: bindRaw.canonicalPath,
     },
     atomic: {
-      turnToken: atomicRaw.turnToken,
+      captchaToken: atomicRaw.captchaToken,
       ticketB64: atomicRaw.ticketB64,
       consumeToken: atomicRaw.consumeToken,
       fromCookie: atomicRaw.fromCookie,
@@ -827,7 +839,9 @@ const validateTicket = (ticket, config, nowSeconds) => {
 };
 
 const verifyCommit = async (commit, ticket, config, powSecret, nowSeconds) => {
-  if (config.turncheck === true && !isBase64Url(commit.tb, TB_LEN, TB_LEN)) return 0;
+  if (config.turncheck === true && !isBase64Url(commit.captchaTag, CAPTCHA_TAG_LEN, CAPTCHA_TAG_LEN)) {
+    return 0;
+  }
   if (isExpired(commit.exp, nowSeconds)) return 0;
   const powVersion = validateTicket(ticket, config, nowSeconds);
   if (!powVersion) return 0;
@@ -836,7 +850,7 @@ const verifyCommit = async (commit, ticket, config, powSecret, nowSeconds) => {
     commit.ticketB64,
     commit.rootB64,
     commit.pathHash,
-    commit.tb,
+    commit.captchaTag,
     commit.nonce,
     commit.exp,
     commit.spineSeed
@@ -854,7 +868,7 @@ const verifyConsumeToken = async (consumeToken, powSecret, nowSeconds, requiredM
     powSecret,
     parsed.ticketB64,
     parsed.exp,
-    parsed.tb,
+    parsed.captchaTag,
     parsed.m
   );
   if (!timingSafeEqual(mac, parsed.mac)) return null;
@@ -902,15 +916,36 @@ const verifyTicketMac = async (ticket, url, bindingValues, powSecret) => {
   return bindingString;
 };
 
-const verifyTurnstileToken = async (request, turnSecret, turnToken) => {
+const pickRecaptchaPair = async (ticketMac, pairs) => {
+  if (!Array.isArray(pairs) || pairs.length === 0) return null;
+  const digest = await sha256Bytes(`kid|${typeof ticketMac === "string" ? ticketMac : ""}`);
+  const number =
+    ((digest[0] << 24) | (digest[1] << 16) | (digest[2] << 8) | digest[3]) >>> 0;
+  const kid = number % pairs.length;
+  return { kid, pair: pairs[kid] };
+};
+
+const getCaptchaProviderSpec = (provider) => {
+  if (provider === "turnstile") {
+    return { siteverifyUrl: TURNSTILE_SITEVERIFY_URL };
+  }
+  if (provider === "recaptcha_v3") {
+    return { siteverifyUrl: RECAPTCHA_SITEVERIFY_URL };
+  }
+  return null;
+};
+
+const verifyCaptchaSiteverify = async (request, provider, secret, token) => {
+  const spec = getCaptchaProviderSpec(provider);
+  if (!spec) return null;
   const form = new URLSearchParams();
-  form.set("secret", turnSecret);
-  form.set("response", turnToken);
+  form.set("secret", secret);
+  form.set("response", token);
   const remoteip = getClientIP(request);
   if (remoteip && remoteip !== "0.0.0.0") form.set("remoteip", remoteip);
   let verifyRes;
   try {
-    verifyRes = await fetch(TURNSTILE_SITEVERIFY_URL, {
+    verifyRes = await fetch(spec.siteverifyUrl, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: form,
@@ -925,14 +960,131 @@ const verifyTurnstileToken = async (request, turnSecret, turnToken) => {
     verify = null;
   }
   if (!verify || verify.success !== true) return null;
-  return verify;
+  return {
+    provider,
+    raw: verify,
+    cdata: typeof verify.cdata === "string" ? verify.cdata : "",
+    hostname: typeof verify.hostname === "string" ? verify.hostname : "",
+    remoteip: typeof verify.remoteip === "string" ? verify.remoteip : "",
+    action: typeof verify.action === "string" ? verify.action : "",
+    score: Number.isFinite(verify.score) ? verify.score : null,
+  };
 };
 
-const verifyTurnstileForTicket = async (request, turnSecret, turnToken, ticket) => {
-  const verify = await verifyTurnstileToken(request, turnSecret, turnToken);
+const verifyCaptchaForTicket = async (
+  request,
+  { provider, secret, token, ticketMac, bindingString = "", kid = -1, minScore = 0 }
+) => {
+  const verify = await verifyCaptchaSiteverify(request, provider, secret, token);
   if (!verify) return false;
-  const cdata = typeof verify.cdata === "string" ? verify.cdata : "";
-  return cdata === ticket.mac;
+  if (provider === "turnstile") {
+    return verify.cdata === ticketMac;
+  }
+  if (provider === "recaptcha_v3") {
+    const host = (() => {
+      try {
+        return new URL(request.url).hostname;
+      } catch {
+        return "";
+      }
+    })();
+    if (!verify.hostname || verify.hostname !== host) return false;
+    const remoteip = getClientIP(request);
+    if (remoteip && remoteip !== "0.0.0.0") {
+      if (verify.remoteip && verify.remoteip !== remoteip) return false;
+    }
+    if (!Number.isFinite(verify.score) || verify.score < minScore) return false;
+    const expectedAction = await makeRecaptchaAction(bindingString, kid);
+    if (!expectedAction || verify.action !== expectedAction) return false;
+    return true;
+  }
+  return false;
+};
+
+const readCaptchaTokens = (captchaToken, needTurn, needRecaptcha) => {
+  if (typeof captchaToken === "string") {
+    const single = captchaToken.trim();
+    if (!single) return null;
+    if (single.startsWith("{") && single.endsWith("}")) {
+      try {
+        const parsed = JSON.parse(single);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          const turnstile = typeof parsed.turnstile === "string" ? parsed.turnstile.trim() : "";
+          const recaptcha_v3 =
+            typeof parsed.recaptcha_v3 === "string" ? parsed.recaptcha_v3.trim() : "";
+          return { turnstile, recaptcha_v3 };
+        }
+      } catch {
+        return null;
+      }
+      return null;
+    }
+    if (needTurn && !needRecaptcha) return { turnstile: single, recaptcha_v3: "" };
+    if (needRecaptcha && !needTurn) return { turnstile: "", recaptcha_v3: single };
+    return null;
+  }
+  if (!captchaToken || typeof captchaToken !== "object" || Array.isArray(captchaToken)) {
+    return null;
+  }
+  const turnstile = typeof captchaToken.turnstile === "string" ? captchaToken.turnstile.trim() : "";
+  const recaptcha_v3 =
+    typeof captchaToken.recaptcha_v3 === "string" ? captchaToken.recaptcha_v3.trim() : "";
+  return { turnstile, recaptcha_v3 };
+};
+
+const verifyRequiredCaptchaForTicket = async (
+  request,
+  config,
+  ticket,
+  bindingString,
+  captchaToken
+) => {
+  const needTurn = config.turncheck === true;
+  const needRecaptcha = config.recaptchaEnabled === true;
+  if (!needTurn && !needRecaptcha) return { ok: true, captchaTag: "any" };
+  const tokens = readCaptchaTokens(captchaToken, needTurn, needRecaptcha);
+  if (!tokens) return { ok: false, captchaTag: "" };
+  let turnToken = "";
+  let recaptchaToken = "";
+
+  if (needTurn) {
+    const turnSecret = config.TURNSTILE_SECRET;
+    if (!turnSecret) return { ok: false, captchaTag: "" };
+    turnToken = validateTurnToken(tokens.turnstile);
+    if (!turnToken) return { ok: false, captchaTag: "" };
+    const turnOk = await verifyCaptchaForTicket(request, {
+      provider: "turnstile",
+      secret: turnSecret,
+      token: turnToken,
+      ticketMac: ticket.mac,
+    });
+    if (!turnOk) return { ok: false, captchaTag: "" };
+  }
+
+  if (needRecaptcha) {
+    const pairs = Array.isArray(config.RECAPTCHA_PAIRS) ? config.RECAPTCHA_PAIRS : [];
+    const picked = await pickRecaptchaPair(ticket.mac, pairs);
+    if (!picked || !picked.pair || !picked.pair.secret) return { ok: false, captchaTag: "" };
+    recaptchaToken = validateTurnToken(tokens.recaptcha_v3);
+    if (!recaptchaToken) return { ok: false, captchaTag: "" };
+    const minScore = Number.isFinite(config.RECAPTCHA_MIN_SCORE)
+      ? config.RECAPTCHA_MIN_SCORE
+      : 0.5;
+    const recapOk = await verifyCaptchaForTicket(request, {
+      provider: "recaptcha_v3",
+      secret: picked.pair.secret,
+      token: recaptchaToken,
+      ticketMac: ticket.mac,
+      bindingString,
+      kid: picked.kid,
+      minScore,
+    });
+    if (!recapOk) return { ok: false, captchaTag: "" };
+  }
+
+  const activeCaptchaMaterial = turnToken || recaptchaToken;
+  const captchaTag = activeCaptchaMaterial ? await captchaTagFromToken(activeCaptchaMaterial) : "any";
+  return { ok: true, captchaTag };
 };
 
 const getProofTtl = (ticket, config, nowSeconds) => {
@@ -1108,7 +1260,7 @@ const buildPowChallengeHtml = ({
   reloadUrlB64,
   apiPrefixB64,
   esmUrlB64,
-  turnSiteKeyB64,
+  captchaCfgB64,
   glueUrl,
   atomicCfg,
 }) => __HTML_TEMPLATE__
@@ -1122,7 +1274,7 @@ const buildPowChallengeHtml = ({
   .replace('__R__', reloadUrlB64)
   .replace('__A__', apiPrefixB64)
   .replace('__E__', esmUrlB64)
-  .replace('__K__', turnSiteKeyB64)
+  .replace('__K__', captchaCfgB64)
   .replace('__C__', atomicCfg);
 
 const respondPowChallengeHtml = async (
@@ -1140,6 +1292,7 @@ const respondPowChallengeHtml = async (
   const exp = nowSeconds + Math.max(1, ticketTtl);
   const needPow = requirements && requirements.needPow === true;
   const needTurn = requirements && requirements.needTurn === true;
+  const needRecaptcha = requirements && requirements.needRecaptcha === true;
   const steps = needPow ? getPowSteps(config) : 1;
   const glueSteps = needPow ? steps : 0;
   const hashcashBits = needPow ? Math.max(0, Math.floor(config.POW_HASHCASH_BITS)) : 0;
@@ -1174,9 +1327,19 @@ const respondPowChallengeHtml = async (
   const reloadUrlB64 = base64UrlEncodeNoPad(utf8ToBytes(url.toString()));
   const apiPrefixB64 = base64UrlEncodeNoPad(utf8ToBytes(config.POW_API_PREFIX));
   const esmUrlB64 = needPow ? base64UrlEncodeNoPad(utf8ToBytes(config.POW_ESM_URL)) : "";
-  const turnSiteKeyB64 = needTurn
-    ? base64UrlEncodeNoPad(utf8ToBytes(config.TURNSTILE_SITEKEY))
-    : "";
+  const captchaCfg = {};
+  if (needTurn) {
+    captchaCfg.turnstile = { sitekey: config.TURNSTILE_SITEKEY };
+  }
+  if (needRecaptcha) {
+    const pairs = Array.isArray(config.RECAPTCHA_PAIRS) ? config.RECAPTCHA_PAIRS : [];
+    const picked = await pickRecaptchaPair(ticket.mac, pairs);
+    if (!picked || !picked.pair || !picked.pair.sitekey) return S(500);
+    const action = await makeRecaptchaAction(bindingString, picked.kid);
+    if (!action) return S(500);
+    captchaCfg.recaptcha_v3 = { sitekey: picked.pair.sitekey, action };
+  }
+  const captchaCfgB64 = base64UrlEncodeNoPad(utf8ToBytes(JSON.stringify(captchaCfg)));
   const glueUrl = config.POW_GLUE_URL;
   const atomicConsume = config.ATOMIC_CONSUME === true ? "1" : "0";
   const atomicTurnQuery = config.ATOMIC_TURN_QUERY.trim();
@@ -1205,7 +1368,7 @@ const respondPowChallengeHtml = async (
     reloadUrlB64,
     apiPrefixB64,
     esmUrlB64,
-    turnSiteKeyB64,
+    captchaCfgB64,
     atomicCfg,
   });
   const headers = new Headers();
@@ -1396,7 +1559,7 @@ const handlePowCommit = async (request, url, nowSeconds, innerCtx) => {
   const rootB64 = typeof body.rootB64 === "string" ? body.rootB64 : "";
   const pathHash = typeof body.pathHash === "string" ? body.pathHash : "";
   const nonce = typeof body.nonce === "string" ? body.nonce : "";
-  const token = typeof body.token === "string" ? body.token : "";
+  const captchaToken = body.captchaToken;
   if (
     !isBase64Url(ticketB64, 1, B64_TICKET_MAX_LEN) ||
     !isBase64Url(rootB64, 1, B64_HASH_MAX_LEN) ||
@@ -1411,18 +1574,15 @@ const handlePowCommit = async (request, url, nowSeconds, innerCtx) => {
   if (!powSecret) return S(500);
   if (config.powcheck !== true) return S(500);
   const needTurn = config.turncheck === true;
-  let turnToken = "";
-  if (needTurn) {
-    turnToken = validateTurnToken(token);
-    if (!turnToken) return S(400);
-  }
+  const needRecaptcha = config.recaptchaEnabled === true;
   const powVersion = validateTicket(ticket, config, nowSeconds);
   if (!powVersion) return deny();
   const normalizedPathHash = normalizePathHash(pathHash, config);
   if (!normalizedPathHash) return S(400);
   const bindingValues = await getPowBindingValuesWithPathHash(normalizedPathHash, config, derived);
   if (!bindingValues) return deny();
-  if (!(await verifyTicketMac(ticket, url, bindingValues, powSecret))) return deny();
+  const bindingString = await verifyTicketMac(ticket, url, bindingValues, powSecret);
+  if (!bindingString) return deny();
   const rootBytes = base64UrlDecodeToBytes(rootB64);
   if (!rootBytes || rootBytes.length !== 32) {
     return S(400);
@@ -1430,31 +1590,42 @@ const handlePowCommit = async (request, url, nowSeconds, innerCtx) => {
   const ttl = config.POW_COMMIT_TTL_SEC || 0;
   const exp = nowSeconds + Math.max(1, ttl);
   const spineSeed = randomBase64Url(16);
-  const tb = needTurn ? await tbFromToken(turnToken) : "any";
+  let captchaTag = "any";
+  if (needTurn || needRecaptcha) {
+    const verifiedCaptcha = await verifyRequiredCaptchaForTicket(
+      request,
+      config,
+      ticket,
+      bindingString,
+      captchaToken
+    );
+    if (!verifiedCaptcha.ok) return deny();
+    captchaTag = verifiedCaptcha.captchaTag;
+  }
   const mac = await makePowCommitMac(
     powSecret,
     ticketB64,
     rootB64,
     bindingValues.pathHash,
-    tb,
+    captchaTag,
     nonce,
     exp,
     spineSeed
   );
-  const value = `v4.${ticketB64}.${rootB64}.${bindingValues.pathHash}.${tb}.${nonce}.${exp}.${spineSeed}.${mac}`;
+  const value = `v4.${ticketB64}.${rootB64}.${bindingValues.pathHash}.${captchaTag}.${nonce}.${exp}.${spineSeed}.${mac}`;
   const headers = new Headers();
   setCookie(headers, config.POW_COMMIT_COOKIE, value, ttl);
   return new Response(null, { status: 200, headers });
 };
 
-const handleTurn = async (request, url, nowSeconds, innerCtx) => {
+const handleCap = async (request, url, nowSeconds, innerCtx) => {
   if (!innerCtx) return S(500);
   const { config, powSecret, derived, cfgId } = innerCtx;
   const body = await readJsonBody(request);
   if (!body || typeof body !== "object") return S(400);
   const ticketB64 = typeof body.ticketB64 === "string" ? body.ticketB64 : "";
   const pathHash = typeof body.pathHash === "string" ? body.pathHash : "";
-  const token = typeof body.token === "string" ? body.token : "";
+  const captchaToken = body.captchaToken;
   if (!isBase64Url(ticketB64, 1, B64_TICKET_MAX_LEN) || pathHash.length > B64_HASH_MAX_LEN) {
     return S(400);
   }
@@ -1465,11 +1636,9 @@ const handleTurn = async (request, url, nowSeconds, innerCtx) => {
   if (!powSecret) return S(500);
   const needPow = config.powcheck === true;
   const needTurn = config.turncheck === true;
-  if (!needTurn || needPow || config.ATOMIC_CONSUME === true) return S(404);
-  const turnSecret = config.TURNSTILE_SECRET;
-  if (!turnSecret) return S(500);
-  const turnToken = validateTurnToken(token);
-  if (!turnToken) return S(400);
+  const needRecaptcha = config.recaptchaEnabled === true;
+  const requiredMask = (needPow ? 1 : 0) | (needTurn ? 2 : 0) | (needRecaptcha ? 4 : 0);
+  if (needPow || (!needTurn && !needRecaptcha) || config.ATOMIC_CONSUME === true) return S(404);
 
   const powVersion = validateTicket(ticket, config, nowSeconds);
   if (!powVersion) return deny();
@@ -1479,9 +1648,17 @@ const handleTurn = async (request, url, nowSeconds, innerCtx) => {
 
   const bindingValues = await getPowBindingValuesWithPathHash(normalizedPathHash, config, derived);
   if (!bindingValues) return deny();
-  if (!(await verifyTicketMac(ticket, url, bindingValues, powSecret))) return deny();
+  const bindingString = await verifyTicketMac(ticket, url, bindingValues, powSecret);
+  if (!bindingString) return deny();
 
-  if (!(await verifyTurnstileForTicket(request, turnSecret, turnToken, ticket))) {
+  const verifiedCaptcha = await verifyRequiredCaptchaForTicket(
+    request,
+    config,
+    ticket,
+    bindingString,
+    captchaToken
+  );
+  if (!verifiedCaptcha.ok) {
     return deny();
   }
 
@@ -1497,7 +1674,7 @@ const handleTurn = async (request, url, nowSeconds, innerCtx) => {
     powVersion,
     nowSeconds,
     ttl,
-    2
+    requiredMask
   );
   return new Response(null, { status: 200, headers });
 };
@@ -1546,6 +1723,8 @@ const handlePowOpen = async (request, url, nowSeconds, innerCtx) => {
   if (!powSecret) return S(500);
   if (config.powcheck !== true) return S(500);
   const needTurn = config.turncheck === true;
+  const needRecaptcha = config.recaptchaEnabled === true;
+  const requiredMask = 1 | (needTurn ? 2 : 0) | (needRecaptcha ? 4 : 0);
   const powVersion = await verifyCommit(commit, ticket, config, powSecret, nowSeconds);
   if (!powVersion) return deny();
   const body = await readJsonBody(request);
@@ -1555,7 +1734,7 @@ const handlePowOpen = async (request, url, nowSeconds, innerCtx) => {
   const sid = typeof body.sid === "string" ? body.sid : "";
   const cursor = Number.parseInt(body.cursor, 10);
   const stateToken = typeof body.token === "string" ? body.token : "";
-  const turnToken = typeof body.turnToken === "string" ? body.turnToken : "";
+  const captchaToken = body.captchaToken;
   const opens = Array.isArray(body.opens) ? body.opens : null;
   const spinePosRaw = body.spinePos;
   if (!sid || !stateToken || !opens || !Number.isFinite(cursor) || cursor < 0) {
@@ -1695,7 +1874,9 @@ const handlePowOpen = async (request, url, nowSeconds, innerCtx) => {
   if (!bindingValues) return deny();
   const bindingString = await verifyTicketMac(ticket, url, bindingValues, powSecret);
   if (!bindingString) return deny();
-  const powBindingString = needTurn ? `${bindingString}|${commit.tb}` : bindingString;
+  const powBindingString = needTurn || needRecaptcha
+    ? `${bindingString}|${commit.captchaTag}`
+    : bindingString;
   const rootBytes = base64UrlDecodeToBytes(commit.rootB64);
   if (!rootBytes || rootBytes.length !== 32) return deny();
   const leafCount = Math.max(0, Math.floor(ticket.L)) + 1;
@@ -1791,28 +1972,44 @@ const handlePowOpen = async (request, url, nowSeconds, innerCtx) => {
   const ttl = getProofTtl(ticket, config, nowSeconds);
   if (!ttl) return deny();
 
-  if (needTurn && config.ATOMIC_CONSUME === true) {
-    const finalToken = validateTurnToken(turnToken);
-    if (!finalToken) return deny();
-    const tb = await tbFromToken(finalToken);
-    if (tb !== commit.tb) return deny();
+  if ((needTurn || needRecaptcha) && config.ATOMIC_CONSUME === true) {
+    const verifiedCaptcha = await verifyRequiredCaptchaForTicket(
+      request,
+      config,
+      ticket,
+      bindingString,
+      captchaToken
+    );
+    if (!verifiedCaptcha.ok || verifiedCaptcha.captchaTag !== commit.captchaTag) return deny();
     const exp = nowSeconds + ttl;
-    const mac = await makeConsumeMac(powSecret, commit.ticketB64, exp, tb, 3);
+    const mac = await makeConsumeMac(
+      powSecret,
+      commit.ticketB64,
+      exp,
+      verifiedCaptcha.captchaTag,
+      requiredMask
+    );
     const headers = new Headers();
     clearCookie(headers, config.POW_COMMIT_COOKIE);
-    return J({ done: true, consume: `v2.${commit.ticketB64}.${exp}.${tb}.3.${mac}` }, 200, headers);
+    return J(
+      {
+        done: true,
+        consume: `v2.${commit.ticketB64}.${exp}.${verifiedCaptcha.captchaTag}.${requiredMask}.${mac}`,
+      },
+      200,
+      headers
+    );
   }
 
-  if (needTurn) {
-    const turnSecret = config.TURNSTILE_SECRET;
-    if (!turnSecret) return S(500);
-    const finalToken = validateTurnToken(turnToken);
-    if (!finalToken) return deny();
-    const tb = await tbFromToken(finalToken);
-    if (tb !== commit.tb) return deny();
-    if (!(await verifyTurnstileForTicket(request, turnSecret, finalToken, ticket))) {
-      return deny();
-    }
+  if (needTurn || needRecaptcha) {
+    const verifiedCaptcha = await verifyRequiredCaptchaForTicket(
+      request,
+      config,
+      ticket,
+      bindingString,
+      captchaToken
+    );
+    if (!verifiedCaptcha.ok || verifiedCaptcha.captchaTag !== commit.captchaTag) return deny();
   }
 
   const headers = new Headers();
@@ -1825,7 +2022,7 @@ const handlePowOpen = async (request, url, nowSeconds, innerCtx) => {
     powVersion,
     nowSeconds,
     ttl,
-    needTurn ? 3 : 1
+    requiredMask
   );
   clearCookie(headers, config.POW_COMMIT_COOKIE);
   return J({ done: true }, 200, headers);
@@ -1851,13 +2048,19 @@ const handlePowApi = async (request, url, nowSeconds, innerCtx) => {
   if (action === "/open") {
     return handlePowOpen(request, url, nowSeconds, innerCtx);
   }
-  if (action === "/turn") {
-    return handleTurn(request, url, nowSeconds, innerCtx);
+  if (action === "/cap") {
+    return handleCap(request, url, nowSeconds, innerCtx);
   }
   return S(404);
 };
 
 export { hmacSha256Base64UrlNoPad };
+export const __captchaTesting = {
+  pickRecaptchaPair,
+  makeRecaptchaAction,
+  verifyCaptchaSiteverify,
+  verifyCaptchaForTicket,
+};
 
 export default {
   async fetch(request, env, ctx) {
@@ -1883,7 +2086,8 @@ export default {
 
     const needPow = config.powcheck === true;
     const needTurn = config.turncheck === true;
-    if (!needPow && !needTurn) {
+    const needRecaptcha = config.recaptchaEnabled === true;
+    if (!needPow && !needTurn && !needRecaptcha) {
       return fetch(stripInnerHeaders(request));
     }
     if (strategy.bypass.bypass) {
@@ -1905,8 +2109,8 @@ export default {
       if (!sitekey || !secret) return S(500);
     }
 
-    const requiredMask = (needPow ? 1 : 0) | (needTurn ? 2 : 0);
-    const allowProof = !(needTurn && config.ATOMIC_CONSUME === true);
+    const requiredMask = (needPow ? 1 : 0) | (needTurn ? 2 : 0) | (needRecaptcha ? 4 : 0);
+    const allowProof = !((needTurn || needRecaptcha) && config.ATOMIC_CONSUME === true);
     const proofMeta = allowProof
       ? await verifyProofCookie(
           request,
@@ -1936,7 +2140,7 @@ export default {
       return response;
     }
 
-    if (needTurn && config.ATOMIC_CONSUME === true) {
+    if ((needTurn || needRecaptcha) && config.ATOMIC_CONSUME === true) {
       const baseRequest = request;
       const baseUrl = url;
       const atomic = strategy.atomic;
@@ -1951,17 +2155,17 @@ export default {
             powSecret,
             derived,
             cfgId,
-            { needPow, needTurn }
+            { needPow, needTurn, needRecaptcha }
           );
           return atomic.fromCookie ? withClearedCookie(challenge, atomic.cookieName) : challenge;
         }
         return atomic.fromCookie ? withClearedCookie(resp, atomic.cookieName) : resp;
       };
-      if (atomic.turnToken) {
-        const turnToken = validateTurnToken(atomic.turnToken);
-        if (!turnToken) return await fail(deny());
-        const turnSecret = config.TURNSTILE_SECRET;
-        if (!turnSecret) return await fail(S(500), false);
+      if (atomic.captchaToken) {
+        const tokenMap = readCaptchaTokens(atomic.captchaToken, needTurn, needRecaptcha);
+        if (!tokenMap) return await fail(deny());
+        const turnToken = needTurn ? validateTurnToken(tokenMap.turnstile) : "";
+        if (needTurn && !turnToken) return await fail(deny());
         if (needPow) {
           const consume = await verifyConsumeToken(
             atomic.consumeToken,
@@ -1970,8 +2174,6 @@ export default {
             requiredMask
           );
           if (!consume) return await fail(deny());
-          const tb = await tbFromToken(turnToken);
-          if (tb !== consume.tb) return await fail(deny());
           const ticket = await loadAtomicTicket(
             consume.ticketB64,
             baseUrl,
@@ -1983,7 +2185,18 @@ export default {
             nowSeconds
           );
           if (!ticket) return await fail(deny());
-          if (!(await verifyTurnstileForTicket(baseRequest, turnSecret, turnToken, ticket))) {
+          const bindingValues = await getPowBindingValues(bindRes.canonicalPath, config, derived);
+          if (!bindingValues) return await fail(deny());
+          const atomicBinding = await verifyTicketMac(ticket, baseUrl, bindingValues, powSecret);
+          if (!atomicBinding) return await fail(deny());
+          const verifiedCaptcha = await verifyRequiredCaptchaForTicket(
+            baseRequest,
+            config,
+            ticket,
+            atomicBinding,
+            atomic.captchaToken
+          );
+          if (!verifiedCaptcha.ok || verifiedCaptcha.captchaTag !== consume.captchaTag) {
             return await fail(deny());
           }
           const response = await fetch(stripInnerHeaders(baseRequest));
@@ -2000,7 +2213,18 @@ export default {
           nowSeconds
         );
         if (!ticket) return await fail(deny());
-        if (!(await verifyTurnstileForTicket(baseRequest, turnSecret, turnToken, ticket))) {
+        const bindingValues = await getPowBindingValues(bindRes.canonicalPath, config, derived);
+        if (!bindingValues) return await fail(deny());
+        const atomicBinding = await verifyTicketMac(ticket, baseUrl, bindingValues, powSecret);
+        if (!atomicBinding) return await fail(deny());
+        const verifiedCaptcha = await verifyRequiredCaptchaForTicket(
+          baseRequest,
+          config,
+          ticket,
+          atomicBinding,
+          atomic.captchaToken
+        );
+        if (!verifiedCaptcha.ok) {
           return await fail(deny());
         }
         const response = await fetch(stripInnerHeaders(baseRequest));
@@ -2009,7 +2233,7 @@ export default {
     }
 
     if (!isNavigationRequest(request)) {
-      const code = needPow ? "pow_required" : "turn_required";
+      const code = needPow ? "pow_required" : "captcha_required";
       return J({ code }, 403);
     }
 
@@ -2022,7 +2246,7 @@ export default {
       powSecret,
       derived,
       cfgId,
-      { needPow, needTurn }
+      { needPow, needTurn, needRecaptcha }
     );
   },
 };

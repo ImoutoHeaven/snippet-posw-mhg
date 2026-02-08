@@ -1,18 +1,18 @@
 # snippet-posw
 
-Stateless PoW / Turnstile gate for Cloudflare **Snippets / Workers**.
+Stateless PoW / captcha gate (Turnstile + reCAPTCHA v3) for Cloudflare **Snippets / Workers**.
 
 This project provides a self-contained L7 front gate that:
 
 - Exposes a PoW API under `/{POW_API_PREFIX}/*` (default: `/__pow/*`).
-- Supports **PoW-only**, **Turnstile-only**, or **combined** mode.
+- Supports **PoW-only**, **captcha-only** (Turnstile or reCAPTCHA v3), or **combined** mode.
 - Issues a single proof cookie (`__Host-proof`) on success.
 - Stays **stateless** on the server side (no KV/DO/DB): all checks are derived/verified with HMAC and short-lived cookies.
 
 ## Files
 
 - `pow-config.js`: policy frontload layer (rule match + bypass/bindPath/atomic derivation + signed inner snapshot).
-- `pow.js`: verification execution layer (PoW/Turnstile state machine + ticket/cookie verification), consumes `inner.s` only.
+- `pow.js`: verification execution layer (PoW/unified-captcha state machine + ticket/cookie verification), consumes `inner.s` only.
 - `glue.js`: browser-side UI + orchestration (loaded by the challenge page).
 - `esm/esm.js`: browser-side PoW solver (`computePoswCommit`).
 - `template.html`: minimal challenge page template injected into the build.
@@ -22,7 +22,7 @@ This project provides a self-contained L7 front gate that:
 
 ## Configuration
 
-Edit `CONFIG` in `pow-config.js` to match your host/path rules and enable **PoW** and/or **Turnstile**:
+Edit `CONFIG` in `pow-config.js` to match your host/path rules and enable **PoW** and/or **captcha providers**:
 
 ```js
 const CONFIG = [
@@ -32,12 +32,15 @@ const CONFIG = [
 
 Notes:
 
-- `POW_TOKEN` is required when `powcheck` or `turncheck` is `true`.
+- `POW_TOKEN` is required when `powcheck`, `turncheck`, or `recaptchaEnabled` is `true`.
 - `host` is required on every entry; legacy `pattern` is not supported.
 - Set `CONFIG_SECRET` to the same non-placeholder value in both `pow-config.js` and `pow.js`.
 - When `turncheck: true`, you must also set:
   - `TURNSTILE_SITEKEY`
   - `TURNSTILE_SECRET`
+- When `recaptchaEnabled: true`, you must also set:
+  - `RECAPTCHA_PAIRS` (array of `{ sitekey, secret }`)
+  - `RECAPTCHA_MIN_SCORE` (v3 score threshold, default `0.5`)
 - Rule matching is first-match-wins; put more specific rules first.
 - `pow.js` does not embed `DEFAULTS/CONFIG/COMPILED`; configuration is entirely supplied by `pow-config`.
 - Inner payload is `{ v, id, c, d, s }` with `v=1`; `s` is mandatory and carries frontloaded strategy (`nav/bypass/bind/atomic`). Missing `s` fails closed (`500`) with no legacy fallback.
@@ -49,7 +52,7 @@ Notes:
 ## Architecture split
 
 - `pow-config` is the only policy decision point: it computes strategy and strips transient inputs before proxying.
-- `pow.js` is execution-only: it validates signed inner payload and runs PoW/Turnstile verification paths.
+- `pow.js` is execution-only: it validates signed inner payload and runs PoW/unified-captcha verification paths.
 - Compatibility/migration branches are intentionally removed (`no compat`, `no migrate`, `no dead code`).
 
 ## Config Reference
@@ -73,15 +76,18 @@ Each `CONFIG` entry looks like:
 |---|---|---|---|
 | `powcheck` | `boolean` | `false` | Enable PoW gate (requires `__Host-proof` with `m & 1`). |
 | `turncheck` | `boolean` | `false` | Enable Turnstile gate (requires `__Host-proof` with `m & 2`). |
-| `POW_TOKEN` | `string` | — | HMAC secret for ticket binding + cookie MACs. Required when `powcheck` or `turncheck` is `true`. |
+| `recaptchaEnabled` | `boolean` | `false` | Enable reCAPTCHA v3 gate (requires `__Host-proof` with `m & 4`). |
+| `POW_TOKEN` | `string` | — | HMAC secret for ticket binding + cookie MACs. Required when any of `powcheck`/`turncheck`/`recaptchaEnabled` is `true`. |
 | `TURNSTILE_SITEKEY` | `string` | — | Turnstile site key (client-side). Required when `turncheck: true`. |
 | `TURNSTILE_SECRET` | `string` | — | Turnstile secret key (used for `siteverify`, includes `remoteip`). Required when `turncheck: true`. |
-| `ATOMIC_CONSUME` | `boolean` | `false` | Enable business-path atomic consume for Turnstile (and PoW+Turnstile). Disables `/__pow/turn`; in combined mode `/__pow/open` returns `consume` instead of setting `__Host-proof`. When Turnstile is required, proof cookies are ignored. |
-| `ATOMIC_TURN_QUERY` | `string` | `"__ts"` | Query param for Turnstile token (atomic). |
-| `ATOMIC_TICKET_QUERY` | `string` | `"__tt"` | Query param for ticket (`turn` + atomic). |
+| `RECAPTCHA_PAIRS` | `Array<{sitekey:string,secret:string}>` | `[]` | reCAPTCHA v3 key pairs. Server picks one deterministically from `ticket.mac` (`kid = sha256("kid|ticket.mac") mod pairs.length`). |
+| `RECAPTCHA_MIN_SCORE` | `number` | `0.5` | Minimum accepted reCAPTCHA v3 score (`0..1`). |
+| `ATOMIC_CONSUME` | `boolean` | `false` | Enable business-path atomic consume for captcha (captcha-only and PoW+captcha). In captcha-only mode proof cookies are ignored; in combined mode `/__pow/open` returns `consume` instead of setting `__Host-proof`. |
+| `ATOMIC_TURN_QUERY` | `string` | `"__ts"` | Query param for atomic `captchaToken` envelope. |
+| `ATOMIC_TICKET_QUERY` | `string` | `"__tt"` | Query param for ticket (captcha-only + atomic). |
 | `ATOMIC_CONSUME_QUERY` | `string` | `"__ct"` | Query param for consume token (combined + atomic). |
-| `ATOMIC_TURN_HEADER` | `string` | `"x-turnstile"` | Header for Turnstile token (atomic). |
-| `ATOMIC_TICKET_HEADER` | `string` | `"x-ticket"` | Header for ticket (`turn` + atomic). |
+| `ATOMIC_TURN_HEADER` | `string` | `"x-turnstile"` | Header for atomic `captchaToken` envelope. |
+| `ATOMIC_TICKET_HEADER` | `string` | `"x-ticket"` | Header for ticket (captcha-only + atomic). |
 | `ATOMIC_CONSUME_HEADER` | `string` | `"x-consume"` | Header for consume token (combined + atomic). |
 | `ATOMIC_COOKIE_NAME` | `string` | `"__Secure-pow_a"` | Short-lived cookie name for atomic navigation redirects; cleared after use. |
 | `STRIP_ATOMIC_QUERY` | `boolean` | `true` | Remove atomic query params before proxying. |
@@ -185,16 +191,17 @@ The gate issues a single proof cookie with a mode mask:
 - `m` mask:
   - `1` = PoW
   - `2` = Turnstile
-  - `3` = PoW + Turnstile
+  - `4` = reCAPTCHA v3
+  - Combos are bitwise OR (`3=PoW+Turnstile`, `5=PoW+reCAPTCHA`, `6=Turnstile+reCAPTCHA`, `7=all`).
 
 Proof and commit cookies (`__Host-proof`, `__Host-pow_commit`) are issued with `SameSite=Lax`.
 
 A request is allowed when `(m & requiredMask) == requiredMask`.
-When `ATOMIC_CONSUME` is enabled and Turnstile is required, proof cookies are ignored; atomic tokens on the business request are mandatory.
+When `ATOMIC_CONSUME` is enabled and captcha is required (`turncheck` or `recaptchaEnabled`), proof cookies are ignored; atomic tokens on the business request are mandatory.
 
 ## Internal bypass
 
-You can bypass the gate for internal traffic by matching a specific query param or header. When a match occurs, the snippet returns `fetch(request)` and skips PoW/Turnstile checks. This is useful for internal APIs because Snippet rules cannot match on headers or query strings. You can also strip the bypass credential before proxying.
+You can bypass the gate for internal traffic by matching a specific query param or header. When a match occurs, the snippet returns `fetch(request)` and skips PoW/captcha checks. This is useful for internal APIs because Snippet rules cannot match on headers or query strings. You can also strip the bypass credential before proxying.
 
 Configuration (exact match required):
 
@@ -224,19 +231,23 @@ Notes:
 - The bypass only applies to protected paths (non-`/__pow/*` requests).
 - If `stripInnerAuthQuery`/`stripInnerAuthHeader` are `true`, the matched credential is removed before proxying.
 
-## Turnstile integration
+## Unified captcha flow (Turnstile + reCAPTCHA v3)
 
-- Turnstile renders with `cData = ticket.mac`.
+- Unified endpoint: `POST /__pow/cap` (not `/__pow/turn`).
+- Turnstile verification uses `cData = ticket.mac` binding.
+- reCAPTCHA v3 verification enforces `success=true`, exact `hostname`, `remoteip` consistency (when provided), `score >= RECAPTCHA_MIN_SCORE`, and deterministic `action` binding.
+- reCAPTCHA action binding: `action = "p_" + hex(sha256("act|" + bindingString + "|" + kid).slice(0,10))`, where `kid` is selected from `ticket.mac`.
 
 Default (`ATOMIC_CONSUME=false`):
 
-- **Turn-only** (`powcheck=false, turncheck=true`): client calls `POST /__pow/turn` → server `siteverify` → `__Host-proof (m=2)`.
-- **Combined** (`powcheck=true, turncheck=true`): `/__pow/turn` is disabled (404); `siteverify` happens only in the final `POST /__pow/open`.
+- **Captcha-only** (`powcheck=false`, any captcha enabled): client calls `POST /__pow/cap` with `{ ticketB64, pathHash, captchaToken }` and receives `__Host-proof` on success.
+- **Combined** (`powcheck=true`, captcha enabled): `/__pow/cap` is disabled (404); captcha verification happens in final `POST /__pow/open` using `captchaToken`.
 
 Atomic consume (`ATOMIC_CONSUME=true`):
 
-- **Turn-only**: `/__pow/turn` is disabled (404). Client attaches `turnToken + ticket` to the business request and the snippet verifies + forwards the original request.
-- **Combined**: `/__pow/open` returns `{ done: true, consume: "v2..." }` and does **not** set `__Host-proof`. Client attaches `turnToken + consume` to the business request; the snippet verifies consume (HMAC + tb), binding, then `siteverify`.
+- **Captcha-only**: `/__pow/cap` is disabled (404). Client attaches `captchaToken + ticket` to the business request and the snippet verifies captcha then forwards.
+- **Combined**: `/__pow/open` returns `{ done: true, consume: "v2..." }` and does **not** set `__Host-proof`. Client attaches `captchaToken + consume` to the business request; the snippet verifies consume (HMAC + `captchaTag` + mask), binding, then required captcha providers.
+- **`captchaToken` envelope**: a single opaque value. For single-provider flows it can be a raw token string; for multi-provider flows it is JSON with provider keys (for example `{"turnstile":"...","recaptcha_v3":"..."}`).
 - **Transport**: cookie > header > query (header preferred over query when both present). Navigation tries a short-lived cookie first (Max-Age 5s, Path = target), then falls back to query; embedded flows use `postMessage` for header replay. Tokens are stripped when `STRIP_ATOMIC_QUERY/STRIP_ATOMIC_HEADERS` are `true`. The cookie is cleared after use.
 - **Fail-closed validation**: malformed atomic fields return `400` with empty body; oversized atomic fields/snapshots return `431` with empty body. No legacy fallback is used.
 - **Navigation failure**: if atomic validation fails, navigation requests fall back to the challenge page (non-navigation still returns 403).
@@ -244,11 +255,11 @@ Atomic consume (`ATOMIC_CONSUME=true`):
 
 ### Early-bind (combined mode)
 
-In combined mode, PoW is bound to the Turnstile token:
+In combined mode, PoW is bound to the active captcha token:
 
-- `tb = base64url(sha256(turnstile_token).slice(0, 12))`
-- PoW seed uses `bindingString + "|" + tb`.
-- `__Host-pow_commit` (v4) carries `tb` and the final `/open` verifies `turnToken → tb`.
+- `captchaTag = base64url(sha256(captcha_token).slice(0, 12))`
+- PoW seed uses `bindingString + "|" + captchaTag`.
+- `__Host-pow_commit` (v4) carries `captchaTag` and the final `/open` verifies `captchaToken → captchaTag`.
 
 This guarantees **one token → one PoW**, preventing “1 PoW + N tokens”.
 
@@ -273,17 +284,17 @@ Ideally Turnstile would expose server-enforced flags such as:
 
 and return only `success: true/false`. Today it does not. `cData` is opaque and cannot prevent attacker-supplied input, since it is **client-provided**, not extracted by Cloudflare. Treat `cData` as a low-cost check, not a silver bullet.
 
-### `tb` design (Turnstile binding tag)
+### `captchaTag` design (captcha binding tag)
 
-`tb` is a compact binding tag derived from the Turnstile token:
+`captchaTag` is a compact binding tag derived from the active captcha token material:
 
-- `tb = base64url(sha256(turnstile_token).slice(0, 12))` (96-bit tag, 16 chars base64url).
-- Used to bind PoW/consume tokens to a specific Turnstile token without carrying the full token.
+- `captchaTag = base64url(sha256(captcha_token).slice(0, 12))` (96-bit tag, 16 chars base64url).
+- Used to bind PoW/consume tokens to a specific captcha solve without carrying the full token.
 - Stored inside signed artifacts: `__Host-pow_commit` (v4) and `consume` (v2).
-- Recomputed on the server from `turnToken` and compared (`tb` must match).
-- For non-Turnstile flows, `tb = "any"`.
+- Recomputed on the server from `captchaToken` and compared (`captchaTag` must match).
+- For non-captcha flows, `captchaTag = "any"`.
 
-`tb` is not secret; integrity is enforced by HMAC on the enclosing token/cookie.
+`captchaTag` is not secret; integrity is enforced by HMAC on the enclosing token/cookie.
 
 ## CCR: Commit → Challenge → Open
 
@@ -291,13 +302,13 @@ PoW uses a stateless CCR API:
 
 1. **Commit**: the browser computes the PoSW commitment (`rootB64 + nonce`) and calls `POST /__pow/commit`.
    - The snippet verifies the ticket binding and mints a short-lived `__Host-pow_commit` cookie.
-   - In combined mode, `/commit` must include `token` (Turnstile token) to bind `tb`.
+   - In combined mode, `/commit` must include `captchaToken` to bind `captchaTag` early.
 2. **Challenge**: the browser calls `POST /__pow/challenge`.
    - The snippet uses deterministic RNG derived from the commit to generate sampled `indices`, `segLen`, optional `spinePos`, and a batch `token`.
 3. **Open**: the browser calls `POST /__pow/open` with `opens` for the sampled indices.
    - The snippet verifies and advances the cursor; repeats until done, then issues `__Host-proof` (non-atomic).
-   - In combined mode, the final `/open` must include `turnToken` and triggers `siteverify` (non-atomic).
-   - In atomic combined mode, the final `/open` returns `consume` and `siteverify` moves to the business path.
+   - In combined mode, the final `/open` must include `captchaToken` and triggers provider verification (non-atomic).
+   - In atomic combined mode, the final `/open` returns `consume` and provider verification moves to the business path.
 
 Key properties:
 
