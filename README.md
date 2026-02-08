@@ -247,11 +247,20 @@ Atomic consume (`ATOMIC_CONSUME=true`):
 
 - **Captcha-only**: `/__pow/cap` is disabled (404). Client attaches `captchaToken + ticket` to the business request and the snippet verifies captcha then forwards.
 - **Combined**: `/__pow/open` returns `{ done: true, consume: "v2..." }` and does **not** set `__Host-proof`. Client attaches `captchaToken + consume` to the business request; the snippet verifies consume (HMAC + `captchaTag` + mask), binding, then required captcha providers.
-- **`captchaToken` envelope**: a single opaque value. For single-provider flows it can be a raw token string; for multi-provider flows it is JSON with provider keys (for example `{"turnstile":"...","recaptcha_v3":"..."}`).
+- **`captchaToken` envelope (canonical)**: always a JSON object containing `turnstile` and/or `recaptcha_v3` keys (for example `{"turnstile":"...","recaptcha_v3":"..."}`). Raw token string fallback is not supported.
 - **Transport**: cookie > header > query (header preferred over query when both present). Navigation tries a short-lived cookie first (Max-Age 5s, Path = target), then falls back to query; embedded flows use `postMessage` for header replay. Tokens are stripped when `STRIP_ATOMIC_QUERY/STRIP_ATOMIC_HEADERS` are `true`. The cookie is cleared after use.
-- **Fail-closed validation**: malformed atomic fields return `400` with empty body; oversized atomic fields/snapshots return `431` with empty body. No legacy fallback is used.
+- **Fail-closed validation**: malformed/missing captcha envelope returns `400`; cryptographic or captcha-tag mismatch returns `403`; oversized atomic fields/snapshots return `431` (all with empty body). No legacy fallback is used.
 - **Navigation failure**: if atomic validation fails, navigation requests fall back to the challenge page (non-navigation still returns 403).
 - **Embedding**: the challenge page forbids iframe embedding (CSP/XFO). Atomic `postMessage` is restricted to same-origin parent/opener and uses a concrete origin.
+
+Disallowed verify points (no provider `siteverify` subrequest):
+
+- `POST /__pow/commit`
+- `POST /__pow/challenge`
+- non-final `POST /__pow/open`
+- atomic final `POST /__pow/open` (combined mode)
+
+Provider network verification is only performed at allowed points (`/__pow/cap`, non-atomic final `/__pow/open`, or atomic business-path consume).
 
 ### Atomic dual-provider split (Turnstile + reCAPTCHA)
 
@@ -274,9 +283,9 @@ The key budget guardrail is per-snippet, not total chain calls: atomic dual-prov
 
 ### Early-bind (combined mode)
 
-In combined mode, PoW is bound to the active captcha token:
+In combined mode, PoW is bound to the active captcha envelope via `captchaTag(v1)`:
 
-- `captchaTag = base64url(sha256(captcha_token).slice(0, 12))`
+- `captchaTag = base64url(sha256("ctag|v1|t=<turnstile>|r=<recaptcha_v3>").slice(0, 12))`
 - PoW seed uses `bindingString + "|" + captchaTag`.
 - `__Host-pow_commit` (v4) carries `captchaTag` and the final `/open` verifies `captchaToken → captchaTag`.
 
@@ -305,12 +314,13 @@ and return only `success: true/false`. Today it does not. `cData` is opaque and 
 
 ### `captchaTag` design (captcha binding tag)
 
-`captchaTag` is a compact binding tag derived from the active captcha token material:
+`captchaTag(v1)` is a compact binding tag derived from canonical captcha envelope material:
 
-- `captchaTag = base64url(sha256(captcha_token).slice(0, 12))` (96-bit tag, 16 chars base64url).
+- Material string: `ctag|v1|t=<turnstile>|r=<recaptcha_v3>` (missing provider => empty string).
+- `captchaTag = base64url(sha256(material).slice(0, 12))` (96-bit tag, 16 chars base64url).
 - Used to bind PoW/consume tokens to a specific captcha solve without carrying the full token.
 - Stored inside signed artifacts: `__Host-pow_commit` (v4) and `consume` (v2).
-- Recomputed on the server from `captchaToken` and compared (`captchaTag` must match).
+- Recomputed on the server from canonical envelope and compared (`captchaTag` must match).
 - For non-captcha flows, `captchaTag = "any"`.
 
 `captchaTag` is not secret; integrity is enforced by HMAC on the enclosing token/cookie.
@@ -325,9 +335,9 @@ PoW uses a stateless CCR API:
 2. **Challenge**: the browser calls `POST /__pow/challenge`.
    - The snippet uses deterministic RNG derived from the commit to generate sampled `indices`, `segLen`, optional `spinePos`, and a batch `token`.
 3. **Open**: the browser calls `POST /__pow/open` with `opens` for the sampled indices.
-   - The snippet verifies and advances the cursor; repeats until done, then issues `__Host-proof` (non-atomic).
-   - In combined mode, the final `/open` must include `captchaToken` and triggers provider verification (non-atomic).
-   - In atomic combined mode, the final `/open` returns `consume` and provider verification moves to the business path.
+    - The snippet verifies and advances the cursor; repeats until done, then issues `__Host-proof` (non-atomic).
+    - In combined mode, the final `/open` must include `captchaToken` and triggers provider verification (non-atomic).
+    - In atomic combined mode, the final `/open` returns `consume` and provider verification only happens on the business path consume.
 
 Key properties:
 

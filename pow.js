@@ -183,8 +183,12 @@ const sha256Bytes = async (data) => {
   return new Uint8Array(buf);
 };
 const bytesToHex = (bytes) => Array.from(bytes || [], (b) => b.toString(16).padStart(2, "0")).join("");
-const captchaTagFromToken = async (token) =>
-  base64UrlEncodeNoPad((await sha256Bytes(token)).slice(0, 12));
+const captchaTagV1 = async (turnToken, recaptchaToken) => {
+  const turn = typeof turnToken === "string" ? turnToken : "";
+  const recaptcha = typeof recaptchaToken === "string" ? recaptchaToken : "";
+  const material = `ctag|v1|t=${turn}|r=${recaptcha}`;
+  return base64UrlEncodeNoPad((await sha256Bytes(material)).slice(0, 12));
+};
 
 const makeRecaptchaAction = async (bindingString, kid) => {
   const binding = typeof bindingString === "string" ? bindingString : "";
@@ -1036,35 +1040,59 @@ const verifyCaptchaForTicket = async (
   return false;
 };
 
-const readCaptchaTokens = (captchaToken, needTurn, needRecaptcha) => {
+const parseCanonicalCaptchaTokens = (captchaToken, needTurn, needRecaptcha) => {
+  if (!needTurn && !needRecaptcha) {
+    return { ok: true, malformed: false, tokens: { turnstile: "", recaptcha_v3: "" } };
+  }
+
+  let envelope = null;
   if (typeof captchaToken === "string") {
-    const single = captchaToken.trim();
-    if (!single) return null;
-    if (single.startsWith("{") && single.endsWith("}")) {
-      try {
-        const parsed = JSON.parse(single);
-        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-          const turnstile = typeof parsed.turnstile === "string" ? parsed.turnstile.trim() : "";
-          const recaptcha_v3 =
-            typeof parsed.recaptcha_v3 === "string" ? parsed.recaptcha_v3.trim() : "";
-          return { turnstile, recaptcha_v3 };
-        }
-      } catch {
-        return null;
-      }
-      return null;
+    const raw = captchaToken.trim();
+    if (!raw) return { ok: false, malformed: true, tokens: null };
+    try {
+      envelope = JSON.parse(raw);
+    } catch {
+      return { ok: false, malformed: true, tokens: null };
     }
-    if (needTurn && !needRecaptcha) return { turnstile: single, recaptcha_v3: "" };
-    if (needRecaptcha && !needTurn) return { turnstile: "", recaptcha_v3: single };
-    return null;
+  } else {
+    envelope = captchaToken;
   }
-  if (!captchaToken || typeof captchaToken !== "object" || Array.isArray(captchaToken)) {
-    return null;
+
+  if (!envelope || typeof envelope !== "object" || Array.isArray(envelope)) {
+    return { ok: false, malformed: true, tokens: null };
   }
-  const turnstile = typeof captchaToken.turnstile === "string" ? captchaToken.turnstile.trim() : "";
-  const recaptcha_v3 =
-    typeof captchaToken.recaptcha_v3 === "string" ? captchaToken.recaptcha_v3.trim() : "";
-  return { turnstile, recaptcha_v3 };
+
+  const keys = Object.keys(envelope);
+  for (const key of keys) {
+    if (key !== "turnstile" && key !== "recaptcha_v3") {
+      return { ok: false, malformed: true, tokens: null };
+    }
+    if (typeof envelope[key] !== "string") {
+      return { ok: false, malformed: true, tokens: null };
+    }
+  }
+
+  const turnRaw = typeof envelope.turnstile === "string" ? envelope.turnstile : "";
+  const recaptchaRaw = typeof envelope.recaptcha_v3 === "string" ? envelope.recaptcha_v3 : "";
+  const turnstile = needTurn ? validateTurnToken(turnRaw) : "";
+  const recaptcha_v3 = needRecaptcha ? validateTurnToken(recaptchaRaw) : "";
+  if ((needTurn && !turnstile) || (needRecaptcha && !recaptcha_v3)) {
+    return { ok: false, malformed: true, tokens: null };
+  }
+  return { ok: true, malformed: false, tokens: { turnstile, recaptcha_v3 } };
+};
+
+const deriveLocalCaptchaTag = async (config, captchaToken) => {
+  const needTurn = config.turncheck === true;
+  const needRecaptcha = config.recaptchaEnabled === true;
+  if (!needTurn && !needRecaptcha) return { ok: true, malformed: false, captchaTag: "any" };
+  const parsed = parseCanonicalCaptchaTokens(captchaToken, needTurn, needRecaptcha);
+  if (!parsed.ok) return { ok: false, malformed: parsed.malformed, captchaTag: "" };
+  return {
+    ok: true,
+    malformed: false,
+    captchaTag: await captchaTagV1(parsed.tokens.turnstile, parsed.tokens.recaptcha_v3),
+  };
 };
 
 const verifyRequiredCaptchaForTicket = async (
@@ -1080,45 +1108,43 @@ const verifyRequiredCaptchaForTicket = async (
   const turnstilePreflight = normalizeTurnstilePreflight(opts.turnstilePreflight);
   const needTurn = config.turncheck === true;
   const needRecaptcha = config.recaptchaEnabled === true;
-  if (!needTurn && !needRecaptcha) return { ok: true, captchaTag: "any" };
-  const tokens = readCaptchaTokens(captchaToken, needTurn, needRecaptcha);
-  if (!tokens) return { ok: false, captchaTag: "" };
-  let turnToken = "";
-  let recaptchaToken = "";
+  if (!needTurn && !needRecaptcha) return { ok: true, malformed: false, captchaTag: "any" };
+  const parsed = parseCanonicalCaptchaTokens(captchaToken, needTurn, needRecaptcha);
+  if (!parsed.ok) return { ok: false, malformed: parsed.malformed, captchaTag: "" };
+  const turnToken = parsed.tokens.turnstile;
+  const recaptchaToken = parsed.tokens.recaptcha_v3;
 
   if (needTurn) {
-    turnToken = validateTurnToken(tokens.turnstile);
-    if (!turnToken) return { ok: false, captchaTag: "" };
     if (requireTurnPreflight) {
       if (!turnstilePreflight || !turnstilePreflight.checked || !turnstilePreflight.ok) {
-        return { ok: false, captchaTag: "" };
+        return { ok: false, malformed: false, captchaTag: "" };
       }
       if (!timingSafeEqual(turnstilePreflight.ticketMac, ticket.mac)) {
-        return { ok: false, captchaTag: "" };
+        return { ok: false, malformed: false, captchaTag: "" };
       }
-      const expectedTokenTag = await captchaTagFromToken(turnToken);
+      const expectedTokenTag = await captchaTagV1(turnToken, recaptchaToken);
       if (!timingSafeEqual(turnstilePreflight.tokenTag, expectedTokenTag)) {
-        return { ok: false, captchaTag: "" };
+        return { ok: false, malformed: false, captchaTag: "" };
       }
     } else {
       const turnSecret = config.TURNSTILE_SECRET;
-      if (!turnSecret) return { ok: false, captchaTag: "" };
+      if (!turnSecret) return { ok: false, malformed: false, captchaTag: "" };
       const turnOk = await verifyCaptchaForTicket(request, {
         provider: "turnstile",
         secret: turnSecret,
         token: turnToken,
         ticketMac: ticket.mac,
       });
-      if (!turnOk) return { ok: false, captchaTag: "" };
+      if (!turnOk) return { ok: false, malformed: false, captchaTag: "" };
     }
   }
 
   if (needRecaptcha) {
     const pairs = Array.isArray(config.RECAPTCHA_PAIRS) ? config.RECAPTCHA_PAIRS : [];
     const picked = await pickRecaptchaPair(ticket.mac, pairs);
-    if (!picked || !picked.pair || !picked.pair.secret) return { ok: false, captchaTag: "" };
-    recaptchaToken = validateTurnToken(tokens.recaptcha_v3);
-    if (!recaptchaToken) return { ok: false, captchaTag: "" };
+    if (!picked || !picked.pair || !picked.pair.secret) {
+      return { ok: false, malformed: false, captchaTag: "" };
+    }
     const minScore = Number.isFinite(config.RECAPTCHA_MIN_SCORE)
       ? config.RECAPTCHA_MIN_SCORE
       : 0.5;
@@ -1131,12 +1157,11 @@ const verifyRequiredCaptchaForTicket = async (
       kid: picked.kid,
       minScore,
     });
-    if (!recapOk) return { ok: false, captchaTag: "" };
+    if (!recapOk) return { ok: false, malformed: false, captchaTag: "" };
   }
 
-  const activeCaptchaMaterial = turnToken || recaptchaToken;
-  const captchaTag = activeCaptchaMaterial ? await captchaTagFromToken(activeCaptchaMaterial) : "any";
-  return { ok: true, captchaTag };
+  const captchaTag = await captchaTagV1(turnToken, recaptchaToken);
+  return { ok: true, malformed: false, captchaTag };
 };
 
 const getProofTtl = (ticket, config, nowSeconds) => {
@@ -1644,15 +1669,9 @@ const handlePowCommit = async (request, url, nowSeconds, innerCtx) => {
   const spineSeed = randomBase64Url(16);
   let captchaTag = "any";
   if (needTurn || needRecaptcha) {
-    const verifiedCaptcha = await verifyRequiredCaptchaForTicket(
-      request,
-      config,
-      ticket,
-      bindingString,
-      captchaToken
-    );
-    if (!verifiedCaptcha.ok) return deny();
-    captchaTag = verifiedCaptcha.captchaTag;
+    const localCaptcha = await deriveLocalCaptchaTag(config, captchaToken);
+    if (!localCaptcha.ok) return localCaptcha.malformed ? S(400) : deny();
+    captchaTag = localCaptcha.captchaTag;
   }
   const mac = await makePowCommitMac(
     powSecret,
@@ -1711,7 +1730,7 @@ const handleCap = async (request, url, nowSeconds, innerCtx) => {
     captchaToken
   );
   if (!verifiedCaptcha.ok) {
-    return deny();
+    return verifiedCaptcha.malformed ? S(400) : deny();
   }
 
   const ttl = getProofTtl(ticket, config, nowSeconds);
@@ -2025,20 +2044,15 @@ const handlePowOpen = async (request, url, nowSeconds, innerCtx) => {
   if (!ttl) return deny();
 
   if ((needTurn || needRecaptcha) && config.ATOMIC_CONSUME === true) {
-    const verifiedCaptcha = await verifyRequiredCaptchaForTicket(
-      request,
-      config,
-      ticket,
-      bindingString,
-      captchaToken
-    );
-    if (!verifiedCaptcha.ok || verifiedCaptcha.captchaTag !== commit.captchaTag) return deny();
+    const localCaptcha = await deriveLocalCaptchaTag(config, captchaToken);
+    if (!localCaptcha.ok) return localCaptcha.malformed ? S(400) : deny();
+    if (localCaptcha.captchaTag !== commit.captchaTag) return deny();
     const exp = nowSeconds + ttl;
     const mac = await makeConsumeMac(
       powSecret,
       commit.ticketB64,
       exp,
-      verifiedCaptcha.captchaTag,
+      localCaptcha.captchaTag,
       requiredMask
     );
     const headers = new Headers();
@@ -2046,7 +2060,7 @@ const handlePowOpen = async (request, url, nowSeconds, innerCtx) => {
     return J(
       {
         done: true,
-        consume: `v2.${commit.ticketB64}.${exp}.${verifiedCaptcha.captchaTag}.${requiredMask}.${mac}`,
+        consume: `v2.${commit.ticketB64}.${exp}.${localCaptcha.captchaTag}.${requiredMask}.${mac}`,
       },
       200,
       headers
@@ -2061,7 +2075,8 @@ const handlePowOpen = async (request, url, nowSeconds, innerCtx) => {
       bindingString,
       captchaToken
     );
-    if (!verifiedCaptcha.ok || verifiedCaptcha.captchaTag !== commit.captchaTag) return deny();
+    if (!verifiedCaptcha.ok) return verifiedCaptcha.malformed ? S(400) : deny();
+    if (verifiedCaptcha.captchaTag !== commit.captchaTag) return deny();
   }
 
   const headers = new Headers();
@@ -2108,6 +2123,7 @@ const handlePowApi = async (request, url, nowSeconds, innerCtx) => {
 
 export { hmacSha256Base64UrlNoPad };
 export const __captchaTesting = {
+  captchaTagV1,
   pickRecaptchaPair,
   makeRecaptchaAction,
   verifyCaptchaSiteverify,
@@ -2223,10 +2239,14 @@ export default {
         ) {
           return await fail(deny());
         }
-        const tokenMap = readCaptchaTokens(atomic.captchaToken, needTurn, needRecaptcha);
-        if (!tokenMap) return await fail(deny());
-        const turnToken = needTurn ? validateTurnToken(tokenMap.turnstile) : "";
-        if (needTurn && !turnToken) return await fail(deny());
+        const parsedAtomicCaptcha = parseCanonicalCaptchaTokens(
+          atomic.captchaToken,
+          needTurn,
+          needRecaptcha
+        );
+        if (!parsedAtomicCaptcha.ok) {
+          return await fail(parsedAtomicCaptcha.malformed ? S(400) : deny(), false);
+        }
         if (needPow) {
           const consume = await verifyConsumeToken(
             atomic.consumeToken,
@@ -2262,6 +2282,9 @@ export default {
             }
           );
           if (!verifiedCaptcha.ok || verifiedCaptcha.captchaTag !== consume.captchaTag) {
+            if (!verifiedCaptcha.ok && verifiedCaptcha.malformed) {
+              return await fail(S(400), false);
+            }
             return await fail(deny());
           }
           const response = await fetch(stripInnerHeaders(baseRequest));
@@ -2294,6 +2317,7 @@ export default {
           }
         );
         if (!verifiedCaptcha.ok) {
+          if (verifiedCaptcha.malformed) return await fail(S(400), false);
           return await fail(deny());
         }
         const response = await fetch(stripInnerHeaders(baseRequest));

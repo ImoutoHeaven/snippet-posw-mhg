@@ -233,7 +233,7 @@ test("pow runtime uses captchaTag naming", async () => {
   const repoRoot = fileURLToPath(new URL("..", import.meta.url));
   const powSource = await readFile(join(repoRoot, "pow.js"), "utf8");
   assert.match(powSource, /CAPTCHA_TAG_LEN/u);
-  assert.match(powSource, /captchaTagFromToken/u);
+  assert.match(powSource, /captchaTagV1/u);
   assert.doesNotMatch(powSource, /\bTB_LEN\b/u);
   assert.doesNotMatch(powSource, /\btbFromToken\b/u);
 });

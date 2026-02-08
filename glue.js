@@ -285,8 +285,32 @@ const sha256Bytes = async (value) => {
   const buf = await crypto.subtle.digest("SHA-256", bytes);
   return new Uint8Array(buf);
 };
-const captchaTagFromToken = async (token) =>
-  base64UrlEncodeNoPad((await sha256Bytes(token)).slice(0, 12));
+const captchaTagV1 = async (turnToken, recaptchaToken) => {
+  const material = `ctag|v1|t=${turnToken}|r=${recaptchaToken}`;
+  return base64UrlEncodeNoPad((await sha256Bytes(material)).slice(0, 12));
+};
+
+const parseCanonicalCaptchaEnvelope = (captchaToken) => {
+  if (typeof captchaToken !== "string") return null;
+  const raw = captchaToken.trim();
+  if (!raw) return null;
+  let envelope;
+  try {
+    envelope = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!envelope || typeof envelope !== "object" || Array.isArray(envelope)) return null;
+  const keys = Object.keys(envelope);
+  for (const key of keys) {
+    if (key !== "turnstile" && key !== "recaptcha_v3") return null;
+    if (typeof envelope[key] !== "string" || !envelope[key]) return null;
+  }
+  return {
+    turnstile: typeof envelope.turnstile === "string" ? envelope.turnstile : "",
+    recaptcha_v3: typeof envelope.recaptcha_v3 === "string" ? envelope.recaptcha_v3 : "",
+  };
+};
 
 const parseAtomicCfg = (raw) => {
   const parts = typeof raw === "string" && raw ? raw.split("|") : [];
@@ -1306,8 +1330,7 @@ const runPowFlow = async (
   hashcashBits,
   segmentLen,
   esmUrlB64,
-  captchaToken,
-  turnToken
+  captchaToken
 ) => {
   log(t("loading_solver"));
   const esmUrl = decodeB64Url(String(esmUrlB64 || ""));
@@ -1320,24 +1343,13 @@ const runPowFlow = async (
   if (!authBinding) {
     throw new Error("Bad Binding");
   }
-  let captchaBindingToken = "";
-  if (turnToken) {
-    captchaBindingToken = turnToken;
-  } else if (captchaToken) {
-    try {
-      const parsed = JSON.parse(captchaToken);
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-        if (typeof parsed.turnstile === "string" && parsed.turnstile) {
-          captchaBindingToken = parsed.turnstile;
-        } else if (typeof parsed.recaptcha_v3 === "string" && parsed.recaptcha_v3) {
-          captchaBindingToken = parsed.recaptcha_v3;
-        }
-      }
-    } catch {}
+  let powBinding = authBinding;
+  if (captchaToken) {
+    const parsedCaptcha = parseCanonicalCaptchaEnvelope(captchaToken);
+    if (!parsedCaptcha) throw new Error("Bad Binding");
+    const captchaTag = await captchaTagV1(parsedCaptcha.turnstile, parsedCaptcha.recaptcha_v3);
+    powBinding = `${authBinding}|${captchaTag}`;
   }
-  const powBinding = captchaBindingToken
-    ? `${authBinding}|${await captchaTagFromToken(captchaBindingToken)}`
-    : authBinding;
 
   const workerCode = await fetch(workerUrl).then((r) => r.text());
   const blob = new Blob([workerCode], { type: "application/javascript" });
@@ -1662,16 +1674,10 @@ export default async function runPow(
         hashcashBits,
         segmentLen,
         esmUrlB64,
-        "",
         ""
       );
     } else {
       const captchaToken = await runCaptcha(ticketB64, captchaCfg);
-      let turnToken = "";
-      try {
-        const parsedCaptcha = JSON.parse(captchaToken);
-        turnToken = typeof parsedCaptcha.turnstile === "string" ? parsedCaptcha.turnstile : "";
-      } catch {}
       if (needTurn) {
         log(t("turnstile_solved_pow"));
       }
@@ -1684,8 +1690,7 @@ export default async function runPow(
         hashcashBits,
         segmentLen,
         esmUrlB64,
-        captchaToken,
-        turnToken
+        captchaToken
       );
       if (atomicEnabled) {
         const consume = state && state.consume;

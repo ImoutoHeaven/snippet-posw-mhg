@@ -1467,26 +1467,30 @@ const verifyTicketMac = async (ticket, hostname, bindingValues, powSecret) => {
   return bindingString;
 };
 
-const readDualCaptchaTokens = (captchaToken) => {
-  const readFromObject = (parsed) => {
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-    const turnstile = typeof parsed.turnstile === "string" ? parsed.turnstile.trim() : "";
-    const recaptcha_v3 =
-      typeof parsed.recaptcha_v3 === "string" ? parsed.recaptcha_v3.trim() : "";
-    return { turnstile, recaptcha_v3 };
-  };
-
+const parseCanonicalCaptchaTokens = (captchaToken, needTurn, needRecaptcha) => {
+  let envelope = null;
   if (typeof captchaToken === "string") {
-    const single = captchaToken.trim();
-    if (!single || !(single.startsWith("{") && single.endsWith("}"))) return null;
+    const raw = captchaToken.trim();
+    if (!raw) return null;
     try {
-      return readFromObject(JSON.parse(single));
+      envelope = JSON.parse(raw);
     } catch {
       return null;
     }
+  } else {
+    envelope = captchaToken;
+  }
+  if (!envelope || typeof envelope !== "object" || Array.isArray(envelope)) return null;
+  const keys = Object.keys(envelope);
+  for (const key of keys) {
+    if (key !== "turnstile" && key !== "recaptcha_v3") return null;
+    if (typeof envelope[key] !== "string") return null;
   }
 
-  return readFromObject(captchaToken);
+  const turnstile = needTurn ? validateTurnToken(envelope.turnstile || "") : "";
+  const recaptcha_v3 = needRecaptcha ? validateTurnToken(envelope.recaptcha_v3 || "") : "";
+  if ((needTurn && !turnstile) || (needRecaptcha && !recaptcha_v3)) return null;
+  return { turnstile, recaptcha_v3 };
 };
 
 const validateTurnToken = (value) => {
@@ -1497,8 +1501,10 @@ const validateTurnToken = (value) => {
   return token;
 };
 
-const captchaTagFromToken = async (token) =>
-  base64UrlEncodeNoPad((await sha256Bytes(token)).slice(0, 12));
+const captchaTagV1 = async (turnToken, recaptchaToken) => {
+  const material = `ctag|v1|t=${turnToken}|r=${recaptchaToken}`;
+  return base64UrlEncodeNoPad((await sha256Bytes(material)).slice(0, 12));
+};
 
 const verifyTurnstileSiteverify = async (request, secret, token) => {
   if (!secret || !token) return { ok: false, cdata: "" };
@@ -1565,9 +1571,9 @@ const runTurnstilePreflight = async ({
   const shouldCheck = shouldRunTurnstilePreflight(requestPath, config, bind);
   if (!shouldCheck) return preflight;
 
-  const tokens = readDualCaptchaTokens(atomic.captchaToken);
-  const turnToken = validateTurnToken(tokens && tokens.turnstile);
-  const recaptchaToken = validateTurnToken(tokens && tokens.recaptcha_v3);
+  const tokens = parseCanonicalCaptchaTokens(atomic.captchaToken, true, true);
+  const turnToken = tokens && tokens.turnstile;
+  const recaptchaToken = tokens && tokens.recaptcha_v3;
   if (!turnToken || !recaptchaToken) {
     preflight.reason = "missing_atomic";
     return preflight;
@@ -1625,7 +1631,7 @@ const runTurnstilePreflight = async ({
   preflight.ok = true;
   preflight.reason = "";
   preflight.ticketMac = ticket.mac;
-  preflight.tokenTag = await captchaTagFromToken(turnToken);
+  preflight.tokenTag = await captchaTagV1(turnToken, recaptchaToken);
   return { ...preflight, derived: nextDerived };
 };
 

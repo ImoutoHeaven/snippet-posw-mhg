@@ -77,8 +77,10 @@ const encodeAtomicCookie = (value) => encodeURIComponent(value);
 const hmacSha256Base64Url = (secret, data) =>
   base64Url(crypto.createHmac("sha256", secret).update(data).digest());
 
-const sha256Base64UrlTag = (value) =>
-  base64Url(crypto.createHash("sha256").update(value).digest().subarray(0, 12));
+const captchaTagV1 = (turnToken = "", recaptchaToken = "") => {
+  const material = `ctag|v1|t=${String(turnToken || "")}|r=${String(recaptchaToken || "")}`;
+  return base64Url(crypto.createHash("sha256").update(material).digest().subarray(0, 12));
+};
 
 const makePowBindingString = (ticket, hostname, pathHash, ipScope, country, asn, tlsFingerprint) =>
   [
@@ -1138,7 +1140,10 @@ test("pow-config records turnstile preflight evidence for atomic dual-provider t
     assert.equal(parsed.s.atomic.turnstilePreflight?.ok, true);
     assert.equal(parsed.s.atomic.turnstilePreflight?.reason, "");
     assert.equal(parsed.s.atomic.turnstilePreflight?.ticketMac, ticket.mac);
-    assert.equal(parsed.s.atomic.turnstilePreflight?.tokenTag, sha256Base64UrlTag(turnToken));
+    assert.equal(
+      parsed.s.atomic.turnstilePreflight?.tokenTag,
+      captchaTagV1(turnToken, "atomic-recaptcha-token-1234567890")
+    );
   } finally {
     globalThis.fetch = originalFetch;
     restoreGlobals();

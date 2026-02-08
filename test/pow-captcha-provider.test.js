@@ -111,6 +111,37 @@ test("recaptcha action binding derives deterministic p_ hex prefix", async () =>
   }
 });
 
+test("captchaTag(v1) binds turnstile and recaptcha tokens", async () => {
+  const restoreGlobals = ensureGlobals();
+  try {
+    const testing = await loadTestingApi();
+    const turn = "turn-token-1234567890";
+    const recaptcha = "recaptcha-token-1234567890";
+    const dual = await testing.captchaTagV1(turn, recaptcha);
+    const onlyTurn = await testing.captchaTagV1(turn, "");
+    const onlyRecaptcha = await testing.captchaTagV1("", recaptcha);
+
+    const expected = Buffer.from(
+      await crypto.webcrypto.subtle.digest(
+        "SHA-256",
+        new TextEncoder().encode(`ctag|v1|t=${turn}|r=${recaptcha}`)
+      )
+    )
+      .subarray(0, 12)
+      .toString("base64")
+      .replace(/\+/g, "-")
+      .replace(/\//g, "_")
+      .replace(/=+$/u, "");
+
+    assert.equal(dual, expected);
+    assert.match(dual, /^[A-Za-z0-9_-]{16}$/u);
+    assert.notEqual(dual, onlyTurn);
+    assert.notEqual(dual, onlyRecaptcha);
+  } finally {
+    restoreGlobals();
+  }
+});
+
 test("recaptcha verify requires hostname score action remoteip", async () => {
   const restoreGlobals = ensureGlobals();
   const originalFetch = globalThis.fetch;
