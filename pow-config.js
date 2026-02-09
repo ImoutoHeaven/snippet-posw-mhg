@@ -19,11 +19,8 @@ const DEFAULTS = {
   POW_HASHCASH_BITS: 3,
   POW_SEGMENT_LEN: "48-64",
   POW_SAMPLE_K: 15,
-  POW_SPINE_K: 2,
   POW_CHAL_ROUNDS: 12,
   POW_OPEN_BATCH: 15,
-  POW_FORCE_EDGE_1: true,
-  POW_FORCE_EDGE_LAST: true,
   POW_COMMIT_TTL_SEC: 120,
   POW_TICKET_TTL_SEC: 600,
   PROOF_TTL_SEC: 600,
@@ -183,8 +180,6 @@ const ATOMIC_COOKIE_NAME_MAX_LEN = 128;
 const ATOMIC_SNAPSHOT_MAX_LEN = 12288;
 const NONCE_MIN_LEN = 16;
 const NONCE_MAX_LEN = 64;
-const SPINE_SEED_MIN_LEN = 16;
-const SPINE_SEED_MAX_LEN = 64;
 const CAPTCHA_TAG_LEN = 16;
 const TURN_TOKEN_MIN_LEN = 20;
 const TURN_TOKEN_MAX_LEN = 4096;
@@ -1101,12 +1096,6 @@ const normalizeConfig = (baseConfig) => {
       1,
       256
     ),
-    POW_SPINE_K: normalizeNumberClamp(
-      merged.POW_SPINE_K,
-      DEFAULTS.POW_SPINE_K,
-      0,
-      256
-    ),
     POW_CHAL_ROUNDS: normalizeNumberClamp(
       merged.POW_CHAL_ROUNDS,
       DEFAULTS.POW_CHAL_ROUNDS,
@@ -1118,11 +1107,6 @@ const normalizeConfig = (baseConfig) => {
       DEFAULTS.POW_OPEN_BATCH,
       1,
       256
-    ),
-    POW_FORCE_EDGE_1: normalizeBoolean(merged.POW_FORCE_EDGE_1, DEFAULTS.POW_FORCE_EDGE_1),
-    POW_FORCE_EDGE_LAST: normalizeBoolean(
-      merged.POW_FORCE_EDGE_LAST,
-      DEFAULTS.POW_FORCE_EDGE_LAST
     ),
     POW_COMMIT_TTL_SEC: normalizeNumberClamp(
       merged.POW_COMMIT_TTL_SEC,
@@ -1366,12 +1350,20 @@ const parseConsumeToken = (value) => {
 const makeConsumeMac = async (powSecret, ticketB64, exp, captchaTag, m) =>
   hmacSha256Base64UrlNoPad(powSecret, `U|${ticketB64}|${exp}|${captchaTag}|${m}`);
 
-const verifyConsumeIntegrity = async (consumeToken, powSecret, nowSeconds, requiredMask) => {
+const verifyConsumeIntegrity = async (
+  consumeToken,
+  powSecret,
+  nowSeconds,
+  requiredMask,
+  options = {}
+) => {
+  const withReason = options && options.withReason === true;
+  const fail = (reason) => (withReason ? { ok: false, reason } : null);
   const parsed = parseConsumeToken(consumeToken);
-  if (!parsed) return null;
-  if (!powSecret) return null;
-  if (parsed.exp <= nowSeconds) return null;
-  if ((parsed.m & requiredMask) !== requiredMask) return null;
+  if (!parsed) return fail("consume_invalid");
+  if (!powSecret) return fail("consume_invalid");
+  if (parsed.exp <= nowSeconds) return fail("consume_stale");
+  if ((parsed.m & requiredMask) !== requiredMask) return fail("consume_invalid");
   const expectedMac = await makeConsumeMac(
     powSecret,
     parsed.ticketB64,
@@ -1379,8 +1371,8 @@ const verifyConsumeIntegrity = async (consumeToken, powSecret, nowSeconds, requi
     parsed.captchaTag,
     parsed.m
   );
-  if (!timingSafeEqual(expectedMac, parsed.mac)) return null;
-  return parsed;
+  if (!timingSafeEqual(expectedMac, parsed.mac)) return fail("consume_invalid");
+  return withReason ? { ok: true, parsed } : parsed;
 };
 
 const computePathHash = async (canonicalPath) =>
@@ -1548,12 +1540,31 @@ const defaultTurnstilePreflight = () => ({
   tokenTag: "",
 });
 
-const shouldRunTurnstilePreflight = (requestPath, config, bind) =>
+const resolveCaptchaRequirements = (config) => {
+  let needTurn = config.turncheck === true;
+  let needRecaptcha = config.recaptchaEnabled === true;
+  if (!needTurn && !needRecaptcha) {
+    const providersRaw = typeof config.providers === "string" ? config.providers : "";
+    const providers = providersRaw
+      .split(/[\s,]+/u)
+      .map((entry) => entry.trim().toLowerCase())
+      .filter(Boolean);
+    needTurn = providers.includes("turnstile");
+    needRecaptcha = providers.includes("recaptcha") || providers.includes("recaptcha_v3");
+  }
+  return { needTurn, needRecaptcha };
+};
+
+const shouldRunTurnstilePreflight = (requestPath, config, bind) => {
+  const { needTurn, needRecaptcha } = resolveCaptchaRequirements(config);
+  return (
   config.ATOMIC_CONSUME === true &&
-  config.turncheck === true &&
-  config.recaptchaEnabled === true &&
+  needTurn === true &&
+  needRecaptcha === true &&
   bind.ok === true &&
-  !requestPath.startsWith(`${config.POW_API_PREFIX}/`);
+  !requestPath.startsWith(`${config.POW_API_PREFIX}/`)
+  );
+};
 
 const runTurnstilePreflight = async ({
   request,
@@ -1591,16 +1602,18 @@ const runTurnstilePreflight = async ({
   const canonicalPath = bind.canonicalPath || requestPath;
 
   if (config.powcheck === true) {
-    const consume = await verifyConsumeIntegrity(
+    const consumeCheck = await verifyConsumeIntegrity(
       atomic.consumeToken,
       powSecret,
       nowSeconds,
-      requiredMask
+      requiredMask,
+      { withReason: true }
     );
-    if (!consume) {
-      preflight.reason = "consume_invalid";
+    if (!consumeCheck || consumeCheck.ok !== true) {
+      preflight.reason = consumeCheck && consumeCheck.reason ? consumeCheck.reason : "consume_invalid";
       return preflight;
     }
+    const consume = consumeCheck.parsed;
     ticket = parsePowTicketFull(consume.ticketB64);
     if (!ticket || ticket.cfgId !== cfgId) {
       preflight.reason = "ticket_invalid";
@@ -1643,16 +1656,15 @@ const runTurnstilePreflight = async ({
 const parsePowCommitCookie = (value) => {
   if (!value) return null;
   const parts = value.split(".");
-  if (parts.length !== 9) return null;
-  if (parts[0] !== "v4") return null;
+  if (parts.length !== 8) return null;
+  if (parts[0] !== "v5") return null;
   const ticketB64 = parts[1] || "";
   const rootB64 = parts[2] || "";
   const pathHash = parts[3] || "";
   const captchaTag = parts[4] || "";
   const nonce = parts[5] || "";
   const exp = Number.parseInt(parts[6], 10);
-  const spineSeed = parts[7] || "";
-  const mac = parts[8] || "";
+  const mac = parts[7] || "";
   if (!isBase64Url(ticketB64, 1, B64_TICKET_MAX_LEN)) return null;
   if (!isBase64Url(rootB64, 1, B64_HASH_MAX_LEN)) return null;
   if (!(pathHash === "any" || isBase64Url(pathHash, 1, B64_HASH_MAX_LEN))) return null;
@@ -1660,9 +1672,6 @@ const parsePowCommitCookie = (value) => {
     return null;
   }
   if (!isBase64Url(nonce, NONCE_MIN_LEN, NONCE_MAX_LEN)) return null;
-  if (!isBase64Url(spineSeed, SPINE_SEED_MIN_LEN, SPINE_SEED_MAX_LEN)) {
-    return null;
-  }
   if (!isBase64Url(mac, 1, B64_HASH_MAX_LEN)) return null;
   if (!Number.isFinite(exp) || exp <= 0) return null;
   return { ticketB64 };

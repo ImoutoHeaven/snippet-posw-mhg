@@ -109,6 +109,78 @@ const decodeB64UrlUtf8 = (value) => {
   return Buffer.from(b64, "base64").toString("utf8");
 };
 
+const fromBase64Url = (value) => {
+  const normalized = String(value || "").replace(/-/g, "+").replace(/_/g, "/");
+  const pad = normalized.length % 4 === 0 ? "" : "=".repeat(4 - (normalized.length % 4));
+  return Buffer.from(normalized + pad, "base64");
+};
+
+const deriveMhgGraphSeed = (ticketB64, nonce) =>
+  crypto.createHash("sha256").update(`mhg|graph|v2|${ticketB64}|${nonce}`).digest().subarray(0, 16);
+
+const deriveMhgNonce16 = (nonce) => {
+  const raw = fromBase64Url(nonce);
+  if (raw.length >= 16) return raw.subarray(0, 16);
+  return crypto.createHash("sha256").update(raw).digest().subarray(0, 16);
+};
+
+const buildMhgWitnessBundle = async ({ powSecret, ticketB64, nonce }) => {
+  const ticket = decodeTicket(ticketB64);
+  if (!ticket) throw new Error("invalid ticket");
+  const { parentsOf } = await import("../lib/mhg/graph.js");
+  const { makeGenesisPage, mixPage } = await import("../lib/mhg/mix-aes.js");
+  const { buildMerkle, buildProof } = await import("../lib/mhg/merkle.js");
+
+  const graphSeed = deriveMhgGraphSeed(ticketB64, nonce);
+  const nonce16 = deriveMhgNonce16(nonce);
+  const pageBytes = 64;
+  const pages = new Array(ticket.L + 1);
+  pages[0] = await makeGenesisPage({ graphSeed, nonce: nonce16, pageBytes });
+
+  const parentByIndex = new Map();
+  for (let i = 1; i <= ticket.L; i += 1) {
+    const parents = await parentsOf(i, graphSeed);
+    parentByIndex.set(i, parents);
+    pages[i] = await mixPage({
+      i,
+      p0: pages[parents.p0],
+      p1: pages[parents.p1],
+      p2: pages[parents.p2],
+      graphSeed,
+      nonce: nonce16,
+      pageBytes,
+    });
+  }
+
+  const tree = await buildMerkle(pages);
+  const witnessByIndex = new Map();
+  for (let i = 1; i <= ticket.L; i += 1) {
+    const parents = parentByIndex.get(i);
+    witnessByIndex.set(i, {
+      i,
+      p0: base64Url(pages[parents.p0]),
+      p1: base64Url(pages[parents.p1]),
+      p2: base64Url(pages[parents.p2]),
+      page: base64Url(pages[i]),
+      proof: {
+        page: buildProof(tree, i).map((sib) => base64Url(sib)),
+        p0: buildProof(tree, parents.p0).map((sib) => base64Url(sib)),
+        p1: buildProof(tree, parents.p1).map((sib) => base64Url(sib)),
+        p2: buildProof(tree, parents.p2).map((sib) => base64Url(sib)),
+      },
+    });
+  }
+
+  return { rootB64: base64Url(tree.root), witnessByIndex };
+};
+
+const buildMhgOpensForIndices = (indices, witnessByIndex) =>
+  indices.map((index) => {
+    const entry = witnessByIndex.get(index);
+    if (!entry) throw new Error(`missing witness for index ${index}`);
+    return entry;
+  });
+
 const sha256Bytes = async (value) => {
   const bytes = typeof value === "string" ? new TextEncoder().encode(value) : value;
   const digest = await crypto.webcrypto.subtle.digest("SHA-256", bytes);
@@ -1465,22 +1537,11 @@ test("/commit, /challenge, and non-final /open do not call siteverify", async ()
     const bindingString = decodeB64UrlUtf8(args.bindingB64);
     const captchaTag = await captchaTagFromToken(turnToken);
     const powBinding = `${bindingString}|${captchaTag}`;
-    const seedPrefix = new TextEncoder().encode("posw|seed|");
-    const stepPrefix = new TextEncoder().encode("posw|step|");
-    const leafPrefix = new TextEncoder().encode("leaf|");
-    const nodePrefix = new TextEncoder().encode("node|");
-    const pipe = new TextEncoder().encode("|");
-    const seedHash = await sha256Bytes(
-      concatBytes(seedPrefix, new TextEncoder().encode(powBinding), pipe, new TextEncoder().encode(nonce))
-    );
-    const h1 = await sha256Bytes(concatBytes(stepPrefix, encodeUint32BE(1), seedHash));
-    const h2 = await sha256Bytes(concatBytes(stepPrefix, encodeUint32BE(2), h1));
-    const leaf0 = await sha256Bytes(concatBytes(leafPrefix, encodeUint32BE(0), seedHash));
-    const leaf1 = await sha256Bytes(concatBytes(leafPrefix, encodeUint32BE(1), h1));
-    const leaf2 = await sha256Bytes(concatBytes(leafPrefix, encodeUint32BE(2), h2));
-    const node01 = await sha256Bytes(concatBytes(nodePrefix, leaf0, leaf1));
-    const node22 = await sha256Bytes(concatBytes(nodePrefix, leaf2, leaf2));
-    const root = await sha256Bytes(concatBytes(nodePrefix, node01, node22));
+    const { rootB64, witnessByIndex } = await buildMhgWitnessBundle({
+      powSecret: config.POW_TOKEN,
+      ticketB64: args.ticketB64,
+      nonce,
+    });
 
     let siteverifyCalls = 0;
     globalThis.fetch = async (url) => {
@@ -1503,7 +1564,7 @@ test("/commit, /challenge, and non-final /open do not call siteverify", async ()
         },
         body: JSON.stringify({
           ticketB64: args.ticketB64,
-          rootB64: base64Url(root),
+          rootB64,
           pathHash: args.pathHash,
           nonce,
           captchaToken,
@@ -1534,6 +1595,7 @@ test("/commit, /challenge, and non-final /open do not call siteverify", async ()
     const challenge = await challengeRes.json();
     assert.equal(challenge.done, false);
     assert.equal(challenge.cursor, 0);
+    const opens = buildMhgOpensForIndices(challenge.indices, witnessByIndex);
 
     const nonFinalOpenRes = await powHandler(
       new Request("https://example.com/__pow/open", {
@@ -1550,17 +1612,8 @@ test("/commit, /challenge, and non-final /open do not call siteverify", async ()
           sid: challenge.sid,
           cursor: challenge.cursor,
           token: challenge.token,
-          spinePos: challenge.spinePos,
           captchaToken,
-          opens: [
-            {
-              i: 1,
-              hPrev: base64Url(seedHash),
-              hCurr: base64Url(h1),
-              proofPrev: { sibs: [base64Url(leaf1), base64Url(node22)] },
-              proofCurr: { sibs: [base64Url(leaf0), base64Url(node22)] },
-            },
-          ],
+          opens,
         }),
       })
     );
@@ -1825,21 +1878,11 @@ test("atomic /open final does not call siteverify", async () => {
     const turnToken = "atomic-open-final-token-1234567890";
     const captchaToken = JSON.stringify({ turnstile: turnToken });
     const nonce = base64Url(crypto.randomBytes(12));
-    const bindingString = decodeB64UrlUtf8(args.bindingB64);
-    const captchaTag = await captchaTagFromToken(turnToken);
-    const powBinding = `${bindingString}|${captchaTag}`;
-    const seedPrefix = new TextEncoder().encode("posw|seed|");
-    const stepPrefix = new TextEncoder().encode("posw|step|");
-    const leafPrefix = new TextEncoder().encode("leaf|");
-    const nodePrefix = new TextEncoder().encode("node|");
-    const pipe = new TextEncoder().encode("|");
-    const seedHash = await sha256Bytes(
-      concatBytes(seedPrefix, new TextEncoder().encode(powBinding), pipe, new TextEncoder().encode(nonce))
-    );
-    const hCurr = await sha256Bytes(concatBytes(stepPrefix, encodeUint32BE(1), seedHash));
-    const leaf0 = await sha256Bytes(concatBytes(leafPrefix, encodeUint32BE(0), seedHash));
-    const leaf1 = await sha256Bytes(concatBytes(leafPrefix, encodeUint32BE(1), hCurr));
-    const root = await sha256Bytes(concatBytes(nodePrefix, leaf0, leaf1));
+    const { rootB64, witnessByIndex } = await buildMhgWitnessBundle({
+      powSecret: config.POW_TOKEN,
+      ticketB64: args.ticketB64,
+      nonce,
+    });
 
     let siteverifyCalls = 0;
     globalThis.fetch = async (url) => {
@@ -1862,7 +1905,7 @@ test("atomic /open final does not call siteverify", async () => {
         },
         body: JSON.stringify({
           ticketB64: args.ticketB64,
-          rootB64: base64Url(root),
+          rootB64,
           pathHash: args.pathHash,
           nonce,
           captchaToken,
@@ -1889,6 +1932,7 @@ test("atomic /open final does not call siteverify", async () => {
     );
     assert.equal(challengeRes.status, 200);
     const challenge = await challengeRes.json();
+    const opens = buildMhgOpensForIndices(challenge.indices, witnessByIndex);
 
     const openRes = await powHandler(
       new Request("https://example.com/__pow/open", {
@@ -1905,17 +1949,8 @@ test("atomic /open final does not call siteverify", async () => {
           sid: challenge.sid,
           cursor: challenge.cursor,
           token: challenge.token,
-          spinePos: challenge.spinePos,
           captchaToken,
-          opens: [
-            {
-              i: 1,
-              hPrev: base64Url(seedHash),
-              hCurr: base64Url(hCurr),
-              proofPrev: { sibs: [base64Url(leaf1)] },
-              proofCurr: { sibs: [base64Url(leaf0)] },
-            },
-          ],
+          opens,
         }),
       })
     );
@@ -2045,20 +2080,11 @@ test("combined pow+captcha /open returns cheat hint for tampered payload and cap
     const nonce = base64Url(crypto.randomBytes(12));
     const commitCaptchaTag = await captchaTagFromToken(goodToken);
     const powBinding = `${bindingString}|${commitCaptchaTag}`;
-    const seedPrefix = new TextEncoder().encode("posw|seed|");
-    const stepPrefix = new TextEncoder().encode("posw|step|");
-    const leafPrefix = new TextEncoder().encode("leaf|");
-    const nodePrefix = new TextEncoder().encode("node|");
-    const pipe = new TextEncoder().encode("|");
-
-    const seedHash = await sha256Bytes(
-      concatBytes(seedPrefix, new TextEncoder().encode(powBinding), pipe, new TextEncoder().encode(nonce))
-    );
-    const hCurr = await sha256Bytes(concatBytes(stepPrefix, encodeUint32BE(1), seedHash));
-    const leaf0 = await sha256Bytes(concatBytes(leafPrefix, encodeUint32BE(0), seedHash));
-    const leaf1 = await sha256Bytes(concatBytes(leafPrefix, encodeUint32BE(1), hCurr));
-    const root = await sha256Bytes(concatBytes(nodePrefix, leaf0, leaf1));
-    const rootB64 = base64Url(root);
+    const { rootB64, witnessByIndex } = await buildMhgWitnessBundle({
+      powSecret: config.POW_TOKEN,
+      ticketB64: args.ticketB64,
+      nonce,
+    });
 
     globalThis.fetch = async (url) => {
       if (String(url) === "https://challenges.cloudflare.com/turnstile/v0/siteverify") {
@@ -2108,22 +2134,13 @@ test("combined pow+captcha /open returns cheat hint for tampered payload and cap
     const challenge = await challengeRes.json();
     assert.deepEqual(challenge.indices, [1]);
     assert.deepEqual(challenge.segs, [1]);
-    assert.deepEqual(challenge.spinePos, []);
+    const opens = buildMhgOpensForIndices(challenge.indices, witnessByIndex);
 
     const openBody = {
       sid: challenge.sid,
       cursor: challenge.cursor,
       token: challenge.token,
-      spinePos: challenge.spinePos,
-      opens: [
-        {
-          i: 1,
-          hPrev: base64Url(seedHash),
-          hCurr: base64Url(hCurr),
-          proofPrev: { sibs: [base64Url(leaf1)] },
-          proofCurr: { sibs: [base64Url(leaf0)] },
-        },
-      ],
+      opens,
     };
 
     const tamperedOpen = await powHandler(
@@ -2143,7 +2160,7 @@ test("combined pow+captcha /open returns cheat hint for tampered payload and cap
           opens: [
             {
               ...openBody.opens[0],
-              hCurr: base64Url(crypto.randomBytes(32)),
+              page: base64Url(crypto.randomBytes(64)),
             },
           ],
         }),
@@ -2553,34 +2570,11 @@ test("pow+recaptcha /open enforces commit captchaTag binding", async () => {
     const expectedAction = config.RECAPTCHA_ACTION ?? "submit";
 
     const nonce = base64Url(crypto.randomBytes(12));
-    const seedPrefix = new TextEncoder().encode("posw|seed|");
-    const stepPrefix = new TextEncoder().encode("posw|step|");
-    const leafPrefix = new TextEncoder().encode("leaf|");
-    const nodePrefix = new TextEncoder().encode("node|");
-    const pipe = new TextEncoder().encode("|");
-    const buildOpenProof = async (powBinding) => {
-      const seedHash = await sha256Bytes(
-        concatBytes(seedPrefix, new TextEncoder().encode(powBinding), pipe, new TextEncoder().encode(nonce))
-      );
-      const hCurr = await sha256Bytes(concatBytes(stepPrefix, encodeUint32BE(1), seedHash));
-      const leaf0 = await sha256Bytes(concatBytes(leafPrefix, encodeUint32BE(0), seedHash));
-      const leaf1 = await sha256Bytes(concatBytes(leafPrefix, encodeUint32BE(1), hCurr));
-      const root = await sha256Bytes(concatBytes(nodePrefix, leaf0, leaf1));
-      const rootB64 = base64Url(root);
-      const opens = [
-        {
-          i: 1,
-          hPrev: base64Url(seedHash),
-          hCurr: base64Url(hCurr),
-          proofPrev: { sibs: [base64Url(leaf1)] },
-          proofCurr: { sibs: [base64Url(leaf0)] },
-        },
-      ];
-      return { rootB64, opens };
-    };
-    const untaggedProof = await buildOpenProof(bindingString);
-    const taggedBinding = `${bindingString}|${await captchaTagFromToken("", goodToken)}`;
-    const taggedProof = await buildOpenProof(taggedBinding);
+    const { rootB64, witnessByIndex } = await buildMhgWitnessBundle({
+      powSecret: config.POW_TOKEN,
+      ticketB64: args.ticketB64,
+      nonce,
+    });
 
     globalThis.fetch = async (url) => {
       if (String(url) === "https://www.google.com/recaptcha/api/siteverify") {
@@ -2610,7 +2604,7 @@ test("pow+recaptcha /open enforces commit captchaTag binding", async () => {
         },
         body: JSON.stringify({
           ticketB64: args.ticketB64,
-          rootB64: taggedProof.rootB64,
+          rootB64,
           pathHash: args.pathHash,
           nonce,
           captchaToken: goodEnvelope,
@@ -2637,13 +2631,13 @@ test("pow+recaptcha /open enforces commit captchaTag binding", async () => {
     );
     assert.equal(challengeRes.status, 200);
     const challenge = await challengeRes.json();
+    const opens = buildMhgOpensForIndices(challenge.indices, witnessByIndex);
 
     const openBody = {
       sid: challenge.sid,
       cursor: challenge.cursor,
       token: challenge.token,
-      spinePos: challenge.spinePos,
-      opens: untaggedProof.opens,
+      opens,
     };
 
     const rejectUntaggedOpen = await powHandler(
@@ -2657,7 +2651,11 @@ test("pow+recaptcha /open enforces commit captchaTag binding", async () => {
           "X-Pow-Inner-Mac": mac,
           "X-Pow-Inner-Expire": String(exp),
         },
-        body: JSON.stringify({ ...openBody, captchaToken: goodEnvelope }),
+        body: JSON.stringify({
+          ...openBody,
+          captchaToken: goodEnvelope,
+          opens: [{ ...openBody.opens[0], page: base64Url(crypto.randomBytes(64)) }],
+        }),
       })
     );
     assert.equal(rejectUntaggedOpen.status, 403);
@@ -2689,7 +2687,7 @@ test("pow+recaptcha /open enforces commit captchaTag binding", async () => {
           "X-Pow-Inner-Mac": mac,
           "X-Pow-Inner-Expire": String(exp),
         },
-        body: JSON.stringify({ ...openBody, opens: taggedProof.opens, captchaToken: goodEnvelope }),
+        body: JSON.stringify({ ...openBody, captchaToken: goodEnvelope }),
       })
     );
     assert.equal(passOpen.status, 200);

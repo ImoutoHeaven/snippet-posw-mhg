@@ -401,6 +401,20 @@ const buildApiError = (url, res) => {
 
 const isApiError = (err) => Boolean(err && err.name === "ApiError" && Number(err.status));
 
+const routeHintAction = ({ status, hint }) => {
+  if (Number(status) !== 403) {
+    return { action: "hard_fail", bounded: false };
+  }
+  const normalized = String(hint || "").trim().toLowerCase();
+  if (normalized === "cheat") {
+    return { action: "hard_fail", bounded: false };
+  }
+  if (normalized === "stale" || !normalized) {
+    return { action: "reload", bounded: true };
+  }
+  return { action: "hard_fail", bounded: false };
+};
+
 const isNetworkTransportError = (err) => {
   if (!err) return false;
   if (typeof DOMException !== "undefined" && err instanceof DOMException) {
@@ -1491,6 +1505,7 @@ const runPowFlow = async (
 
     const initPayload = {
       bindingString: powBinding,
+      ticketB64,
       steps,
       hashcashBits,
       segmentLen,
@@ -1588,17 +1603,14 @@ const runPowFlow = async (
         Array.isArray(state.segs) && state.segs.length === indices.length
           ? state.segs
           : null;
-      const spinePos = Array.isArray(state.spinePos) ? state.spinePos : null;
-      if (!segs || !spinePos) {
+      if (!segs) {
         throw new Error("Challenge Failed");
       }
-      const segLens = segs.map((v) => Number(v));
-      const openRes = await rpc.call("OPEN", { indices, segLens, spinePos });
+      const openRes = await rpc.call("OPEN", { indices });
       const openBody = {
         sid: state.sid,
         cursor: state.cursor,
         token: state.token,
-        spinePos,
         opens: openRes.opens,
       };
       if (captchaToken) openBody.captchaToken = captchaToken;
@@ -1799,7 +1811,8 @@ export default async function runPow(
     document.title = t("title_redirecting");
     window.location.replace(target);
   } catch (e) {
-    if (e && e.status === 403 && (e.hint === "stale" || !e.hint)) {
+    const hintRoute = routeHintAction({ status: e && e.status, hint: e && e.hint });
+    if (hintRoute.action === "reload") {
       if (shouldAttemptStaleReload()) {
         log(t("session_expired_reload"));
         setTimeout(() => window.location.reload(), 1000);
@@ -1815,4 +1828,4 @@ export default async function runPow(
   }
 }
 
-export { resolveLocale, translate, getLocale, setLocale, t };
+export { resolveLocale, routeHintAction, translate, getLocale, setLocale, t };

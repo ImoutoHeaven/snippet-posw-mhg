@@ -128,9 +128,8 @@ const CAPTCHA_TAG_LEN = 16;
 const PREFLIGHT_REASON_MAX_LEN = 64;
 const TURN_TOKEN_MIN_LEN = 20;
 const TURN_TOKEN_MAX_LEN = 4096;
-const SPINE_SEED_MIN_LEN = 16;
-const SPINE_SEED_MAX_LEN = 64;
-const MAX_PROOF_SIBS = 64;
+const MHG_PAGE_BYTES = 64;
+const MHG_MAX_PROOF_DEPTH = 32;
 
 const isBase64Url = (value, minLen, maxLen) => {
   if (typeof value !== "string") return false;
@@ -170,6 +169,21 @@ const validateTurnToken = (value) => {
   if (token.length < TURN_TOKEN_MIN_LEN || token.length > TURN_TOKEN_MAX_LEN) return null;
   if (CONTROL_CHAR_RE.test(token)) return null;
   return token;
+};
+
+const resolveCaptchaRequirements = (config) => {
+  let needTurn = config.turncheck === true;
+  let needRecaptcha = config.recaptchaEnabled === true;
+  if (!needTurn && !needRecaptcha) {
+    const providersRaw = typeof config.providers === "string" ? config.providers : "";
+    const providers = providersRaw
+      .split(/[\s,]+/u)
+      .map((entry) => entry.trim().toLowerCase())
+      .filter(Boolean);
+    needTurn = providers.includes("turnstile");
+    needRecaptcha = providers.includes("recaptcha") || providers.includes("recaptcha_v3");
+  }
+  return { needTurn, needRecaptcha };
 };
 
 const hmacSha256Base64UrlNoPad = async (secret, data) => {
@@ -387,22 +401,6 @@ const derivePowSeedBytes16 = async (powSecret, cfgId, commitMac, sid) => {
   return bytes.slice(0, 16);
 };
 
-const deriveSpineSeed16 = async (
-  powSecret,
-  cfgId,
-  commitMac,
-  sid,
-  cursor,
-  batchLen,
-  spineSeed
-) => {
-  const bytes = await hmacSha256(
-    powSecret,
-    `P|${cfgId}|${commitMac}|${sid}|${cursor}|${batchLen}|${spineSeed}`
-  );
-  return bytes.slice(0, 16);
-};
-
 const deriveSegLenSeed16 = async (powSecret, cfgId, commitMac, sid) => {
   const bytes = await hmacSha256(powSecret, `G|${cfgId}|${commitMac}|${sid}`);
   return bytes.slice(0, 16);
@@ -456,7 +454,6 @@ const buildPowSample = async (config, powSecret, ticket, commitMac, sid) => {
   const rounds = Math.max(1, Math.floor(config.POW_CHAL_ROUNDS));
   const sampleK = Math.max(0, Math.floor(config.POW_SAMPLE_K));
   const hashcashBits = Math.max(0, Math.floor(config.POW_HASHCASH_BITS));
-  const spineK = Math.max(0, Math.floor(config.POW_SPINE_K));
   const segSpec = parseSegmentLenSpec(config.POW_SEGMENT_LEN);
   if (!segSpec) return null;
   const seed16 = await derivePowSeedBytes16(powSecret, ticket.cfgId, commitMac, sid);
@@ -464,21 +461,20 @@ const buildPowSample = async (config, powSecret, ticket, commitMac, sid) => {
   const indices = sampleIndicesDeterministicV2({
     maxIndex: ticket.L,
     extraCount: sampleK * rounds,
-    forceEdge1: config.POW_FORCE_EDGE_1 === true,
-    forceEdgeLast: config.POW_FORCE_EDGE_LAST === true || hashcashBits > 0,
+    forceEdge1: true,
+    forceEdgeLast: true,
     rng,
   });
   if (!indices.length) return null;
   const segSeed16 = await deriveSegLenSeed16(powSecret, ticket.cfgId, commitMac, sid);
   const rngSeg = makeXoshiro128ss(segSeed16);
   const segLensAll = computeSegLensForIndices(indices, segSpec, rngSeg);
-  return { indices, segLensAll, hashcashBits, spineK };
+  return { indices, segLensAll, hashcashBits };
 };
 
 const buildPowBatchResponse = async (
   indices,
   segLensAll,
-  spineK,
   ticket,
   commit,
   powSecret,
@@ -489,38 +485,16 @@ const buildPowBatchResponse = async (
   const batch = indices.slice(cursor, cursor + batchLen);
   if (!batch.length) return null;
   const segBatch = segLensAll.slice(cursor, cursor + batchLen);
-  const spineSeed16 = await deriveSpineSeed16(
-    powSecret,
-    ticket.cfgId,
-    commit.mac,
-    sid,
-    cursor,
-    batchLen,
-    commit.spineSeed
-  );
-  const spinePos = spineK > 0
-    ? pickSpinePosForBatch(
-      batch,
-      segBatch,
-      ticket.L,
-      spineK,
-      makeXoshiro128ss(spineSeed16)
-    )
-    : [];
   const token = await makePowStateToken(
     powSecret,
     ticket.cfgId,
     sid,
     commit.mac,
     cursor,
-    batchLen,
-    spinePos
+    batchLen
   );
-  return { done: false, sid, cursor, indices: batch, segs: segBatch, spinePos, token };
+  return { done: false, sid, cursor, indices: batch, segs: segBatch, token };
 };
-
-const serializeSpinePos = (spinePos) =>
-  Array.isArray(spinePos) && spinePos.length ? spinePos.join(",") : "";
 
 const makePowCommitMac = async (
   powSecret,
@@ -529,12 +503,11 @@ const makePowCommitMac = async (
   pathHash,
   captchaTag,
   nonce,
-  exp,
-  spineSeed
+  exp
 ) =>
   hmacSha256Base64UrlNoPad(
     powSecret,
-    `C|${ticketB64}|${rootB64}|${pathHash}|${captchaTag}|${nonce}|${exp}|${spineSeed}`
+    `C2|${ticketB64}|${rootB64}|${pathHash}|${captchaTag}|${nonce}|${exp}`
   );
 
 const makeConsumeMac = async (powSecret, ticketB64, exp, captchaTag, m) =>
@@ -546,19 +519,13 @@ const makePowStateToken = async (
   sid,
   commitMac,
   cursor,
-  batchLen,
-  spinePos
+  batchLen
 ) =>
   hmacSha256Base64UrlNoPad(
     powSecret,
-    `S|${cfgId}|${sid}|${commitMac}|${cursor}|${batchLen}|${serializeSpinePos(spinePos)}`
+    `S2|${cfgId}|${sid}|${commitMac}|${cursor}|${batchLen}`
   );
 
-const POSW_SEED_PREFIX = encoder.encode("posw|seed|");
-const POSW_STEP_PREFIX = encoder.encode("posw|step|");
-const MERKLE_LEAF_PREFIX = encoder.encode("leaf|");
-const MERKLE_NODE_PREFIX = encoder.encode("node|");
-const PIPE_BYTES = encoder.encode("|");
 const HASHCASH_PREFIX = encoder.encode("hashcash|v3|");
 
 const makePowBindingString = (
@@ -596,62 +563,139 @@ const makePowBindingString = (
   );
 };
 
-const hashPoswSeed = async (bindingString, nonce) =>
-  sha256Bytes(
-    concatBytes(
-      POSW_SEED_PREFIX,
-      utf8ToBytes(bindingString),
-      PIPE_BYTES,
-      utf8ToBytes(nonce || "")
-    )
-  );
-
-const hashPoswStep = async (prevBytes, index) =>
-  sha256Bytes(concatBytes(POSW_STEP_PREFIX, encodeUint32BE(index), prevBytes));
-
-const hashMerkleLeaf = async (leafIndex, leafBytes) =>
-  sha256Bytes(concatBytes(MERKLE_LEAF_PREFIX, encodeUint32BE(leafIndex), leafBytes));
-
-const hashMerkleNode = async (leftBytes, rightBytes) =>
-  sha256Bytes(concatBytes(MERKLE_NODE_PREFIX, leftBytes, rightBytes));
-
 const hashcashRootLast = async (rootBytes, lastBytes) =>
   sha256Bytes(concatBytes(HASHCASH_PREFIX, rootBytes, lastBytes));
 
-const computeMerkleDepth = (leafCount) => {
-  let depth = 0;
-  let size = Math.max(0, Math.floor(Number(leafCount) || 0));
-  while (size > 1) {
-    size = Math.ceil(size / 2);
-    depth += 1;
+const mhgDigest = async (...chunks) =>
+  sha256Bytes(concatBytes(...chunks));
+
+const mhgLeafHash = async (pageBytes) => mhgDigest(encoder.encode("mhg:leaf"), pageBytes);
+
+const mhgNodeHash = async (left, right) => mhgDigest(encoder.encode("mhg:node"), left, right);
+
+const mhgDeriveKey = async ({ graphSeed, nonce16, index }) => {
+  const indexBytes = encodeUint32BE(index);
+  const keyMaterial = await mhgDigest(encoder.encode("mhg:key"), graphSeed, nonce16, indexBytes);
+  const ivMaterial = await mhgDigest(encoder.encode("mhg:iv"), graphSeed, nonce16, indexBytes);
+  const rawKey = keyMaterial.slice(0, 16);
+  const key = await crypto.subtle.importKey("raw", rawKey, { name: "AES-CBC" }, false, ["encrypt"]);
+  return { key, iv: ivMaterial.slice(0, 16) };
+};
+
+const mhgXor3 = (a, b, c) => {
+  const out = new Uint8Array(a.length);
+  for (let i = 0; i < a.length; i += 1) {
+    out[i] = a[i] ^ b[i] ^ c[i];
   }
+  return out;
+};
+
+const mhgMixPage = async ({ index, p0, p1, p2, graphSeed, nonce16 }) => {
+  const input = mhgXor3(p0, p1, p2);
+  const { key, iv } = await mhgDeriveKey({ graphSeed, nonce16, index });
+  const encrypted = new Uint8Array(
+    await crypto.subtle.encrypt({ name: "AES-CBC", iv }, key, input)
+  );
+  return encrypted.slice(0, MHG_PAGE_BYTES);
+};
+
+const mhgInitState = (seed, a = 0, b = 0) => {
+  let x = 0x9e3779b9 ^ (a >>> 0) ^ (b >>> 0);
+  for (let i = 0; i < seed.length; i += 1) {
+    x ^= (seed[i] + 0x9e3779b9 + ((x << 6) >>> 0) + (x >>> 2)) >>> 0;
+    x >>>= 0;
+  }
+  if (x === 0) x = 0xa341316c;
+  return { x };
+};
+
+const mhgDraw32 = (state) => {
+  let x = state.x >>> 0;
+  x ^= (x << 13) >>> 0;
+  x ^= x >>> 17;
+  x ^= (x << 5) >>> 0;
+  state.x = x >>> 0;
+  return state.x;
+};
+
+const mhgUniformMod = (state, mod) => {
+  const limit = Math.floor(0x1_0000_0000 / mod) * mod;
+  while (true) {
+    const n = mhgDraw32(state);
+    if (n < limit) return n % mod;
+  }
+};
+
+const mhgParentsOf = (index, graphSeed) => {
+  const p0 = index - 1;
+  const state = mhgInitState(graphSeed, index, 0x70617265);
+  const seen = new Set([p0]);
+  const picks = [];
+  while (picks.length < 2 && seen.size < index) {
+    const n = mhgUniformMod(state, index);
+    if (seen.has(n)) continue;
+    seen.add(n);
+    picks.push(n);
+  }
+  while (picks.length < 2) {
+    picks.push(mhgUniformMod(state, index));
+  }
+  return { p0, p1: picks[0], p2: picks[1] };
+};
+
+const mhgProofDepth = (leafCount) => {
+  let depth = 0;
+  for (let width = leafCount; width > 1; width = Math.ceil(width / 2)) depth += 1;
   return depth;
 };
 
-const verifyMerkleProof = async (rootBytes, leafBytes, leafIndex, leafCount, proof) => {
-  if (!rootBytes || rootBytes.length !== 32) return false;
-  if (!leafBytes || leafBytes.length !== 32) return false;
-  const idx = Math.floor(Number(leafIndex));
-  if (!Number.isFinite(idx) || idx < 0 || idx >= leafCount) return false;
-  const sibs = proof && Array.isArray(proof.sibs) ? proof.sibs : null;
-  const dirs = proof && typeof proof.dirs === "string" ? proof.dirs : "";
-  const depth = computeMerkleDepth(leafCount);
-  if (!sibs || sibs.length !== depth) return false;
-  if (dirs && dirs.length !== depth) return false;
-  let current = await hashMerkleLeaf(idx, leafBytes);
-  let curIdx = idx;
-  for (let i = 0; i < depth; i++) {
-    const sibBytes = base64UrlDecodeToBytes(String(sibs[i] || ""));
-    if (!sibBytes || sibBytes.length !== 32) return false;
-    const dir = curIdx % 2 === 0 ? 0 : 1;
-    if (dirs && Number(dirs[i]) !== dir) return false;
-    current =
-      dir === 0
-        ? await hashMerkleNode(current, sibBytes)
-        : await hashMerkleNode(sibBytes, current);
-    curIdx = Math.floor(curIdx / 2);
+const mhgVerifyProof = async ({ root, index, page, proof, leafCount }) => {
+  if (!(root instanceof Uint8Array) || root.length !== 32) return false;
+  if (!(page instanceof Uint8Array) || page.length !== MHG_PAGE_BYTES) return false;
+  if (!Array.isArray(proof)) return false;
+  if (!Number.isInteger(index) || index < 0 || index >= leafCount) return false;
+  const depth = mhgProofDepth(leafCount);
+  if (proof.length !== depth) return false;
+  let cursor = index;
+  let hash = await mhgLeafHash(page);
+  for (const sibling of proof) {
+    if (!(sibling instanceof Uint8Array) || sibling.length !== 32) return false;
+    const left = cursor % 2 === 0 ? hash : sibling;
+    const right = cursor % 2 === 0 ? sibling : hash;
+    hash = await mhgNodeHash(left, right);
+    cursor = Math.floor(cursor / 2);
   }
-  return bytesEqual(current, rootBytes);
+  return bytesEqual(hash, root);
+};
+
+const decodeMhgProof = (value) => {
+  if (!Array.isArray(value) || value.length > MHG_MAX_PROOF_DEPTH) return null;
+  const out = [];
+  for (const entry of value) {
+    if (!isBase64Url(String(entry || ""), 1, B64_HASH_MAX_LEN)) return null;
+    const bytes = base64UrlDecodeToBytes(String(entry));
+    if (!bytes || bytes.length !== 32) return null;
+    out.push(bytes);
+  }
+  return out;
+};
+
+const decodeMhgPage = (value) => {
+  if (!isBase64Url(String(value || ""), 1, 8192)) return null;
+  const bytes = base64UrlDecodeToBytes(String(value));
+  if (!bytes || bytes.length !== MHG_PAGE_BYTES) return null;
+  return bytes;
+};
+
+const deriveMhgGraphSeed16 = async (ticketB64, nonce) =>
+  (await sha256Bytes(`mhg|graph|v2|${ticketB64}|${nonce}`)).slice(0, 16);
+
+const deriveMhgNonce16 = async (nonce) => {
+  const raw = base64UrlDecodeToBytes(nonce);
+  if (!raw) return null;
+  if (raw.length >= 16) return raw.slice(0, 16);
+  const digest = await sha256Bytes(raw);
+  return digest.slice(0, 16);
 };
 
 const encodePowTicket = (ticket) => {
@@ -680,16 +724,15 @@ const parsePowTicket = (ticketB64) => {
 const parsePowCommitCookie = (value) => {
   if (!value) return null;
   const parts = value.split(".");
-  if (parts.length !== 9) return null;
-  if (parts[0] !== "v4") return null;
+  if (parts.length !== 8) return null;
+  if (parts[0] !== "v5") return null;
   const ticketB64 = parts[1] || "";
   const rootB64 = parts[2] || "";
   const pathHash = parts[3] || "";
   const captchaTag = parts[4] || "";
   const nonce = parts[5] || "";
   const exp = Number.parseInt(parts[6], 10);
-  const spineSeed = parts[7] || "";
-  const mac = parts[8] || "";
+  const mac = parts[7] || "";
   if (!isBase64Url(ticketB64, 1, B64_TICKET_MAX_LEN)) return null;
   if (!isBase64Url(rootB64, 1, B64_HASH_MAX_LEN)) return null;
   if (!(pathHash === "any" || isBase64Url(pathHash, 1, B64_HASH_MAX_LEN))) return null;
@@ -697,11 +740,8 @@ const parsePowCommitCookie = (value) => {
     return null;
   }
   if (!isBase64Url(nonce, NONCE_MIN_LEN, NONCE_MAX_LEN)) return null;
-  if (!isBase64Url(spineSeed, SPINE_SEED_MIN_LEN, SPINE_SEED_MAX_LEN)) {
-    return null;
-  }
   if (!isBase64Url(mac, 1, B64_HASH_MAX_LEN)) return null;
-  return { ticketB64, rootB64, pathHash, captchaTag, nonce, exp, mac, spineSeed };
+  return { ticketB64, rootB64, pathHash, captchaTag, nonce, exp, mac };
 };
 
 const parseProofCookie = (value) => {
@@ -882,7 +922,11 @@ const validateTicket = (ticket, config, nowSeconds) => {
 };
 
 const verifyCommit = async (commit, ticket, config, powSecret, nowSeconds) => {
-  if (config.turncheck === true && !isBase64Url(commit.captchaTag, CAPTCHA_TAG_LEN, CAPTCHA_TAG_LEN)) {
+  const { needTurn, needRecaptcha } = resolveCaptchaRequirements(config);
+  if (
+    (needTurn || needRecaptcha) &&
+    !isBase64Url(commit.captchaTag, CAPTCHA_TAG_LEN, CAPTCHA_TAG_LEN)
+  ) {
     return 0;
   }
   if (isExpired(commit.exp, nowSeconds)) return 0;
@@ -895,8 +939,7 @@ const verifyCommit = async (commit, ticket, config, powSecret, nowSeconds) => {
     commit.pathHash,
     commit.captchaTag,
     commit.nonce,
-    commit.exp,
-    commit.spineSeed
+    commit.exp
   );
   if (!timingSafeEqual(commitMac, commit.mac)) return 0;
   return powVersion;
@@ -1087,8 +1130,7 @@ const parseCanonicalCaptchaTokens = (captchaToken, needTurn, needRecaptcha) => {
 };
 
 const deriveLocalCaptchaTag = async (config, captchaToken) => {
-  const needTurn = config.turncheck === true;
-  const needRecaptcha = config.recaptchaEnabled === true;
+  const { needTurn, needRecaptcha } = resolveCaptchaRequirements(config);
   if (!needTurn && !needRecaptcha) return { ok: true, malformed: false, captchaTag: "any" };
   const parsed = parseCanonicalCaptchaTokens(captchaToken, needTurn, needRecaptcha);
   if (!parsed.ok) return { ok: false, malformed: parsed.malformed, captchaTag: "" };
@@ -1109,8 +1151,7 @@ const verifyRequiredCaptchaForTicket = async (
   const opts = options && typeof options === "object" ? options : {};
   const requireTurnPreflight = opts.requireTurnPreflight === true;
   const turnstilePreflight = normalizeTurnstilePreflight(opts.turnstilePreflight);
-  const needTurn = config.turncheck === true;
-  const needRecaptcha = config.recaptchaEnabled === true;
+  const { needTurn, needRecaptcha } = resolveCaptchaRequirements(config);
   if (!needTurn && !needRecaptcha) return { ok: true, malformed: false, captchaTag: "any" };
   const parsed = parseCanonicalCaptchaTokens(captchaToken, needTurn, needRecaptcha);
   if (!parsed.ok) return { ok: false, malformed: parsed.malformed, captchaTag: "" };
@@ -1507,57 +1548,6 @@ const pickFromBucket = (rng, bucket, max, bucketCount) => {
   return Math.max(1, Math.min(max, idx));
 };
 
-const computeMidIndex = (idx, segmentLen) => {
-  const effectiveSegmentLen = Math.min(segmentLen, idx);
-  if (effectiveSegmentLen <= 1) return null;
-  const offset = Math.max(1, Math.floor(effectiveSegmentLen / 2));
-  return idx - offset;
-};
-
-const randomUint32 = () => {
-  const buf = new Uint32Array(1);
-  crypto.getRandomValues(buf);
-  return buf[0];
-};
-
-const pickSpinePosForBatch = (indices, segs, maxIndex, spineK, rng) => {
-  const target = Math.max(0, Math.floor(spineK || 0));
-  if (!target || !Array.isArray(indices) || !Array.isArray(segs)) return [];
-  const eligible = [];
-  const count = Math.min(indices.length, segs.length);
-  for (let pos = 0; pos < count; pos++) {
-    const idx = indices[pos];
-    const segLen = segs[pos];
-    if (!Number.isFinite(idx) || !Number.isFinite(segLen)) continue;
-    if (idx === 1 || idx === maxIndex) continue;
-    if (computeMidIndex(idx, segLen) === null) continue;
-    eligible.push(pos);
-  }
-  if (eligible.length <= target) return eligible.slice();
-  for (let i = eligible.length - 1; i > 0; i--) {
-    const j = rng ? rng.randInt(i + 1) : randomUint32() % (i + 1);
-    const tmp = eligible[i];
-    eligible[i] = eligible[j];
-    eligible[j] = tmp;
-  }
-  return eligible.slice(0, target);
-};
-
-const normalizeSpinePosList = (value, maxLen) => {
-  if (!Array.isArray(value)) return null;
-  const seen = new Set();
-  const out = [];
-  for (const raw of value) {
-    const pos = Number.parseInt(raw, 10);
-    if (!Number.isFinite(pos) || pos < 0) return null;
-    if (Number.isFinite(maxLen) && pos >= maxLen) return null;
-    if (seen.has(pos)) return null;
-    seen.add(pos);
-    out.push(pos);
-  }
-  return out;
-};
-
 const sampleIndicesDeterministicV2 = ({
   maxIndex,
   extraCount,
@@ -1653,8 +1643,7 @@ const handlePowCommit = async (request, url, nowSeconds, innerCtx) => {
   if (!ticketMatchesInner(ticket, cfgId)) return denyStale();
   if (!powSecret) return S(500);
   if (config.powcheck !== true) return S(500);
-  const needTurn = config.turncheck === true;
-  const needRecaptcha = config.recaptchaEnabled === true;
+  const { needTurn, needRecaptcha } = resolveCaptchaRequirements(config);
   const powVersion = validateTicket(ticket, config, nowSeconds);
   if (!powVersion) return denyStale();
   const normalizedPathHash = normalizePathHash(pathHash, config);
@@ -1669,7 +1658,6 @@ const handlePowCommit = async (request, url, nowSeconds, innerCtx) => {
   }
   const ttl = config.POW_COMMIT_TTL_SEC || 0;
   const exp = nowSeconds + Math.max(1, ttl);
-  const spineSeed = randomBase64Url(16);
   let captchaTag = "any";
   if (needTurn || needRecaptcha) {
     const localCaptcha = await deriveLocalCaptchaTag(config, captchaToken);
@@ -1683,10 +1671,9 @@ const handlePowCommit = async (request, url, nowSeconds, innerCtx) => {
     bindingValues.pathHash,
     captchaTag,
     nonce,
-    exp,
-    spineSeed
+    exp
   );
-  const value = `v4.${ticketB64}.${rootB64}.${bindingValues.pathHash}.${captchaTag}.${nonce}.${exp}.${spineSeed}.${mac}`;
+  const value = `v5.${ticketB64}.${rootB64}.${bindingValues.pathHash}.${captchaTag}.${nonce}.${exp}.${mac}`;
   const headers = new Headers();
   setCookie(headers, config.POW_COMMIT_COOKIE, value, ttl);
   return new Response(null, { status: 200, headers });
@@ -1709,8 +1696,7 @@ const handleCap = async (request, url, nowSeconds, innerCtx) => {
   if (!ticketMatchesInner(ticket, cfgId)) return deny();
   if (!powSecret) return S(500);
   const needPow = config.powcheck === true;
-  const needTurn = config.turncheck === true;
-  const needRecaptcha = config.recaptchaEnabled === true;
+  const { needTurn, needRecaptcha } = resolveCaptchaRequirements(config);
   const requiredMask = (needPow ? 1 : 0) | (needTurn ? 2 : 0) | (needRecaptcha ? 4 : 0);
   if (needPow || (!needTurn && !needRecaptcha) || config.ATOMIC_CONSUME === true) return S(404);
 
@@ -1761,7 +1747,8 @@ const handlePowChallenge = async (request, url, nowSeconds, innerCtx) => {
   if (!ticketMatchesInner(ticket, cfgId)) return deny();
   if (!powSecret) return S(500);
   if (config.powcheck !== true) return S(500);
-  if (!(await verifyCommit(commit, ticket, config, powSecret, nowSeconds))) return deny();
+  if (isExpired(ticket.e, nowSeconds) || isExpired(commit.exp, nowSeconds)) return denyStale();
+  if (!(await verifyCommit(commit, ticket, config, powSecret, nowSeconds))) return denyCheat();
   if (!Number.isFinite(ticket.L) || ticket.L <= 0) return deny();
   const bindingValues = await getPowBindingValuesWithPathHash(commit.pathHash, config, derived);
   if (!bindingValues) return deny();
@@ -1769,12 +1756,11 @@ const handlePowChallenge = async (request, url, nowSeconds, innerCtx) => {
   const sid = await derivePowSid(powSecret, ticket.cfgId, commit.mac);
   const sample = await buildPowSample(config, powSecret, ticket, commit.mac, sid);
   if (!sample) return deny();
-  const { indices, segLensAll, spineK } = sample;
+  const { indices, segLensAll } = sample;
   const batchLen = getBatchMax(config);
   const batchResp = await buildPowBatchResponse(
     indices,
     segLensAll,
-    spineK,
     ticket,
     commit,
     powSecret,
@@ -1795,243 +1781,138 @@ const handlePowOpen = async (request, url, nowSeconds, innerCtx) => {
   if (!ticketMatchesInner(ticket, cfgId)) return deny();
   if (!powSecret) return S(500);
   if (config.powcheck !== true) return S(500);
-  const needTurn = config.turncheck === true;
-  const needRecaptcha = config.recaptchaEnabled === true;
+  const { needTurn, needRecaptcha } = resolveCaptchaRequirements(config);
   const requiredMask = 1 | (needTurn ? 2 : 0) | (needRecaptcha ? 4 : 0);
+  if (isExpired(ticket.e, nowSeconds) || isExpired(commit.exp, nowSeconds)) return denyStale();
   const powVersion = await verifyCommit(commit, ticket, config, powSecret, nowSeconds);
-  if (!powVersion) return deny();
+  if (!powVersion) return denyCheat();
+  const bindingValues = await getPowBindingValuesWithPathHash(commit.pathHash, config, derived);
+  if (!bindingValues) return deny();
+  if (!(await verifyTicketMac(ticket, url, bindingValues, powSecret))) return deny();
   const body = await readJsonBody(request);
   if (!body || typeof body !== "object") {
     return S(400);
   }
-  const sid = typeof body.sid === "string" ? body.sid : "";
   const cursor = Number.parseInt(body.cursor, 10);
   const stateToken = typeof body.token === "string" ? body.token : "";
   const captchaToken = body.captchaToken;
   const opens = Array.isArray(body.opens) ? body.opens : null;
-  const spinePosRaw = body.spinePos;
-  if (!sid || !stateToken || !opens || !Number.isFinite(cursor) || cursor < 0) {
+  if (!stateToken || !opens || !Number.isFinite(cursor) || cursor < 0) {
     return S(400);
   }
-  if (!Array.isArray(spinePosRaw)) {
-    return S(400);
-  }
-  if (
-    !isBase64Url(sid, SID_LEN, SID_LEN) ||
-    !isBase64Url(stateToken, TOKEN_MIN_LEN, TOKEN_MAX_LEN)
-  ) {
+  if (!isBase64Url(stateToken, TOKEN_MIN_LEN, TOKEN_MAX_LEN)) {
     return S(400);
   }
   const batchMax = getBatchMax(config);
   if (batchMax <= 0) return S(500);
-  const spinePos = normalizeSpinePosList(spinePosRaw, batchMax);
-  if (!spinePos) {
-    return S(400);
-  }
   const sidExpected = await derivePowSid(powSecret, ticket.cfgId, commit.mac);
-  if (sid !== sidExpected) return denyCheat();
   const expectedToken = await makePowStateToken(
     powSecret,
     ticket.cfgId,
     sidExpected,
     commit.mac,
     cursor,
-    batchMax,
-    spinePos
+    batchMax
   );
   if (!timingSafeEqual(expectedToken, stateToken)) return denyCheat();
   const sample = await buildPowSample(config, powSecret, ticket, commit.mac, sidExpected);
   if (!sample) return denyCheat();
-  const { indices, segLensAll, hashcashBits, spineK } = sample;
-  if (hashcashBits > 0 && !indices.includes(ticket.L)) {
-    return denyCheat();
-  }
+  const { indices, segLensAll, hashcashBits } = sample;
+  if (hashcashBits > 0 && !indices.includes(ticket.L)) return denyCheat();
   const expectedBatch = indices.slice(cursor, cursor + batchMax);
   if (!expectedBatch.length) return denyCheat();
   const segBatch = segLensAll.slice(cursor, cursor + batchMax);
-  if (spinePos.length) {
-    for (const pos of spinePos) {
-      if (pos >= expectedBatch.length) return denyCheat();
-    }
-  }
-  const eligibleSpine = [];
-  for (let pos = 0; pos < expectedBatch.length; pos++) {
-    const idx = expectedBatch[pos];
-    const segLen = segBatch[pos];
-    if (!Number.isFinite(idx) || !Number.isFinite(segLen)) continue;
-    if (idx === 1 || idx === ticket.L) continue;
-    if (computeMidIndex(idx, segLen) === null) continue;
-    eligibleSpine.push(pos);
-  }
-  const expectedSpineCount = Math.min(spineK, eligibleSpine.length);
-  if (spinePos.length !== expectedSpineCount) {
-    return denyCheat();
-  }
-  if (expectedSpineCount > 0) {
-    const eligibleSet = new Set(eligibleSpine);
-    for (const pos of spinePos) {
-      if (!eligibleSet.has(pos)) return denyCheat();
-    }
-  }
-  const spinePosSet = spinePos.length ? new Set(spinePos) : null;
   const batchSize = opens.length;
   if (batchSize !== expectedBatch.length) {
     return denyCheat();
   }
-  const batch = [];
+  const mhgBatch = [];
   for (let i = 0; i < batchSize; i++) {
     const open = opens[i];
+    if (!open || typeof open !== "object" || Array.isArray(open)) return S(400);
     const idx = open && Number.parseInt(open.i, 10);
     if (!Number.isFinite(idx) || idx < 1 || idx > ticket.L) {
       return S(400);
     }
     const expectedIdx = expectedBatch[i];
     if (idx !== expectedIdx) return denyCheat();
-    const requiresMid = spinePosSet && spinePosSet.has(i);
     const segLen = segBatch[i];
     if (!Number.isFinite(segLen) || segLen <= 0) {
       return denyCheat();
     }
-    const hPrev = open && typeof open.hPrev === "string" ? open.hPrev : "";
-    const hCurr = open && typeof open.hCurr === "string" ? open.hCurr : "";
-    if (
-      !isBase64Url(hPrev, 1, B64_HASH_MAX_LEN) ||
-      !isBase64Url(hCurr, 1, B64_HASH_MAX_LEN)
-    ) {
-      return S(400);
-    }
-    const proofPrev = open && open.proofPrev;
-    const proofCurr = open && open.proofCurr;
-    if (
-      !proofPrev ||
-      !proofCurr ||
-      !Array.isArray(proofPrev.sibs) ||
-      !Array.isArray(proofCurr.sibs)
-    ) {
-      return S(400);
-    }
-    if (proofPrev.sibs.length > MAX_PROOF_SIBS || proofCurr.sibs.length > MAX_PROOF_SIBS) {
-      return S(400);
-    }
-    for (const sib of proofPrev.sibs) {
-      if (!isBase64Url(String(sib || ""), 1, B64_HASH_MAX_LEN)) {
-        return S(400);
-      }
-    }
-    for (const sib of proofCurr.sibs) {
-      if (!isBase64Url(String(sib || ""), 1, B64_HASH_MAX_LEN)) {
-        return S(400);
-      }
-    }
-    if (requiresMid) {
-      const hMid = open && typeof open.hMid === "string" ? open.hMid : "";
-      if (!isBase64Url(hMid, 1, B64_HASH_MAX_LEN)) {
-        return S(400);
-      }
-      const proofMid = open && open.proofMid;
-      if (!proofMid || !Array.isArray(proofMid.sibs)) {
-        return S(400);
-      }
-      if (proofMid.sibs.length > MAX_PROOF_SIBS) {
-        return S(400);
-      }
-      for (const sib of proofMid.sibs) {
-        if (!isBase64Url(String(sib || ""), 1, B64_HASH_MAX_LEN)) {
-          return S(400);
-        }
-      }
-    }
-    batch.push({ idx, open, requiresMid, segLen });
+    const page = decodeMhgPage(open.page);
+    const p0 = decodeMhgPage(open.p0);
+    const p1 = decodeMhgPage(open.p1);
+    const p2 = decodeMhgPage(open.p2);
+    const proofObj = open.proof && typeof open.proof === "object" ? open.proof : null;
+    if (!page || !p0 || !p1 || !p2 || !proofObj) return S(400);
+    const proofPage = decodeMhgProof(proofObj.page);
+    const proofP0 = decodeMhgProof(proofObj.p0);
+    const proofP1 = decodeMhgProof(proofObj.p1);
+    const proofP2 = decodeMhgProof(proofObj.p2);
+    if (!proofPage || !proofP0 || !proofP1 || !proofP2) return S(400);
+    mhgBatch.push({ idx, segLen, page, p0, p1, p2, proofPage, proofP0, proofP1, proofP2 });
   }
-  const bindingValues = await getPowBindingValuesWithPathHash(commit.pathHash, config, derived);
-  if (!bindingValues) return deny();
-  const bindingString = await verifyTicketMac(ticket, url, bindingValues, powSecret);
-  if (!bindingString) return deny();
-  const powBindingString = needTurn || needRecaptcha
-    ? `${bindingString}|${commit.captchaTag}`
-    : bindingString;
+
+  if (mhgBatch.length !== expectedBatch.length) return denyCheat();
   const rootBytes = base64UrlDecodeToBytes(commit.rootB64);
   if (!rootBytes || rootBytes.length !== 32) return denyCheat();
-  const leafCount = Math.max(0, Math.floor(ticket.L)) + 1;
-  if (leafCount < 2) return denyCheat();
-  const seedHash = await hashPoswSeed(powBindingString, commit.nonce);
-  for (const entry of batch) {
-    const idx = entry.idx;
-    const open = entry.open;
-    const requiresMid = entry.requiresMid === true;
-    const segLen = entry.segLen;
-    const hPrevBytes = base64UrlDecodeToBytes(String(open.hPrev || ""));
-    const hCurrBytes = base64UrlDecodeToBytes(String(open.hCurr || ""));
-    if (!hPrevBytes || !hCurrBytes || hPrevBytes.length !== 32 || hCurrBytes.length !== 32) {
-      return S(400);
-    }
-    const proofPrev = open.proofPrev;
-    const proofCurr = open.proofCurr;
-    const effectiveSegmentLen = Math.min(segLen, idx);
-    let prevBytes = hPrevBytes;
-    const firstIdx = idx - effectiveSegmentLen;
-    if (firstIdx < 0) return denyCheat();
-    const midIdx = requiresMid ? computeMidIndex(idx, segLen) : null;
-    let midExpected = null;
-    for (let step = 1; step <= effectiveSegmentLen; step++) {
-      const expected = await hashPoswStep(prevBytes, firstIdx + step);
-      if (requiresMid && firstIdx + step === midIdx) {
-        midExpected = expected;
-      }
-      if (step === effectiveSegmentLen) {
-        if (!bytesEqual(expected, hCurrBytes)) return denyCheat();
-      } else {
-        prevBytes = expected;
-      }
-    }
-    if (requiresMid) {
-      if (midIdx === null || !midExpected) return denyCheat();
-      const hMidBytes = base64UrlDecodeToBytes(String(open.hMid || ""));
-      if (!hMidBytes || hMidBytes.length !== 32) {
-        return S(400);
-      }
-      if (!bytesEqual(midExpected, hMidBytes)) return denyCheat();
-      const okMid = await verifyMerkleProof(
-        rootBytes,
-        hMidBytes,
-        midIdx,
-        leafCount,
-        open.proofMid
-      );
-      if (!okMid) return denyCheat();
-    }
-    if (idx === 1 && !bytesEqual(hPrevBytes, seedHash)) {
-      return denyCheat();
-    }
-    const okPrev = await verifyMerkleProof(
-      rootBytes,
-      hPrevBytes,
-      idx - effectiveSegmentLen,
+  const graphSeed = await deriveMhgGraphSeed16(commit.ticketB64, commit.nonce);
+  const nonce16 = await deriveMhgNonce16(commit.nonce);
+  if (!nonce16) return denyCheat();
+  const leafCount = ticket.L + 1;
+  for (const entry of mhgBatch) {
+    const { idx, page, p0, p1, p2, proofPage, proofP0, proofP1, proofP2 } = entry;
+    const parents = mhgParentsOf(idx, graphSeed);
+    const validPage = await mhgVerifyProof({
+      root: rootBytes,
+      index: idx,
+      page,
+      proof: proofPage,
       leafCount,
-      proofPrev
-    );
-    if (!okPrev) return denyCheat();
-    const okCurr = await verifyMerkleProof(
-      rootBytes,
-      hCurrBytes,
-      idx,
+    });
+    const validP0 = await mhgVerifyProof({
+      root: rootBytes,
+      index: parents.p0,
+      page: p0,
+      proof: proofP0,
       leafCount,
-      proofCurr
-    );
-    if (!okCurr) return denyCheat();
+    });
+    const validP1 = await mhgVerifyProof({
+      root: rootBytes,
+      index: parents.p1,
+      page: p1,
+      proof: proofP1,
+      leafCount,
+    });
+    const validP2 = await mhgVerifyProof({
+      root: rootBytes,
+      index: parents.p2,
+      page: p2,
+      proof: proofP2,
+      leafCount,
+    });
+    if (!validPage || !validP0 || !validP1 || !validP2) return denyCheat();
+    const expectedPage = await mhgMixPage({
+      index: idx,
+      p0,
+      p1,
+      p2,
+      graphSeed,
+      nonce16,
+    });
+    if (!bytesEqual(expectedPage, page)) return denyCheat();
     if (idx === ticket.L && hashcashBits > 0) {
-      const digest = await hashcashRootLast(rootBytes, hCurrBytes);
-      if (leadingZeroBits(digest) < hashcashBits) {
-        return denyCheat();
-      }
+      const digest = await hashcashRootLast(rootBytes, page);
+      if (leadingZeroBits(digest) < hashcashBits) return denyCheat();
     }
   }
+
   const nextCursor = cursor + expectedBatch.length;
   if (nextCursor < indices.length) {
     const nextResp = await buildPowBatchResponse(
       indices,
       segLensAll,
-      spineK,
       ticket,
       commit,
       powSecret,
@@ -2153,8 +2034,7 @@ export default {
     }
 
     const needPow = config.powcheck === true;
-    const needTurn = config.turncheck === true;
-    const needRecaptcha = config.recaptchaEnabled === true;
+    const { needTurn, needRecaptcha } = resolveCaptchaRequirements(config);
     if (!needPow && !needTurn && !needRecaptcha) {
       return fetch(stripInnerHeaders(request));
     }
@@ -2237,7 +2117,11 @@ export default {
             atomic.turnstilePreflight.checked !== true ||
             atomic.turnstilePreflight.ok !== true)
         ) {
-          return await fail(deny());
+          const preflightReason =
+            atomic.turnstilePreflight && typeof atomic.turnstilePreflight.reason === "string"
+              ? atomic.turnstilePreflight.reason
+              : "";
+          return await fail(preflightReason === "consume_stale" ? denyStale() : deny());
         }
         const parsedAtomicCaptcha = parseCanonicalCaptchaTokens(
           atomic.captchaToken,

@@ -208,7 +208,7 @@ test("challenge rejects binding mismatch after commit", async () => {
     assert.ok(challengePayload.token.length > 0);
     assert.ok(typeof challengePayload.sid === "string");
     assert.ok(challengePayload.sid.length > 0);
-    assert.ok(Array.isArray(challengePayload.spinePos));
+    assert.equal(Object.hasOwn(challengePayload, "spinePos"), false);
 
     const ipSecondary = "5.6.7.8";
     const challengeRes = await configHandler(
