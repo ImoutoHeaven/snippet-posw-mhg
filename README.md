@@ -41,6 +41,7 @@ Notes:
 - When `recaptchaEnabled: true`, you must also set:
   - `RECAPTCHA_PAIRS` (array of `{ sitekey, secret }`)
   - `RECAPTCHA_MIN_SCORE` (v3 score threshold, default `0.5`)
+  - Optional: `RECAPTCHA_ACTION` (expected v3 action label, default `"submit"`)
 - Rule matching is first-match-wins; put more specific rules first.
 - `pow.js` does not embed `DEFAULTS/CONFIG/COMPILED`; configuration is entirely supplied by `pow-config`.
 - Inner payload is `{ v, id, c, d, s }` with `v=1`; `s` is mandatory and carries frontloaded strategy (`nav/bypass/bind/atomic`). Missing `s` fails closed (`500`) with no legacy fallback.
@@ -82,6 +83,7 @@ Each `CONFIG` entry looks like:
 | `TURNSTILE_SECRET` | `string` | — | Turnstile secret key (used for `siteverify`, includes `remoteip`). Required when `turncheck: true`. |
 | `RECAPTCHA_PAIRS` | `Array<{sitekey:string,secret:string}>` | `[]` | reCAPTCHA v3 key pairs. Server picks one deterministically from `ticket.mac` (`kid = sha256("kid|ticket.mac") mod pairs.length`). |
 | `RECAPTCHA_MIN_SCORE` | `number` | `0.5` | Minimum accepted reCAPTCHA v3 score (`0..1`). |
+| `RECAPTCHA_ACTION` | `string` | `"submit"` | Expected reCAPTCHA v3 action label. Can be overridden per `CONFIG` entry. |
 | `ATOMIC_CONSUME` | `boolean` | `false` | Enable business-path atomic consume for captcha (captcha-only and PoW+captcha). In captcha-only mode proof cookies are ignored; in combined mode `/__pow/open` returns `consume` instead of setting `__Host-proof`. |
 | `ATOMIC_TURN_QUERY` | `string` | `"__ts"` | Query param for atomic `captchaToken` envelope. |
 | `ATOMIC_TICKET_QUERY` | `string` | `"__tt"` | Query param for ticket (captcha-only + atomic). |
@@ -235,8 +237,7 @@ Notes:
 
 - Unified endpoint: `POST /__pow/cap` (not `/__pow/turn`).
 - Turnstile verification uses `cData = ticket.mac` binding.
-- reCAPTCHA v3 verification enforces `success=true`, exact `hostname`, `remoteip` consistency (when provided), `score >= RECAPTCHA_MIN_SCORE`, and deterministic `action` binding.
-- reCAPTCHA action binding: `action = "p_" + hex(sha256("act|" + bindingString + "|" + kid).slice(0,10))`, where `kid` is selected from `ticket.mac`.
+- reCAPTCHA v3 verification enforces `success=true`, exact `hostname`, `remoteip` consistency (when provided), `score >= RECAPTCHA_MIN_SCORE`, and exact `action === RECAPTCHA_ACTION` (default `"submit"`).
 
 Default (`ATOMIC_CONSUME=false`):
 

@@ -95,17 +95,11 @@ test("deterministically selects recaptcha pair from ticket.mac", async () => {
   }
 });
 
-test("recaptcha action binding derives deterministic p_ hex prefix", async () => {
+test("captcha testing API does not expose recaptcha action derivation helper", async () => {
   const restoreGlobals = ensureGlobals();
   try {
     const testing = await loadTestingApi();
-    const first = await testing.makeRecaptchaAction("bind:example", 2);
-    const second = await testing.makeRecaptchaAction("bind:example", 2);
-    const changedKid = await testing.makeRecaptchaAction("bind:example", 1);
-
-    assert.match(first, /^p_[0-9a-f]{20}$/u);
-    assert.equal(first, second);
-    assert.notEqual(first, changedKid);
+    assert.equal("makeRecaptchaAction" in testing, false);
   } finally {
     restoreGlobals();
   }
@@ -157,21 +151,18 @@ test("recaptcha verify requires hostname score action remoteip", async () => {
         calledUrl = String(url);
         return new Response(JSON.stringify(payload), { status: 200 });
       };
-      const bindingString = "bind:example";
-      const kid = 2;
       const ok = await testing.verifyCaptchaForTicket(request, {
         provider: "recaptcha_v3",
         secret: "recaptcha-secret",
         token: "recaptcha-token",
         ticketMac: "unused-for-recaptcha",
-        bindingString,
-        kid,
+        action: "submit",
         minScore: 0.7,
       });
       return { ok, calledUrl };
     };
 
-    const expectedAction = await testing.makeRecaptchaAction("bind:example", 2);
+    const expectedAction = "submit";
 
     const pass = await runCase({
       success: true,

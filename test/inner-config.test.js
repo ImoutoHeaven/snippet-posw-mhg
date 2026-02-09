@@ -579,7 +579,47 @@ test("pow-config preserves recaptcha keys for recaptchaEnabled", async () => {
     const parsed = JSON.parse(decoded);
     assert.equal(parsed.c.recaptchaEnabled, true);
     assert.deepEqual(parsed.c.RECAPTCHA_PAIRS, [{ sitekey: "rk1", secret: "rs1" }]);
+    assert.equal(parsed.c.RECAPTCHA_ACTION, "submit");
     assert.equal(parsed.c.RECAPTCHA_MIN_SCORE, 0.7);
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreGlobals();
+  }
+});
+
+test("pow-config preserves recaptcha action override", async () => {
+  const restoreGlobals = ensureGlobals();
+  const modulePath = await buildConfigModule("config-secret", {
+    configOverrides: {
+      recaptchaEnabled: true,
+      RECAPTCHA_PAIRS: [{ sitekey: "rk1", secret: "rs1" }],
+      RECAPTCHA_ACTION: "login_submit",
+    },
+  });
+  const mod = await import(`${pathToFileURL(modulePath).href}?v=${Date.now()}`);
+  const handler = mod.default.fetch;
+  let forwarded = null;
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async (request) => {
+      forwarded = request;
+      return new Response("ok", { status: 200 });
+    };
+
+    const req = new Request("https://example.com/protected", {
+      headers: {
+        "CF-Connecting-IP": "1.2.3.4",
+      },
+    });
+    const res = await handler(req);
+    assert.equal(res.status, 200);
+    assert.ok(forwarded, "fetch called with modified request");
+
+    const { payload } = readInnerPayload(forwarded.headers);
+    const decoded = base64UrlDecode(payload);
+    assert.ok(decoded, "payload decodes");
+    const parsed = JSON.parse(decoded);
+    assert.equal(parsed.c.RECAPTCHA_ACTION, "login_submit");
   } finally {
     globalThis.fetch = originalFetch;
     restoreGlobals();

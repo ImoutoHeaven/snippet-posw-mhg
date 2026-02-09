@@ -182,7 +182,6 @@ const sha256Bytes = async (data) => {
   const buf = await crypto.subtle.digest("SHA-256", bytes);
   return new Uint8Array(buf);
 };
-const bytesToHex = (bytes) => Array.from(bytes || [], (b) => b.toString(16).padStart(2, "0")).join("");
 const captchaTagV1 = async (turnToken, recaptchaToken) => {
   const turn = typeof turnToken === "string" ? turnToken : "";
   const recaptcha = typeof recaptchaToken === "string" ? recaptchaToken : "";
@@ -190,12 +189,9 @@ const captchaTagV1 = async (turnToken, recaptchaToken) => {
   return base64UrlEncodeNoPad((await sha256Bytes(material)).slice(0, 12));
 };
 
-const makeRecaptchaAction = async (bindingString, kid) => {
-  const binding = typeof bindingString === "string" ? bindingString : "";
-  const kidNum = Number.isInteger(kid) && kid >= 0 ? kid : -1;
-  if (!binding || kidNum < 0) return "";
-  const digest = await sha256Bytes(`act|${binding}|${kidNum}`);
-  return `p_${bytesToHex(digest.slice(0, 10))}`;
+const resolveRecaptchaAction = (config) => {
+  const action = typeof config?.RECAPTCHA_ACTION === "string" ? config.RECAPTCHA_ACTION.trim() : "";
+  return action || "submit";
 };
 
 const concatBytes = (...chunks) => {
@@ -1012,7 +1008,7 @@ const verifyCaptchaSiteverify = async (request, provider, secret, token) => {
 
 const verifyCaptchaForTicket = async (
   request,
-  { provider, secret, token, ticketMac, bindingString = "", kid = -1, minScore = 0 }
+  { provider, secret, token, ticketMac, action = "", minScore = 0 }
 ) => {
   const verify = await verifyCaptchaSiteverify(request, provider, secret, token);
   if (!verify) return false;
@@ -1033,7 +1029,7 @@ const verifyCaptchaForTicket = async (
       if (verify.remoteip && verify.remoteip !== remoteip) return false;
     }
     if (!Number.isFinite(verify.score) || verify.score < minScore) return false;
-    const expectedAction = await makeRecaptchaAction(bindingString, kid);
+    const expectedAction = typeof action === "string" ? action.trim() : "";
     if (!expectedAction || verify.action !== expectedAction) return false;
     return true;
   }
@@ -1099,7 +1095,6 @@ const verifyRequiredCaptchaForTicket = async (
   request,
   config,
   ticket,
-  bindingString,
   captchaToken,
   options = {}
 ) => {
@@ -1153,8 +1148,7 @@ const verifyRequiredCaptchaForTicket = async (
       secret: picked.pair.secret,
       token: recaptchaToken,
       ticketMac: ticket.mac,
-      bindingString,
-      kid: picked.kid,
+      action: resolveRecaptchaAction(config),
       minScore,
     });
     if (!recapOk) return { ok: false, malformed: false, captchaTag: "" };
@@ -1412,9 +1406,10 @@ const respondPowChallengeHtml = async (
     const pairs = Array.isArray(config.RECAPTCHA_PAIRS) ? config.RECAPTCHA_PAIRS : [];
     const picked = await pickRecaptchaPair(ticket.mac, pairs);
     if (!picked || !picked.pair || !picked.pair.sitekey) return S(500);
-    const action = await makeRecaptchaAction(bindingString, picked.kid);
-    if (!action) return S(500);
-    captchaCfg.recaptcha_v3 = { sitekey: picked.pair.sitekey, action };
+    captchaCfg.recaptcha_v3 = {
+      sitekey: picked.pair.sitekey,
+      action: resolveRecaptchaAction(config),
+    };
   }
   const captchaCfgB64 = base64UrlEncodeNoPad(utf8ToBytes(JSON.stringify(captchaCfg)));
   const glueUrl = config.POW_GLUE_URL;
@@ -1726,7 +1721,6 @@ const handleCap = async (request, url, nowSeconds, innerCtx) => {
     request,
     config,
     ticket,
-    bindingString,
     captchaToken
   );
   if (!verifiedCaptcha.ok) {
@@ -2072,7 +2066,6 @@ const handlePowOpen = async (request, url, nowSeconds, innerCtx) => {
       request,
       config,
       ticket,
-      bindingString,
       captchaToken
     );
     if (!verifiedCaptcha.ok) return verifiedCaptcha.malformed ? S(400) : deny();
@@ -2125,7 +2118,6 @@ export { hmacSha256Base64UrlNoPad };
 export const __captchaTesting = {
   captchaTagV1,
   pickRecaptchaPair,
-  makeRecaptchaAction,
   verifyCaptchaSiteverify,
   verifyCaptchaForTicket,
 };
@@ -2274,7 +2266,6 @@ export default {
             baseRequest,
             config,
             ticket,
-            atomicBinding,
             atomic.captchaToken,
             {
               requireTurnPreflight,
@@ -2309,7 +2300,6 @@ export default {
           baseRequest,
           config,
           ticket,
-          atomicBinding,
           atomic.captchaToken,
           {
             requireTurnPreflight,

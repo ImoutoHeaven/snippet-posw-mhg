@@ -119,6 +119,7 @@ const FULL_CONFIG = {
   POW_GLUE_URL:
     "https://cdn.jsdelivr.net/gh/ImoutoHeaven/snippet-posw@412f7fcc71c319b62a614e4252280f2bb3d7302b/glue.js",
   RECAPTCHA_PAIRS: [],
+  RECAPTCHA_ACTION: "submit",
   RECAPTCHA_MIN_SCORE: 0.5,
 };
 

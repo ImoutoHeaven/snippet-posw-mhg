@@ -60,6 +60,7 @@ const DEFAULTS = {
   POW_GLUE_URL:
     "https://cdn.jsdelivr.net/gh/ImoutoHeaven/snippet-posw@49c39050d3a5ac3eaeb3cce5922153659afbe3a4/glue.js",
   RECAPTCHA_PAIRS: [],
+  RECAPTCHA_ACTION: "submit",
   RECAPTCHA_MIN_SCORE: 0.5,
 };
 
@@ -1231,6 +1232,10 @@ const normalizeConfig = (baseConfig) => {
     TURNSTILE_SITEKEY: normalizeString(merged.TURNSTILE_SITEKEY, ""),
     TURNSTILE_SECRET: normalizeString(merged.TURNSTILE_SECRET, ""),
     RECAPTCHA_PAIRS: normalizeRecaptchaPairs(merged.RECAPTCHA_PAIRS),
+    RECAPTCHA_ACTION: (() => {
+      const action = normalizeString(merged.RECAPTCHA_ACTION, DEFAULTS.RECAPTCHA_ACTION).trim();
+      return action || DEFAULTS.RECAPTCHA_ACTION;
+    })(),
     RECAPTCHA_MIN_SCORE: normalizeNumberClamp(
       merged.RECAPTCHA_MIN_SCORE,
       DEFAULTS.RECAPTCHA_MIN_SCORE,

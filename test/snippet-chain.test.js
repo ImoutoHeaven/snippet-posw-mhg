@@ -90,13 +90,16 @@ const decodeTicket = (ticketB64) => {
 };
 
 const extractChallengeArgs = (html) => {
-  const match = html.match(/g\("([^"]+)",\s*(\d+),\s*"([^"]+)",\s*"([^"]+)"/u);
+  const match = html.match(
+    /g\("([^"]+)",\s*(\d+),\s*"([^"]+)",\s*"([^"]+)",\s*\d+,\s*\d+,\s*"([^"]*)",\s*"([^"]*)",\s*"([^"]*)",\s*"([^"]*)",\s*"([^"]*)"\)/u
+  );
   if (!match) return null;
   return {
     bindingB64: match[1],
     steps: Number.parseInt(match[2], 10),
     ticketB64: match[3],
     pathHash: match[4],
+    captchaCfgB64: match[8],
   };
 };
 
@@ -915,11 +918,11 @@ test("/cap works for no-pow recaptcha flow and issues proof", async () => {
     assert.equal(pageRes.status, 200);
     const args = extractChallengeArgs(await pageRes.text());
     assert.ok(args, "challenge args present");
+    const captchaCfg = JSON.parse(decodeB64UrlUtf8(args.captchaCfgB64));
+    assert.equal(captchaCfg.recaptcha_v3.action, "submit");
     const ticket = decodeTicket(args.ticketB64);
     assert.ok(ticket, "ticket decodes");
-    const pair = await testing.pickRecaptchaPair(ticket.mac, recaptchaPairs);
-    const bindingString = `${ticket.v}|${ticket.e}|${ticket.L}|${ticket.r}|${ticket.cfgId}|example.com|${args.pathHash}|1.2.3.4/32|any|any|any`;
-    const expectedAction = await testing.makeRecaptchaAction(bindingString, pair.kid);
+    const expectedAction = captchaCfg.recaptcha_v3.action;
 
     globalThis.fetch = async (url) => {
       if (String(url) === "https://www.google.com/recaptcha/api/siteverify") {
@@ -959,6 +962,121 @@ test("/cap works for no-pow recaptcha flow and issues proof", async () => {
     const proofCookie = capRes.headers.get("Set-Cookie") || "";
     assert.match(proofCookie, /__Host-proof=/u);
     assert.match(proofCookie, /\.4\./u);
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreGlobals();
+  }
+});
+
+test("challenge payload uses configured recaptcha action override", async () => {
+  const restoreGlobals = ensureGlobals();
+  const originalFetch = globalThis.fetch;
+  try {
+    const powPath = await buildPowModule();
+    const powMod = await import(`${pathToFileURL(powPath).href}?v=${Date.now()}`);
+    const powHandler = powMod.default.fetch;
+
+    const config = {
+      powcheck: false,
+      turncheck: false,
+      recaptchaEnabled: true,
+      RECAPTCHA_PAIRS: [{ sitekey: "rk-1", secret: "rs-1" }],
+      RECAPTCHA_ACTION: "login_submit",
+      RECAPTCHA_MIN_SCORE: 0.5,
+      bindPathMode: "none",
+      bindPathQueryName: "path",
+      bindPathHeaderName: "",
+      stripBindPathHeader: false,
+      POW_VERSION: 3,
+      POW_API_PREFIX: "/__pow",
+      POW_DIFFICULTY_BASE: 8192,
+      POW_DIFFICULTY_COEFF: 1,
+      POW_MIN_STEPS: 1,
+      POW_MAX_STEPS: 8192,
+      POW_HASHCASH_BITS: 0,
+      POW_SEGMENT_LEN: 32,
+      POW_SAMPLE_K: 1,
+      POW_SPINE_K: 0,
+      POW_CHAL_ROUNDS: 1,
+      POW_OPEN_BATCH: 1,
+      POW_FORCE_EDGE_1: true,
+      POW_FORCE_EDGE_LAST: true,
+      POW_COMMIT_TTL_SEC: 120,
+      POW_TICKET_TTL_SEC: 600,
+      PROOF_TTL_SEC: 600,
+      PROOF_RENEW_ENABLE: false,
+      PROOF_RENEW_MAX: 2,
+      PROOF_RENEW_WINDOW_SEC: 90,
+      PROOF_RENEW_MIN_SEC: 30,
+      ATOMIC_CONSUME: false,
+      ATOMIC_TURN_QUERY: "__ts",
+      ATOMIC_TICKET_QUERY: "__tt",
+      ATOMIC_CONSUME_QUERY: "__ct",
+      ATOMIC_TURN_HEADER: "x-turnstile",
+      ATOMIC_TICKET_HEADER: "x-ticket",
+      ATOMIC_CONSUME_HEADER: "x-consume",
+      ATOMIC_COOKIE_NAME: "__Secure-pow_a",
+      STRIP_ATOMIC_QUERY: true,
+      STRIP_ATOMIC_HEADERS: true,
+      INNER_AUTH_QUERY_NAME: "",
+      INNER_AUTH_QUERY_VALUE: "",
+      INNER_AUTH_HEADER_NAME: "",
+      INNER_AUTH_HEADER_VALUE: "",
+      stripInnerAuthQuery: false,
+      stripInnerAuthHeader: false,
+      POW_BIND_PATH: true,
+      POW_BIND_IPRANGE: true,
+      POW_BIND_COUNTRY: false,
+      POW_BIND_ASN: false,
+      POW_BIND_TLS: false,
+      POW_TOKEN: "pow-secret",
+      TURNSTILE_SITEKEY: "sitekey",
+      TURNSTILE_SECRET: "turn-secret",
+      POW_COMMIT_COOKIE: "__Host-pow_commit",
+      POW_ESM_URL: "https://example.com/esm",
+      POW_GLUE_URL: "https://example.com/glue",
+    };
+
+    const { payload, mac, exp } = buildInnerHeaders(
+      {
+        v: 1,
+        id: 1212,
+        c: config,
+        d: { ipScope: "1.2.3.4/32", country: "any", asn: "any", tlsFingerprint: "any" },
+        s: {
+          nav: {},
+          bypass: { bypass: false },
+          bind: { ok: true, code: "", canonicalPath: "/protected" },
+          atomic: {
+            captchaToken: "",
+            ticketB64: "",
+            consumeToken: "",
+            fromCookie: false,
+            cookieName: "__Secure-pow_a",
+          },
+        },
+      },
+      "config-secret"
+    );
+
+    globalThis.fetch = async () => new Response("ok", { status: 200 });
+    const pageRes = await powHandler(
+      new Request("https://example.com/protected", {
+        headers: {
+          Accept: "text/html",
+          "CF-Connecting-IP": "1.2.3.4",
+          "X-Pow-Inner": payload,
+          "X-Pow-Inner-Mac": mac,
+          "X-Pow-Inner-Expire": String(exp),
+        },
+      })
+    );
+
+    assert.equal(pageRes.status, 200);
+    const args = extractChallengeArgs(await pageRes.text());
+    assert.ok(args, "challenge args present");
+    const captchaCfg = JSON.parse(decodeB64UrlUtf8(args.captchaCfgB64));
+    assert.equal(captchaCfg.recaptcha_v3.action, "login_submit");
   } finally {
     globalThis.fetch = originalFetch;
     restoreGlobals();
@@ -2095,9 +2213,8 @@ test("pow+recaptcha /open enforces commit captchaTag binding", async () => {
     const ticket = decodeTicket(args.ticketB64);
     assert.ok(ticket, "ticket decodes");
 
-    const pair = await testing.pickRecaptchaPair(ticket.mac, recaptchaPairs);
     const bindingString = decodeB64UrlUtf8(args.bindingB64);
-    const expectedAction = await testing.makeRecaptchaAction(bindingString, pair.kid);
+    const expectedAction = config.RECAPTCHA_ACTION ?? "submit";
 
     const nonce = base64Url(crypto.randomBytes(12));
     const seedPrefix = new TextEncoder().encode("posw|seed|");
@@ -2358,9 +2475,8 @@ test("atomic recaptcha fast-path verifies and forwards without proof", async () 
     assert.ok(args, "challenge args present");
     const ticket = decodeTicket(args.ticketB64);
     assert.ok(ticket, "ticket decodes");
-    const pair = await testing.pickRecaptchaPair(ticket.mac, recaptchaPairs);
     const bindingString = decodeB64UrlUtf8(args.bindingB64);
-    const expectedAction = await testing.makeRecaptchaAction(bindingString, pair.kid);
+    const expectedAction = config.RECAPTCHA_ACTION ?? "submit";
 
     const innerWithAtomic = {
       ...baseInner,
@@ -2520,9 +2636,8 @@ test("atomic recaptcha+pow rejects consume token with mismatched captchaTag", as
     assert.ok(args, "challenge args present");
     const ticket = decodeTicket(args.ticketB64);
     assert.ok(ticket, "ticket decodes");
-    const pair = await testing.pickRecaptchaPair(ticket.mac, recaptchaPairs);
     const bindingString = decodeB64UrlUtf8(args.bindingB64);
-    const expectedAction = await testing.makeRecaptchaAction(bindingString, pair.kid);
+    const expectedAction = config.RECAPTCHA_ACTION ?? "submit";
 
     const wrongCaptchaTag = await captchaTagFromToken("", wrongToken);
     const exp = Math.floor(Date.now() / 1000) + 120;
@@ -2692,9 +2807,8 @@ test("atomic combined mode accepts turn+recaptcha token envelope", async () => {
     assert.ok(args, "challenge args present");
     const ticket = decodeTicket(args.ticketB64);
     assert.ok(ticket, "ticket decodes");
-    const pair = await testing.pickRecaptchaPair(ticket.mac, recaptchaPairs);
     const bindingString = decodeB64UrlUtf8(args.bindingB64);
-    const expectedAction = await testing.makeRecaptchaAction(bindingString, pair.kid);
+    const expectedAction = config.RECAPTCHA_ACTION ?? "submit";
 
     const innerWithAtomic = {
       ...baseInner,
@@ -3314,11 +3428,7 @@ test("atomic dual-provider path keeps each snippet <= 2 subrequests", async () =
     const ticket = decodeTicket(args.ticketB64);
     assert.ok(ticket, "ticket decodes");
     currentTicketMac = ticket.mac;
-    const pair = await testing.pickRecaptchaPair(ticket.mac, [{ sitekey: "rk-1", secret: "rs-1" }]);
-    expectedRecaptchaAction = await testing.makeRecaptchaAction(
-      decodeB64UrlUtf8(args.bindingB64),
-      pair.kid
-    );
+    expectedRecaptchaAction = "submit";
 
     counters.config = 0;
     counters.pow = 0;
@@ -3457,8 +3567,7 @@ test("atomic recaptcha mode disables proof-cookie bypass", async () => {
     assert.ok(args, "challenge args present");
     const ticket = decodeTicket(args.ticketB64);
     assert.ok(ticket, "ticket decodes");
-    const pair = await testing.pickRecaptchaPair(ticket.mac, recaptchaPairs);
-    const expectedAction = await testing.makeRecaptchaAction(decodeB64UrlUtf8(args.bindingB64), pair.kid);
+    const expectedAction = configNoAtomic.RECAPTCHA_ACTION ?? "submit";
 
     globalThis.fetch = async (url) => {
       if (String(url) === "https://www.google.com/recaptcha/api/siteverify") {
