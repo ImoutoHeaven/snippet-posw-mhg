@@ -443,3 +443,47 @@ Output: `dist/pow_config_snippet.js` + `dist/pow_snippet.js` (each checks the Cl
 ## Managed Challenge (optional)
 
 If you enable Turnstile with `cData` binding, Managed Challenge often adds little value and is usually unnecessary. Prefer tuning PoW/Turnstile + WAF Rate Limit; keep Managed Challenge only if you want an extra, independent hurdle.
+
+## Subrequest and API Flow Analysis
+
+The following table details the subrequest count and execution flow for all 16 possible combinations of the core features.
+
+### Core Concepts
+
+*   **Subrequest**: A `fetch()` network request initiated within a Snippet. Cloudflare's Pro plan limits this to 2 per Snippet execution.
+*   **`pow-config.js` Subrequests**: Always includes 1 for forwarding the request to `pow.js`. An additional `siteverify` request is made if Preflight is triggered.
+*   **`pow.js` Subrequests**: Includes 1 for forwarding the request to the origin if the request is allowed. Additional `siteverify` requests are made if required by the flow.
+*   **Siteverify Timing**: The point at which a token is verified against the Turnstile or reCAPTCHA `siteverify` endpoint.
+*   **Preflight**: A special optimization that is only active when `Atomic` + `Turnstile` + `reCAPTCHA` are all enabled on a business path. It performs Turnstile verification in `pow-config.js` to ensure each Snippet's subrequest count does not exceed 2.
+
+### Flow Analysis Table
+
+| # | PoW (P) | Atomic (A) | Turnstile (T) | reCAPTCHA (R) | Path Description | `pow-config` Subrequests | `pow.js` Subrequests | Siteverify Timing & Preflight | Core API Interaction |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **0** | **Off** | **Off** | **Off** | **Off** | **No Protection** | 1 (forward) | 1 (forward) | None | None, request passes through |
+| **1** | **Off** | **Off** | **Off** | **On** | **Non-Atomic, reCAPTCHA only** | 1 (forward) | 1 (in `/cap`) | `pow.js` in `/cap` (reCAPTCHA); No Preflight | `POST /__pow/cap` |
+| **2** | **Off** | **Off** | **On** | **Off** | **Non-Atomic, Turnstile only** | 1 (forward) | 1 (in `/cap`) | `pow.js` in `/cap` (Turnstile); No Preflight | `POST /__pow/cap` |
+| **3** | **Off** | **Off** | **On** | **On** | **Non-Atomic, Dual Captcha** | 1 (forward) | **2** (in `/cap`) | `pow.js` in `/cap` (Both); No Preflight | `POST /__pow/cap` |
+| **4** | **Off** | **On** | **Off** | **Off** | **Invalid Path** (Same as #0) | 1 (forward) | 1 (forward) | None | None, request passes through |
+| **5** | **Off** | **On** | **Off** | **On** | **Atomic, reCAPTCHA only** | 1 (forward) | **2** (on business path) | `pow.js` on business path (reCAPTCHA); No Preflight | Business request w/ token |
+| **6** | **Off** | **On** | **On** | **Off** | **Atomic, Turnstile only** | 1 (forward) | **2** (on business path) | `pow.js` on business path (Turnstile); No Preflight | Business request w/ token |
+| **7** | **Off** | **On** | **On** | **On** | **Atomic, Dual Captcha** | **2** (on business path) | **2** (on business path) | `pow-config` (Turnstile), `pow.js` (reCAPTCHA); **Preflight Enabled** | Business request w/ token |
+| **8** | **On** | **Off** | **Off** | **Off** | **PoW only** | 1 (forward) | 0 (in PoW API) | None | `/commit`, `/challenge`, `/open` |
+| **9** | **On** | **Off** | **Off** | **On** | **Non-Atomic, PoW + reCAPTCHA** | 1 (forward) | 1 (in `/open`) | `pow.js` in final `/open` (reCAPTCHA); No Preflight | PoW API |
+| **10** | **On** | **Off** | **On** | **Off** | **Non-Atomic, PoW + Turnstile** | 1 (forward) | 1 (in `/open`) | `pow.js` in final `/open` (Turnstile); No Preflight | PoW API |
+| **11** | **On** | **Off** | **On** | **On** | **Non-Atomic, PoW + Dual Captcha** | 1 (forward) | **2** (in `/open`) | `pow.js` in final `/open` (Both); No Preflight | PoW API |
+| **12** | **On** | **On** | **Off** | **Off** | **Invalid Path** (Same as #8) | 1 (forward) | 0 (in PoW API) | None | PoW API |
+| **13** | **On** | **On** | **Off** | **On** | **Atomic, PoW + reCAPTCHA** | 1 (forward) | **2** (on business path) | `pow.js` on business path (reCAPTCHA); No Preflight | PoW API + Business request |
+| **14** | **On** | **On** | **On** | **Off** | **Atomic, PoW + Turnstile** | 1 (forward) | **2** (on business path) | `pow.js` on business path (Turnstile); No Preflight | PoW API + Business request |
+| **15** | **On** | **On** | **On** | **On** | **Atomic, PoW + Dual Captcha** | **2** (on business path) | **2** (on business path) | `pow-config` (Turnstile), `pow.js` (reCAPTCHA); **Preflight Enabled** | PoW API + Business request |
+
+### Key Path Analysis
+
+*   **Paths #0, #4, #12**: These are simplified or invalid configurations. In paths #4 and #12, `Atomic` mode is enabled but has no effect without a Captcha provider, so their behavior degenerates to paths #0 and #8, respectively.
+*   **Non-Atomic Captcha Paths (#1, #2, #3)**: `siteverify` occurs within `pow.js` when it handles the `/cap` API request. When two Captcha providers are required (path #3), `pow.js` makes 2 subrequests. This is valid because the `/cap` API endpoint only returns a cookie and does not forward to the origin, meaning its subrequest budget is self-contained.
+*   **Atomic Single-Captcha Paths (#5, #6, #13, #14)**: `siteverify` occurs within `pow.js` as it processes the final business request. Since `pow-config.js` has no preflight task, it only performs one forward (1 subrequest). `pow.js` must then perform one `siteverify` and one forward to the origin, for a total of 2 subrequests.
+*   **The Most Complex Paths (#7, #15)**: This is where the Preflight mechanism is critical.
+    1.  `pow-config.js` intercepts the business request, sees that dual atomic verification is needed, and **it initiates the `siteverify` for Turnstile** (subrequest 1). It then signs the result into the headers and forwards the request to `pow.js` (subrequest 2). **Total: 2 subrequests, within the Pro plan limit.**
+    2.  `pow.js` receives the request. It trusts the signed Turnstile preflight result from `pow-config.js` and **does not re-verify Turnstile**. It only needs to initiate the `siteverify` for reCAPTCHA (subrequest 1). After verification, it forwards the request to the origin (subrequest 2). **Total: 2 subrequests, also within the Pro plan limit.**
+
+This table clearly illustrates how the system's architecture, through flow splitting and the Preflight mechanism, masterfully adheres to the strict subrequest limits of the Cloudflare Snippets platform across all 16 possible configurations.
