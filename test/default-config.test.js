@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -149,28 +149,129 @@ const buildInnerHeaders = (payloadObj, secret, expOverride) => {
 const replaceConfigSecret = (source, secret) =>
   source.replace(/const CONFIG_SECRET = "[^"]*";/u, `const CONFIG_SECRET = "${secret}";`);
 
-const buildTestModule = async (secret = "config-secret") => {
-  const repoRoot = fileURLToPath(new URL("..", import.meta.url));
-  const powSource = await readFile(join(repoRoot, "pow.js"), "utf8");
-  const template = await readFile(join(repoRoot, "template.html"), "utf8");
-  const compiledConfig = JSON.stringify([
-    {
-      host: { s: "^example\\.com$", f: "" },
-      path: null,
-      config: { POW_TOKEN: "test", powcheck: true, POW_BIND_TLS: false },
-    },
-  ]);
-  const injected = powSource
-    .replace(/__HTML_TEMPLATE__/gu, JSON.stringify(template))
-    .replace(/__COMPILED_CONFIG__/gu, compiledConfig);
-  const withSecret = replaceConfigSecret(injected, secret);
-  const tmpDir = await mkdtemp(join(tmpdir(), "pow-test-"));
-  const tmpPath = join(tmpDir, "pow-test.js");
-  await writeFile(tmpPath, withSecret);
-  return tmpPath;
+const readOptionalFile = async (filePath) => {
+  try {
+    return await readFile(filePath, "utf8");
+  } catch (error) {
+    if (error && typeof error === "object" && error.code === "ENOENT") return null;
+    throw error;
+  }
 };
 
-test("pow.js fails closed without inner header", async () => {
+const buildTestModule = async (secret = "config-secret") => {
+  const repoRoot = fileURLToPath(new URL("..", import.meta.url));
+  const [
+    core1Raw,
+    core2Raw,
+    transitSource,
+    innerAuthSource,
+    internalHeadersSource,
+    apiEngineSource,
+    businessGateSource,
+    templateSource,
+    mhgGraphSource,
+    mhgMixSource,
+    mhgMerkleSource,
+  ] = await Promise.all([
+    readFile(join(repoRoot, "pow-core-1.js"), "utf8"),
+    readFile(join(repoRoot, "pow-core-2.js"), "utf8"),
+    readFile(join(repoRoot, "lib", "pow", "transit-auth.js"), "utf8"),
+    readOptionalFile(join(repoRoot, "lib", "pow", "inner-auth.js")),
+    readOptionalFile(join(repoRoot, "lib", "pow", "internal-headers.js")),
+    readOptionalFile(join(repoRoot, "lib", "pow", "api-engine.js")),
+    readOptionalFile(join(repoRoot, "lib", "pow", "business-gate.js")),
+    readFile(join(repoRoot, "template.html"), "utf8"),
+    readFile(join(repoRoot, "lib", "mhg", "graph.js"), "utf8"),
+    readFile(join(repoRoot, "lib", "mhg", "mix-aes.js"), "utf8"),
+    readFile(join(repoRoot, "lib", "mhg", "merkle.js"), "utf8"),
+  ]);
+
+  const core1Source = replaceConfigSecret(core1Raw, secret);
+  const core2Source = replaceConfigSecret(core2Raw, secret);
+  const businessGateInjected =
+    businessGateSource === null
+      ? null
+      : businessGateSource.replace(/__HTML_TEMPLATE__/gu, JSON.stringify(templateSource));
+
+  const tmpDir = await mkdtemp(join(tmpdir(), "pow-split-test-"));
+  await mkdir(join(tmpDir, "lib", "pow"), { recursive: true });
+  await mkdir(join(tmpDir, "lib", "mhg"), { recursive: true });
+  const writes = [
+    writeFile(join(tmpDir, "pow-core-1.js"), core1Source),
+    writeFile(join(tmpDir, "pow-core-2.js"), core2Source),
+    writeFile(join(tmpDir, "lib", "pow", "transit-auth.js"), transitSource),
+    writeFile(join(tmpDir, "lib", "mhg", "graph.js"), mhgGraphSource),
+    writeFile(join(tmpDir, "lib", "mhg", "mix-aes.js"), mhgMixSource),
+    writeFile(join(tmpDir, "lib", "mhg", "merkle.js"), mhgMerkleSource),
+  ];
+  if (innerAuthSource !== null) writes.push(writeFile(join(tmpDir, "lib", "pow", "inner-auth.js"), innerAuthSource));
+  if (internalHeadersSource !== null) {
+    writes.push(writeFile(join(tmpDir, "lib", "pow", "internal-headers.js"), internalHeadersSource));
+  }
+  if (apiEngineSource !== null) writes.push(writeFile(join(tmpDir, "lib", "pow", "api-engine.js"), apiEngineSource));
+  if (businessGateInjected !== null) {
+    writes.push(writeFile(join(tmpDir, "lib", "pow", "business-gate.js"), businessGateInjected));
+  }
+
+  const secretLiteral = JSON.stringify(secret);
+  const bridgeSource = `
+import core1 from "./pow-core-1.js";
+import core2 from "./pow-core-2.js";
+import { issueTransit } from "./lib/pow/transit-auth.js";
+
+const CONFIG_SECRET = ${secretLiteral};
+const API_PREFIX = "/__pow";
+
+const stripPowHeaders = (request) => {
+  const headers = new Headers(request.headers);
+  for (const key of Array.from(headers.keys())) {
+    const lower = key.toLowerCase();
+    if (lower.startsWith("x-pow-inner") || lower.startsWith("x-pow-transit")) {
+      headers.delete(key);
+    }
+  }
+  return new Request(request, { headers });
+};
+
+export default {
+  async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+    if (url.pathname.startsWith(API_PREFIX + "/")) {
+      const transit = await issueTransit({
+        secret: CONFIG_SECRET,
+        method: request.method,
+        pathname: url.pathname,
+        kind: "api",
+        apiPrefix: API_PREFIX,
+      });
+      if (!transit) return new Response(null, { status: 500 });
+      const headers = new Headers(request.headers);
+      for (const [key, value] of Object.entries(transit.headers)) headers.set(key, value);
+      return core2.fetch(new Request(request, { headers }), env, ctx);
+    }
+
+    const upstreamFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = async (input, init) => {
+        const req = input instanceof Request ? input : new Request(input, init);
+        if (req.headers.has("X-Pow-Transit")) return core2.fetch(req, env, ctx);
+        if (typeof upstreamFetch === "function") return upstreamFetch(stripPowHeaders(req), init);
+        return new Response(null, { status: 500 });
+      };
+      return await core1.fetch(request, env, ctx);
+    } finally {
+      globalThis.fetch = upstreamFetch;
+    }
+  },
+};
+`;
+  writes.push(writeFile(join(tmpDir, "pow-test.js"), bridgeSource));
+  await Promise.all(writes);
+
+  return join(tmpDir, "pow-test.js");
+};
+
+test("split core bridge fails closed without inner header", async () => {
   const restoreGlobals = ensureGlobals();
   const modulePath = await buildTestModule();
   const mod = await import(`${pathToFileURL(modulePath).href}?v=${Date.now()}`);
@@ -187,7 +288,7 @@ test("pow.js fails closed without inner header", async () => {
   }
 });
 
-test("pow.js rejects placeholder CONFIG_SECRET", async () => {
+test("split core bridge rejects placeholder CONFIG_SECRET", async () => {
   const restoreGlobals = ensureGlobals();
   const modulePath = await buildTestModule("replace-me");
   const mod = await import(`${pathToFileURL(modulePath).href}?v=${Date.now()}`);
@@ -267,7 +368,7 @@ test("valid inner header passes through", async () => {
   }
 });
 
-test("pow.js rejects expired inner header", async () => {
+test("split core bridge rejects expired inner header", async () => {
   const restoreGlobals = ensureGlobals();
   const modulePath = await buildTestModule();
   const mod = await import(`${pathToFileURL(modulePath).href}?v=${Date.now()}`);
@@ -310,7 +411,7 @@ test("pow.js rejects expired inner header", async () => {
   }
 });
 
-test("pow.js rejects future inner header", async () => {
+test("split core bridge rejects future inner header", async () => {
   const restoreGlobals = ensureGlobals();
   const modulePath = await buildTestModule();
   const mod = await import(`${pathToFileURL(modulePath).href}?v=${Date.now()}`);
@@ -353,7 +454,7 @@ test("pow.js rejects future inner header", async () => {
   }
 });
 
-test("pow.js fails closed when inner strategy snapshot is missing", async () => {
+test("split core bridge fails closed when inner strategy snapshot is missing", async () => {
   const restoreGlobals = ensureGlobals();
   const modulePath = await buildTestModule();
   const mod = await import(`${pathToFileURL(modulePath).href}?v=${Date.now()}`);
@@ -393,7 +494,7 @@ test("pow.js fails closed when inner strategy snapshot is missing", async () => 
   }
 });
 
-test("pow.js fails closed when inner strategy is malformed", async () => {
+test("split core bridge fails closed when inner strategy is malformed", async () => {
   const restoreGlobals = ensureGlobals();
   const modulePath = await buildTestModule();
   const mod = await import(`${pathToFileURL(modulePath).href}?v=${Date.now()}`);
@@ -437,7 +538,7 @@ test("pow.js fails closed when inner strategy is malformed", async () => {
   }
 });
 
-test("pow.js fail-closes bind missing/invalid from inner.s with 400", async () => {
+test("split core bridge fail-closes bind missing/invalid from inner.s with 400", async () => {
   const restoreGlobals = ensureGlobals();
   const modulePath = await buildTestModule();
   const mod = await import(`${pathToFileURL(modulePath).href}?v=${Date.now()}`);
@@ -484,7 +585,7 @@ test("pow.js fail-closes bind missing/invalid from inner.s with 400", async () =
   }
 });
 
-test("pow.js bypasses directly when inner.s.bypass.bypass is true", async () => {
+test("split core bridge bypasses directly when inner.s.bypass.bypass is true", async () => {
   const restoreGlobals = ensureGlobals();
   const modulePath = await buildTestModule();
   const mod = await import(`${pathToFileURL(modulePath).href}?v=${Date.now()}`);
@@ -531,31 +632,38 @@ test("pow.js bypasses directly when inner.s.bypass.bypass is true", async () => 
 
 test("requiredMask includes recaptcha bit in main gate", async () => {
   const repoRoot = fileURLToPath(new URL("..", import.meta.url));
-  const powSource = await readFile(join(repoRoot, "pow.js"), "utf8");
+  const businessGateSource = await readFile(join(repoRoot, "lib", "pow", "business-gate.js"), "utf8");
+  const apiEngineSource = await readFile(join(repoRoot, "lib", "pow", "api-engine.js"), "utf8");
   assert.match(
-    powSource,
+    businessGateSource,
+    /const requiredMask = \(needPow \? 1 : 0\) \| \(needTurn \? 2 : 0\) \| \(needRecaptcha \? 4 : 0\);/u
+  );
+  assert.match(
+    apiEngineSource,
     /const requiredMask = \(needPow \? 1 : 0\) \| \(needTurn \? 2 : 0\) \| \(needRecaptcha \? 4 : 0\);/u
   );
 });
 
 test("cap proof issuance uses computed requiredMask", async () => {
   const repoRoot = fileURLToPath(new URL("..", import.meta.url));
-  const powSource = await readFile(join(repoRoot, "pow.js"), "utf8");
+  const apiEngineSource = await readFile(join(repoRoot, "lib", "pow", "api-engine.js"), "utf8");
+  assert.match(apiEngineSource, /const handleCap = async \(/u);
   assert.match(
-    powSource,
-    /const handleCap = async \([\s\S]*?const requiredMask = \(needPow \? 1 : 0\) \| \(needTurn \? 2 : 0\) \| \(needRecaptcha \? 4 : 0\);[\s\S]*?await issueProofCookie\([\s\S]*?requiredMask\s*\);/u
+    apiEngineSource,
+    /const requiredMask = \(needPow \? 1 : 0\) \| \(needTurn \? 2 : 0\) \| \(needRecaptcha \? 4 : 0\);/u
   );
+  assert.match(apiEngineSource, /await issueProofCookie\([\s\S]*requiredMask/u);
   assert.doesNotMatch(
-    powSource,
+    apiEngineSource,
     /const handleCap = async \([\s\S]*?await issueProofCookie\([\s\S]*?\n\s*2\s*\n\s*\);/u
   );
 });
 
 test("mask enforcement keeps bitwise AND semantics", async () => {
   const repoRoot = fileURLToPath(new URL("..", import.meta.url));
-  const powSource = await readFile(join(repoRoot, "pow.js"), "utf8");
-  assert.match(powSource, /if \(\(parsed\.m & requiredMask\) !== requiredMask\) return null;/u);
-  assert.match(powSource, /if \(\(proof\.m & requiredMask\) !== requiredMask\) return null;/u);
+  const businessGateSource = await readFile(join(repoRoot, "lib", "pow", "business-gate.js"), "utf8");
+  assert.match(businessGateSource, /if \(\(parsed\.m & requiredMask\) !== requiredMask\) return null;/u);
+  assert.match(businessGateSource, /if \(\(proof\.m & requiredMask\) !== requiredMask\) return null;/u);
 });
 
 test("README documents split-chain deployment and snippet contracts", async () => {

@@ -55,16 +55,45 @@ const ensureGlobals = () => {
 const replaceConfigSecret = (source, secret) =>
   source.replace(/const CONFIG_SECRET = "[^"]*";/u, `const CONFIG_SECRET = "${secret}";`);
 
-const buildPowModule = async (secret = CONFIG_SECRET) => {
-  const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
-  const powSource = await readFile(join(repoRoot, "pow.js"), "utf8");
-  const template = await readFile(join(repoRoot, "template.html"), "utf8");
-  const injected = powSource.replace(/__HTML_TEMPLATE__/gu, JSON.stringify(template));
-  const withSecret = replaceConfigSecret(injected, secret);
-  const tmpDir = await mkdtemp(join(tmpdir(), "pow-fail-closed-"));
-  const tmpPath = join(tmpDir, "pow.js");
-  await writeFile(tmpPath, withSecret);
-  return tmpPath;
+const buildSplitBridgeFetch = async (secret = CONFIG_SECRET) => {
+  const { core1Fetch, core2Fetch } = await buildCoreModules(secret);
+  const apiPrefix = "/__pow";
+  const stripPowHeaders = (request) => {
+    const headers = new Headers(request.headers);
+    for (const key of Array.from(headers.keys())) {
+      const lower = key.toLowerCase();
+      if (lower.startsWith("x-pow-inner") || lower.startsWith("x-pow-transit")) {
+        headers.delete(key);
+      }
+    }
+    return new Request(request, { headers });
+  };
+  return async (request, env = {}, ctx = {}) => {
+    const url = new URL(request.url);
+    if (url.pathname.startsWith(`${apiPrefix}/`)) {
+      const exp = Math.floor(Date.now() / 1000) + 3;
+      const macInput = `v1|${exp}|api|${request.method.toUpperCase()}|${url.pathname}|${apiPrefix}`;
+      const mac = base64Url(crypto.createHmac("sha256", secret).update(macInput).digest());
+      const headers = new Headers(request.headers);
+      headers.set("X-Pow-Transit", "api");
+      headers.set("X-Pow-Transit-Mac", mac);
+      headers.set("X-Pow-Transit-Expire", String(exp));
+      headers.set("X-Pow-Transit-Api-Prefix", apiPrefix);
+      return core2Fetch(new Request(request, { headers }), env, ctx);
+    }
+    const upstreamFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = async (input, init) => {
+        const req = input instanceof Request ? input : new Request(input, init);
+        if (req.headers.has("X-Pow-Transit")) return core2Fetch(req, env, ctx);
+        if (typeof upstreamFetch === "function") return upstreamFetch(stripPowHeaders(req), init);
+        return new Response(null, { status: 500 });
+      };
+      return core1Fetch(request, env, ctx);
+    } finally {
+      globalThis.fetch = upstreamFetch;
+    }
+  };
 };
 
 const readOptionalFile = async (filePath) => {
@@ -433,12 +462,11 @@ const runAtomicProofBypassCase = async (handler) => {
   return { allowed: res.status === 200 };
 };
 
-test("pow.js fails closed when inner header is missing/invalid/expired", async () => {
+test("split core bridge fails closed when inner header is missing/invalid/expired", async () => {
   const restoreGlobals = ensureGlobals();
-  const modulePath = await buildPowModule();
-  const mod = await import(`${pathToFileURL(modulePath).href}?v=${Date.now()}`);
   try {
-    const out = await runInnerFailClosedCases(mod.default.fetch);
+    const bridgeFetch = await buildSplitBridgeFetch();
+    const out = await runInnerFailClosedCases(bridgeFetch);
     assert.equal(out.missingInner, 500);
     assert.equal(out.badMac, 500);
     assert.equal(out.expired, 500);
@@ -449,10 +477,9 @@ test("pow.js fails closed when inner header is missing/invalid/expired", async (
 
 test("forbidden nodes never trigger provider siteverify", async () => {
   const restoreGlobals = ensureGlobals();
-  const modulePath = await buildPowModule();
-  const mod = await import(`${pathToFileURL(modulePath).href}?v=${Date.now()}`);
   try {
-    const out = await runForbiddenVerifyPointCases(mod.default.fetch);
+    const bridgeFetch = await buildSplitBridgeFetch();
+    const out = await runForbiddenVerifyPointCases(bridgeFetch);
     assert.equal(out.commitSiteverifyCalls, 0);
     assert.equal(out.challengeSiteverifyCalls, 0);
     assert.equal(out.nonFinalOpenSiteverifyCalls, 0);
@@ -464,10 +491,9 @@ test("forbidden nodes never trigger provider siteverify", async () => {
 
 test("atomic captcha path cannot be bypassed by proof cookie", async () => {
   const restoreGlobals = ensureGlobals();
-  const modulePath = await buildPowModule();
-  const mod = await import(`${pathToFileURL(modulePath).href}?v=${Date.now()}`);
   try {
-    const out = await runAtomicProofBypassCase(mod.default.fetch);
+    const bridgeFetch = await buildSplitBridgeFetch();
+    const out = await runAtomicProofBypassCase(bridgeFetch);
     assert.equal(out.allowed, false);
   } finally {
     restoreGlobals();

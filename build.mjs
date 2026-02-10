@@ -14,7 +14,6 @@ const powCore2Entry = resolve(__dirname, "pow-core-2.js");
 const powConfigEntry = resolve(__dirname, "pow-config.js");
 const templatePath = resolve(__dirname, "template.html");
 const outdir = resolve(__dirname, "dist");
-const powLegacyOutfile = resolve(outdir, "pow_snippet.js");
 const powConfigOutfile = resolve(outdir, "pow_config_snippet.js");
 const powCore1Outfile = resolve(outdir, "pow_core1_snippet.js");
 const powCore2Outfile = resolve(outdir, "pow_core2_snippet.js");
@@ -65,7 +64,7 @@ console.log(
 const compiledConfig = await buildCompiledConfig(powConfigEntry);
 
 await mkdir(outdir, { recursive: true });
-await rm(powLegacyOutfile, { force: true });
+await rm(resolve(outdir, "pow_snippet.js"), { force: true });
 await rm(powConfigOutfile, { force: true });
 await rm(powCore1Outfile, { force: true });
 await rm(powCore2Outfile, { force: true });
