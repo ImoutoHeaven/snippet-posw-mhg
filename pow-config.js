@@ -17,6 +17,8 @@ const DEFAULTS = {
   POW_MIN_STEPS: 512,
   POW_MAX_STEPS: 8192,
   POW_HASHCASH_BITS: 3,
+  POW_PAGE_BYTES: 16384,
+  POW_MIX_ROUNDS: 2,
   POW_SEGMENT_LEN: "48-64",
   POW_SAMPLE_K: 15,
   POW_CHAL_ROUNDS: 12,
@@ -245,6 +247,14 @@ const normalizeSegmentLen = (value, fallback) => {
     }
   }
   return fallback;
+};
+
+const normalizePageBytes = (value, fallback) => {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return fallback;
+  const pageBytes = Math.floor(num);
+  if (pageBytes < 16) return fallback;
+  return Math.floor(pageBytes / 16) * 16;
 };
 
 const normalizePath = (pathname) => {
@@ -1089,6 +1099,8 @@ const normalizeConfig = (baseConfig) => {
       0,
       32
     ),
+    POW_PAGE_BYTES: normalizePageBytes(merged.POW_PAGE_BYTES, DEFAULTS.POW_PAGE_BYTES),
+    POW_MIX_ROUNDS: normalizeNumberClamp(merged.POW_MIX_ROUNDS, DEFAULTS.POW_MIX_ROUNDS, 1, 4),
     POW_SEGMENT_LEN: normalizeSegmentLen(merged.POW_SEGMENT_LEN, DEFAULTS.POW_SEGMENT_LEN),
     POW_SAMPLE_K: normalizeNumberClamp(
       merged.POW_SAMPLE_K,
@@ -1756,6 +1768,7 @@ const resolveConfig = async (request, url, requestPath) => {
 };
 
 export { hmacSha256Base64UrlNoPad };
+export const __testNormalizeConfig = (config) => normalizeConfig(config);
 export const __test = { evaluateCondition, matchCidr, pickConfigWithId, setCompiledConfigForTest };
 
 export default {

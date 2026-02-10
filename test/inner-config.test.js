@@ -1505,3 +1505,73 @@ test("pow-config skips turnstile preflight when bind strategy is invalid", async
     restoreGlobals();
   }
 });
+
+test("pow-config exposes whitepaper defaults for page bytes and mix rounds", async () => {
+  const restoreGlobals = ensureGlobals();
+  const modulePath = await buildConfigModule("config-secret");
+  const mod = await import(`${pathToFileURL(modulePath).href}?v=${Date.now()}`);
+  const handler = mod.default.fetch;
+  let forwarded = null;
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async (request) => {
+      forwarded = request;
+      return new Response("ok", { status: 200 });
+    };
+
+    const req = new Request("https://example.com/protected", {
+      headers: {
+        "CF-Connecting-IP": "1.2.3.4",
+      },
+    });
+    const res = await handler(req);
+    assert.equal(res.status, 200);
+    assert.ok(forwarded, "fetch called with modified request");
+
+    const { payload } = readInnerPayload(forwarded.headers);
+    const decoded = base64UrlDecode(payload);
+    assert.ok(decoded, "payload decodes");
+    const parsed = JSON.parse(decoded);
+    assert.equal(parsed.c.POW_PAGE_BYTES, 16384);
+    assert.equal(parsed.c.POW_MIX_ROUNDS, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreGlobals();
+  }
+});
+
+test("pow-config normalizes page bytes alignment and mix rounds bounds", async () => {
+  const restoreGlobals = ensureGlobals();
+  const modulePath = await buildConfigModule("config-secret", {
+    configOverrides: { POW_PAGE_BYTES: 16399, POW_MIX_ROUNDS: 9 },
+  });
+  const mod = await import(`${pathToFileURL(modulePath).href}?v=${Date.now()}`);
+  const handler = mod.default.fetch;
+  let forwarded = null;
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async (request) => {
+      forwarded = request;
+      return new Response("ok", { status: 200 });
+    };
+
+    const req = new Request("https://example.com/protected", {
+      headers: {
+        "CF-Connecting-IP": "1.2.3.4",
+      },
+    });
+    const res = await handler(req);
+    assert.equal(res.status, 200);
+    assert.ok(forwarded, "fetch called with modified request");
+
+    const { payload } = readInnerPayload(forwarded.headers);
+    const decoded = base64UrlDecode(payload);
+    assert.ok(decoded, "payload decodes");
+    const parsed = JSON.parse(decoded);
+    assert.equal(parsed.c.POW_PAGE_BYTES, 16384);
+    assert.equal(parsed.c.POW_MIX_ROUNDS, 4);
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreGlobals();
+  }
+});
