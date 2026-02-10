@@ -124,7 +124,7 @@ const deriveMhgNonce16 = (nonce) => {
   return crypto.createHash("sha256").update(raw).digest().subarray(0, 16);
 };
 
-const buildMhgWitnessBundle = async ({ powSecret, ticketB64, nonce }) => {
+const buildMhgWitnessBundle = async ({ ticketB64, nonce }) => {
   const ticket = decodeTicket(ticketB64);
   if (!ticket) throw new Error("invalid ticket");
   const { parentsOf } = await import("../lib/mhg/graph.js");
@@ -155,31 +155,57 @@ const buildMhgWitnessBundle = async ({ powSecret, ticketB64, nonce }) => {
   const tree = await buildMerkle(pages);
   const witnessByIndex = new Map();
   for (let i = 1; i <= ticket.L; i += 1) {
-    const parents = parentByIndex.get(i);
     witnessByIndex.set(i, {
-      i,
-      p0: base64Url(pages[parents.p0]),
-      p1: base64Url(pages[parents.p1]),
-      p2: base64Url(pages[parents.p2]),
-      page: base64Url(pages[i]),
-      proof: {
-        page: buildProof(tree, i).map((sib) => base64Url(sib)),
-        p0: buildProof(tree, parents.p0).map((sib) => base64Url(sib)),
-        p1: buildProof(tree, parents.p1).map((sib) => base64Url(sib)),
-        p2: buildProof(tree, parents.p2).map((sib) => base64Url(sib)),
-      },
+      pageB64: base64Url(pages[i]),
+      proof: buildProof(tree, i).map((sib) => base64Url(sib)),
     });
   }
+  witnessByIndex.set(0, {
+    pageB64: base64Url(pages[0]),
+    proof: buildProof(tree, 0).map((sib) => base64Url(sib)),
+  });
 
-  return { rootB64: base64Url(tree.root), witnessByIndex };
+  return { rootB64: base64Url(tree.root), witnessByIndex, parentByIndex };
 };
 
-const buildMhgOpensForIndices = (indices, witnessByIndex) =>
-  indices.map((index) => {
-    const entry = witnessByIndex.get(index);
-    if (!entry) throw new Error(`missing witness for index ${index}`);
-    return entry;
+const buildEqSet = (index, seg) => {
+  const out = [];
+  const start = Math.max(1, index - seg + 1);
+  for (let i = start; i <= index; i += 1) out.push(i);
+  return out;
+};
+
+const buildNeedSet = (eqSet, parentByIndex) => {
+  const out = new Set();
+  for (const i of eqSet) {
+    const edge = parentByIndex.get(i);
+    if (!edge) throw new Error(`missing parents for index ${i}`);
+    out.add(i);
+    out.add(edge.p0);
+    out.add(edge.p1);
+    out.add(edge.p2);
+  }
+  return out;
+};
+
+const buildMhgOpensForChallenge = ({ indices, segs, witnessByIndex, parentByIndex }) => {
+  if (!Array.isArray(indices) || !Array.isArray(segs) || indices.length !== segs.length) {
+    throw new Error("challenge shape mismatch");
+  }
+  return indices.map((index, pos) => {
+    const seg = Number.parseInt(segs[pos], 10);
+    if (!Number.isInteger(seg) || seg <= 0) throw new Error(`invalid seg at ${pos}`);
+    const eqSet = buildEqSet(index, seg);
+    const need = buildNeedSet(eqSet, parentByIndex);
+    const nodes = {};
+    for (const needIdx of need) {
+      const witness = witnessByIndex.get(needIdx);
+      if (!witness) throw new Error(`missing witness for index ${needIdx}`);
+      nodes[String(needIdx)] = { pageB64: witness.pageB64, proof: witness.proof };
+    }
+    return { i: index, seg, nodes };
   });
+};
 
 const sha256Bytes = async (value) => {
   const bytes = typeof value === "string" ? new TextEncoder().encode(value) : value;
@@ -244,8 +270,11 @@ const buildCoreModules = async (secret = "config-secret") => {
     businessGateSource,
     templateSource,
     mhgGraphSource,
+    mhgHashSource,
     mhgMixSource,
     mhgMerkleSource,
+    mhgVerifySource,
+    mhgConstantsSource,
   ] = await Promise.all([
     readFile(join(repoRoot, "pow-core-1.js"), "utf8"),
     readFile(join(repoRoot, "pow-core-2.js"), "utf8"),
@@ -256,8 +285,11 @@ const buildCoreModules = async (secret = "config-secret") => {
     readOptionalFile(join(repoRoot, "lib", "pow", "business-gate.js")),
     readFile(join(repoRoot, "template.html"), "utf8"),
     readFile(join(repoRoot, "lib", "mhg", "graph.js"), "utf8"),
+    readFile(join(repoRoot, "lib", "mhg", "hash.js"), "utf8"),
     readFile(join(repoRoot, "lib", "mhg", "mix-aes.js"), "utf8"),
     readFile(join(repoRoot, "lib", "mhg", "merkle.js"), "utf8"),
+    readFile(join(repoRoot, "lib", "mhg", "verify.js"), "utf8"),
+    readFile(join(repoRoot, "lib", "mhg", "constants.js"), "utf8"),
   ]);
 
   const core1Source = replaceConfigSecret(core1SourceRaw, secret);
@@ -271,8 +303,11 @@ const buildCoreModules = async (secret = "config-secret") => {
     writeFile(join(tmpDir, "pow-core-2.js"), core2Source),
     writeFile(join(tmpDir, "lib", "pow", "transit-auth.js"), transitSource),
     writeFile(join(tmpDir, "lib", "mhg", "graph.js"), mhgGraphSource),
+    writeFile(join(tmpDir, "lib", "mhg", "hash.js"), mhgHashSource),
     writeFile(join(tmpDir, "lib", "mhg", "mix-aes.js"), mhgMixSource),
     writeFile(join(tmpDir, "lib", "mhg", "merkle.js"), mhgMerkleSource),
+    writeFile(join(tmpDir, "lib", "mhg", "verify.js"), mhgVerifySource),
+    writeFile(join(tmpDir, "lib", "mhg", "constants.js"), mhgConstantsSource),
   ];
   if (innerAuthSource !== null) {
     writes.push(writeFile(join(tmpDir, "lib", "pow", "inner-auth.js"), innerAuthSource));
@@ -370,8 +405,11 @@ const buildCore1Module = async (secret = "config-secret") => {
     businessGateSource,
     templateSource,
     mhgGraphSource,
+    mhgHashSource,
     mhgMixSource,
     mhgMerkleSource,
+    mhgVerifySource,
+    mhgConstantsSource,
   ] = await Promise.all([
     readFile(join(repoRoot, "pow-core-1.js"), "utf8"),
     readFile(join(repoRoot, "pow-core-2.js"), "utf8"),
@@ -382,8 +420,11 @@ const buildCore1Module = async (secret = "config-secret") => {
     readOptionalFile(join(repoRoot, "lib", "pow", "business-gate.js")),
     readFile(join(repoRoot, "template.html"), "utf8"),
     readFile(join(repoRoot, "lib", "mhg", "graph.js"), "utf8"),
+    readFile(join(repoRoot, "lib", "mhg", "hash.js"), "utf8"),
     readFile(join(repoRoot, "lib", "mhg", "mix-aes.js"), "utf8"),
     readFile(join(repoRoot, "lib", "mhg", "merkle.js"), "utf8"),
+    readFile(join(repoRoot, "lib", "mhg", "verify.js"), "utf8"),
+    readFile(join(repoRoot, "lib", "mhg", "constants.js"), "utf8"),
   ]);
 
   const core1Source = replaceConfigSecret(core1SourceRaw, secret);
@@ -397,8 +438,11 @@ const buildCore1Module = async (secret = "config-secret") => {
     writeFile(join(tmpDir, "pow-core-2.js"), core2Source),
     writeFile(join(tmpDir, "lib", "pow", "transit-auth.js"), transitSource),
     writeFile(join(tmpDir, "lib", "mhg", "graph.js"), mhgGraphSource),
+    writeFile(join(tmpDir, "lib", "mhg", "hash.js"), mhgHashSource),
     writeFile(join(tmpDir, "lib", "mhg", "mix-aes.js"), mhgMixSource),
     writeFile(join(tmpDir, "lib", "mhg", "merkle.js"), mhgMerkleSource),
+    writeFile(join(tmpDir, "lib", "mhg", "verify.js"), mhgVerifySource),
+    writeFile(join(tmpDir, "lib", "mhg", "constants.js"), mhgConstantsSource),
   ];
   if (innerAuthSource !== null) {
     writes.push(writeFile(join(tmpDir, "lib", "pow", "inner-auth.js"), innerAuthSource));
@@ -652,11 +696,8 @@ test("split core chain consumes atomic only from inner.s (no request fallback)",
     POW_HASHCASH_BITS: 0,
     POW_SEGMENT_LEN: 32,
     POW_SAMPLE_K: 1,
-    POW_SPINE_K: 0,
     POW_CHAL_ROUNDS: 1,
     POW_OPEN_BATCH: 1,
-    POW_FORCE_EDGE_1: true,
-    POW_FORCE_EDGE_LAST: true,
     POW_COMMIT_TTL_SEC: 120,
     POW_TICKET_TTL_SEC: 600,
     PROOF_TTL_SEC: 600,
@@ -771,11 +812,8 @@ test("split core chain returns captcha_required when recaptcha is enabled", asyn
     POW_HASHCASH_BITS: 0,
     POW_SEGMENT_LEN: 32,
     POW_SAMPLE_K: 1,
-    POW_SPINE_K: 0,
     POW_CHAL_ROUNDS: 1,
     POW_OPEN_BATCH: 1,
-    POW_FORCE_EDGE_1: true,
-    POW_FORCE_EDGE_LAST: true,
     POW_COMMIT_TTL_SEC: 120,
     POW_TICKET_TTL_SEC: 600,
     PROOF_TTL_SEC: 600,
@@ -880,13 +918,12 @@ test("pow api uses /cap and rejects /turn", async () => {
       POW_MIN_STEPS: 1,
       POW_MAX_STEPS: 8192,
       POW_HASHCASH_BITS: 0,
+      POW_PAGE_BYTES: 64,
+      POW_MIX_ROUNDS: 2,
       POW_SEGMENT_LEN: 32,
       POW_SAMPLE_K: 1,
-      POW_SPINE_K: 0,
       POW_CHAL_ROUNDS: 1,
       POW_OPEN_BATCH: 1,
-      POW_FORCE_EDGE_1: true,
-      POW_FORCE_EDGE_LAST: true,
       POW_COMMIT_TTL_SEC: 120,
       POW_TICKET_TTL_SEC: 600,
       PROOF_TTL_SEC: 600,
@@ -1000,13 +1037,12 @@ test("/cap works for no-pow turnstile flow and issues proof", async () => {
       POW_MIN_STEPS: 1,
       POW_MAX_STEPS: 8192,
       POW_HASHCASH_BITS: 0,
+      POW_PAGE_BYTES: 64,
+      POW_MIX_ROUNDS: 2,
       POW_SEGMENT_LEN: 32,
       POW_SAMPLE_K: 1,
-      POW_SPINE_K: 0,
       POW_CHAL_ROUNDS: 1,
       POW_OPEN_BATCH: 1,
-      POW_FORCE_EDGE_1: true,
-      POW_FORCE_EDGE_LAST: true,
       POW_COMMIT_TTL_SEC: 120,
       POW_TICKET_TTL_SEC: 600,
       PROOF_TTL_SEC: 600,
@@ -1140,13 +1176,12 @@ test("/cap returns stale hint when siteverify rejects", async () => {
       POW_MIN_STEPS: 1,
       POW_MAX_STEPS: 8192,
       POW_HASHCASH_BITS: 0,
+      POW_PAGE_BYTES: 64,
+      POW_MIX_ROUNDS: 2,
       POW_SEGMENT_LEN: 32,
       POW_SAMPLE_K: 1,
-      POW_SPINE_K: 0,
       POW_CHAL_ROUNDS: 1,
       POW_OPEN_BATCH: 1,
-      POW_FORCE_EDGE_1: true,
-      POW_FORCE_EDGE_LAST: true,
       POW_COMMIT_TTL_SEC: 120,
       POW_TICKET_TTL_SEC: 600,
       PROOF_TTL_SEC: 600,
@@ -1279,13 +1314,12 @@ test("/cap works for no-pow recaptcha flow and issues proof", async () => {
       POW_MIN_STEPS: 1,
       POW_MAX_STEPS: 8192,
       POW_HASHCASH_BITS: 0,
+      POW_PAGE_BYTES: 64,
+      POW_MIX_ROUNDS: 2,
       POW_SEGMENT_LEN: 32,
       POW_SAMPLE_K: 1,
-      POW_SPINE_K: 0,
       POW_CHAL_ROUNDS: 1,
       POW_OPEN_BATCH: 1,
-      POW_FORCE_EDGE_1: true,
-      POW_FORCE_EDGE_LAST: true,
       POW_COMMIT_TTL_SEC: 120,
       POW_TICKET_TTL_SEC: 600,
       PROOF_TTL_SEC: 600,
@@ -1434,13 +1468,12 @@ test("challenge payload uses configured recaptcha action override", async () => 
       POW_MIN_STEPS: 1,
       POW_MAX_STEPS: 8192,
       POW_HASHCASH_BITS: 0,
+      POW_PAGE_BYTES: 64,
+      POW_MIX_ROUNDS: 2,
       POW_SEGMENT_LEN: 32,
       POW_SAMPLE_K: 1,
-      POW_SPINE_K: 0,
       POW_CHAL_ROUNDS: 1,
       POW_OPEN_BATCH: 1,
-      POW_FORCE_EDGE_1: true,
-      POW_FORCE_EDGE_LAST: true,
       POW_COMMIT_TTL_SEC: 120,
       POW_TICKET_TTL_SEC: 600,
       PROOF_TTL_SEC: 600,
@@ -1546,13 +1579,12 @@ test("/cap returns 400 for malformed captcha envelope", async () => {
       POW_MIN_STEPS: 1,
       POW_MAX_STEPS: 8192,
       POW_HASHCASH_BITS: 0,
+      POW_PAGE_BYTES: 64,
+      POW_MIX_ROUNDS: 2,
       POW_SEGMENT_LEN: 32,
       POW_SAMPLE_K: 1,
-      POW_SPINE_K: 0,
       POW_CHAL_ROUNDS: 1,
       POW_OPEN_BATCH: 1,
-      POW_FORCE_EDGE_1: true,
-      POW_FORCE_EDGE_LAST: true,
       POW_COMMIT_TTL_SEC: 120,
       POW_TICKET_TTL_SEC: 600,
       PROOF_TTL_SEC: 600,
@@ -1683,13 +1715,12 @@ test("/commit, /challenge, and non-final /open do not call siteverify", async ()
       POW_MIN_STEPS: 2,
       POW_MAX_STEPS: 2,
       POW_HASHCASH_BITS: 0,
+      POW_PAGE_BYTES: 64,
+      POW_MIX_ROUNDS: 2,
       POW_SEGMENT_LEN: 1,
       POW_SAMPLE_K: 0,
-      POW_SPINE_K: 0,
       POW_CHAL_ROUNDS: 1,
       POW_OPEN_BATCH: 1,
-      POW_FORCE_EDGE_1: true,
-      POW_FORCE_EDGE_LAST: true,
       POW_COMMIT_TTL_SEC: 120,
       POW_TICKET_TTL_SEC: 600,
       PROOF_TTL_SEC: 600,
@@ -1769,8 +1800,7 @@ test("/commit, /challenge, and non-final /open do not call siteverify", async ()
     const bindingString = decodeB64UrlUtf8(args.bindingB64);
     const captchaTag = await captchaTagFromToken(turnToken);
     const powBinding = `${bindingString}|${captchaTag}`;
-    const { rootB64, witnessByIndex } = await buildMhgWitnessBundle({
-      powSecret: config.POW_TOKEN,
+    const { rootB64, witnessByIndex, parentByIndex } = await buildMhgWitnessBundle({
       ticketB64: args.ticketB64,
       nonce,
     });
@@ -1827,7 +1857,12 @@ test("/commit, /challenge, and non-final /open do not call siteverify", async ()
     const challenge = await challengeRes.json();
     assert.equal(challenge.done, false);
     assert.equal(challenge.cursor, 0);
-    const opens = buildMhgOpensForIndices(challenge.indices, witnessByIndex);
+    const opens = buildMhgOpensForChallenge({
+      indices: challenge.indices,
+      segs: challenge.segs,
+      witnessByIndex,
+      parentByIndex,
+    });
 
     const nonFinalOpenRes = await core1Handler(
       new Request("https://example.com/__pow/open", {
@@ -1884,13 +1919,12 @@ test("/commit returns stale hint when ticket cfgId mismatches inner context", as
       POW_MIN_STEPS: 1,
       POW_MAX_STEPS: 1,
       POW_HASHCASH_BITS: 0,
+      POW_PAGE_BYTES: 64,
+      POW_MIX_ROUNDS: 2,
       POW_SEGMENT_LEN: 1,
       POW_SAMPLE_K: 0,
-      POW_SPINE_K: 0,
       POW_CHAL_ROUNDS: 1,
       POW_OPEN_BATCH: 1,
-      POW_FORCE_EDGE_1: true,
-      POW_FORCE_EDGE_LAST: true,
       POW_COMMIT_TTL_SEC: 120,
       POW_TICKET_TTL_SEC: 600,
       PROOF_TTL_SEC: 600,
@@ -2027,13 +2061,12 @@ test("atomic /open final does not call siteverify", async () => {
       POW_MIN_STEPS: 1,
       POW_MAX_STEPS: 1,
       POW_HASHCASH_BITS: 0,
+      POW_PAGE_BYTES: 64,
+      POW_MIX_ROUNDS: 2,
       POW_SEGMENT_LEN: 1,
       POW_SAMPLE_K: 0,
-      POW_SPINE_K: 0,
       POW_CHAL_ROUNDS: 1,
       POW_OPEN_BATCH: 1,
-      POW_FORCE_EDGE_1: true,
-      POW_FORCE_EDGE_LAST: true,
       POW_COMMIT_TTL_SEC: 120,
       POW_TICKET_TTL_SEC: 600,
       PROOF_TTL_SEC: 600,
@@ -2110,8 +2143,7 @@ test("atomic /open final does not call siteverify", async () => {
     const turnToken = "atomic-open-final-token-1234567890";
     const captchaToken = JSON.stringify({ turnstile: turnToken });
     const nonce = base64Url(crypto.randomBytes(12));
-    const { rootB64, witnessByIndex } = await buildMhgWitnessBundle({
-      powSecret: config.POW_TOKEN,
+    const { rootB64, witnessByIndex, parentByIndex } = await buildMhgWitnessBundle({
       ticketB64: args.ticketB64,
       nonce,
     });
@@ -2164,7 +2196,12 @@ test("atomic /open final does not call siteverify", async () => {
     );
     assert.equal(challengeRes.status, 200);
     const challenge = await challengeRes.json();
-    const opens = buildMhgOpensForIndices(challenge.indices, witnessByIndex);
+    const opens = buildMhgOpensForChallenge({
+      indices: challenge.indices,
+      segs: challenge.segs,
+      witnessByIndex,
+      parentByIndex,
+    });
 
     const openRes = await core1Handler(
       new Request("https://example.com/__pow/open", {
@@ -2221,13 +2258,12 @@ test("combined pow+captcha /open returns cheat hint for tampered payload and cap
       POW_MIN_STEPS: 1,
       POW_MAX_STEPS: 1,
       POW_HASHCASH_BITS: 0,
+      POW_PAGE_BYTES: 64,
+      POW_MIX_ROUNDS: 2,
       POW_SEGMENT_LEN: 1,
       POW_SAMPLE_K: 0,
-      POW_SPINE_K: 0,
       POW_CHAL_ROUNDS: 1,
       POW_OPEN_BATCH: 1,
-      POW_FORCE_EDGE_1: true,
-      POW_FORCE_EDGE_LAST: true,
       POW_COMMIT_TTL_SEC: 120,
       POW_TICKET_TTL_SEC: 600,
       PROOF_TTL_SEC: 600,
@@ -2312,8 +2348,7 @@ test("combined pow+captcha /open returns cheat hint for tampered payload and cap
     const nonce = base64Url(crypto.randomBytes(12));
     const commitCaptchaTag = await captchaTagFromToken(goodToken);
     const powBinding = `${bindingString}|${commitCaptchaTag}`;
-    const { rootB64, witnessByIndex } = await buildMhgWitnessBundle({
-      powSecret: config.POW_TOKEN,
+    const { rootB64, witnessByIndex, parentByIndex } = await buildMhgWitnessBundle({
       ticketB64: args.ticketB64,
       nonce,
     });
@@ -2366,7 +2401,12 @@ test("combined pow+captcha /open returns cheat hint for tampered payload and cap
     const challenge = await challengeRes.json();
     assert.deepEqual(challenge.indices, [1]);
     assert.deepEqual(challenge.segs, [1]);
-    const opens = buildMhgOpensForIndices(challenge.indices, witnessByIndex);
+    const opens = buildMhgOpensForChallenge({
+      indices: challenge.indices,
+      segs: challenge.segs,
+      witnessByIndex,
+      parentByIndex,
+    });
 
     const openBody = {
       sid: challenge.sid,
@@ -2392,7 +2432,13 @@ test("combined pow+captcha /open returns cheat hint for tampered payload and cap
           opens: [
             {
               ...openBody.opens[0],
-              page: base64Url(crypto.randomBytes(64)),
+              nodes: {
+                ...openBody.opens[0].nodes,
+                [String(openBody.opens[0].i)]: {
+                  ...openBody.opens[0].nodes[String(openBody.opens[0].i)],
+                  pageB64: base64Url(crypto.randomBytes(64)),
+                },
+              },
             },
           ],
         }),
@@ -2496,13 +2542,12 @@ test("non-atomic /open returns 400 for malformed captcha envelope", async () => 
       POW_MIN_STEPS: 1,
       POW_MAX_STEPS: 1,
       POW_HASHCASH_BITS: 0,
+      POW_PAGE_BYTES: 64,
+      POW_MIX_ROUNDS: 2,
       POW_SEGMENT_LEN: 1,
       POW_SAMPLE_K: 0,
-      POW_SPINE_K: 0,
       POW_CHAL_ROUNDS: 1,
       POW_OPEN_BATCH: 1,
-      POW_FORCE_EDGE_1: true,
-      POW_FORCE_EDGE_LAST: true,
       POW_COMMIT_TTL_SEC: 120,
       POW_TICKET_TTL_SEC: 600,
       PROOF_TTL_SEC: 600,
@@ -2715,13 +2760,12 @@ test("pow+recaptcha /open enforces commit captchaTag binding", async () => {
       POW_MIN_STEPS: 1,
       POW_MAX_STEPS: 1,
       POW_HASHCASH_BITS: 0,
+      POW_PAGE_BYTES: 64,
+      POW_MIX_ROUNDS: 2,
       POW_SEGMENT_LEN: 1,
       POW_SAMPLE_K: 0,
-      POW_SPINE_K: 0,
       POW_CHAL_ROUNDS: 1,
       POW_OPEN_BATCH: 1,
-      POW_FORCE_EDGE_1: true,
-      POW_FORCE_EDGE_LAST: true,
       POW_COMMIT_TTL_SEC: 120,
       POW_TICKET_TTL_SEC: 600,
       PROOF_TTL_SEC: 600,
@@ -2801,8 +2845,7 @@ test("pow+recaptcha /open enforces commit captchaTag binding", async () => {
     const expectedAction = config.RECAPTCHA_ACTION ?? "submit";
 
     const nonce = base64Url(crypto.randomBytes(12));
-    const { rootB64, witnessByIndex } = await buildMhgWitnessBundle({
-      powSecret: config.POW_TOKEN,
+    const { rootB64, witnessByIndex, parentByIndex } = await buildMhgWitnessBundle({
       ticketB64: args.ticketB64,
       nonce,
     });
@@ -2862,7 +2905,12 @@ test("pow+recaptcha /open enforces commit captchaTag binding", async () => {
     );
     assert.equal(challengeRes.status, 200);
     const challenge = await challengeRes.json();
-    const opens = buildMhgOpensForIndices(challenge.indices, witnessByIndex);
+    const opens = buildMhgOpensForChallenge({
+      indices: challenge.indices,
+      segs: challenge.segs,
+      witnessByIndex,
+      parentByIndex,
+    });
 
     const openBody = {
       sid: challenge.sid,
@@ -2885,7 +2933,18 @@ test("pow+recaptcha /open enforces commit captchaTag binding", async () => {
         body: JSON.stringify({
           ...openBody,
           captchaToken: goodEnvelope,
-          opens: [{ ...openBody.opens[0], page: base64Url(crypto.randomBytes(64)) }],
+          opens: [
+            {
+              ...openBody.opens[0],
+              nodes: {
+                ...openBody.opens[0].nodes,
+                [String(openBody.opens[0].i)]: {
+                  ...openBody.opens[0].nodes[String(openBody.opens[0].i)],
+                  pageB64: base64Url(crypto.randomBytes(64)),
+                },
+              },
+            },
+          ],
         }),
       })
     );
@@ -2960,13 +3019,12 @@ test("atomic recaptcha fast-path verifies and forwards without proof", async () 
       POW_MIN_STEPS: 1,
       POW_MAX_STEPS: 8192,
       POW_HASHCASH_BITS: 0,
+      POW_PAGE_BYTES: 64,
+      POW_MIX_ROUNDS: 2,
       POW_SEGMENT_LEN: 32,
       POW_SAMPLE_K: 1,
-      POW_SPINE_K: 0,
       POW_CHAL_ROUNDS: 1,
       POW_OPEN_BATCH: 1,
-      POW_FORCE_EDGE_1: true,
-      POW_FORCE_EDGE_LAST: true,
       POW_COMMIT_TTL_SEC: 120,
       POW_TICKET_TTL_SEC: 600,
       PROOF_TTL_SEC: 600,
@@ -3120,13 +3178,12 @@ test("atomic recaptcha+pow rejects consume token with mismatched captchaTag", as
       POW_MIN_STEPS: 1,
       POW_MAX_STEPS: 1,
       POW_HASHCASH_BITS: 0,
+      POW_PAGE_BYTES: 64,
+      POW_MIX_ROUNDS: 2,
       POW_SEGMENT_LEN: 1,
       POW_SAMPLE_K: 0,
-      POW_SPINE_K: 0,
       POW_CHAL_ROUNDS: 1,
       POW_OPEN_BATCH: 1,
-      POW_FORCE_EDGE_1: true,
-      POW_FORCE_EDGE_LAST: true,
       POW_COMMIT_TTL_SEC: 120,
       POW_TICKET_TTL_SEC: 600,
       PROOF_TTL_SEC: 600,
@@ -3290,13 +3347,12 @@ test("atomic combined mode accepts turn+recaptcha token envelope", async () => {
       POW_MIN_STEPS: 1,
       POW_MAX_STEPS: 8192,
       POW_HASHCASH_BITS: 0,
+      POW_PAGE_BYTES: 64,
+      POW_MIX_ROUNDS: 2,
       POW_SEGMENT_LEN: 32,
       POW_SAMPLE_K: 1,
-      POW_SPINE_K: 0,
       POW_CHAL_ROUNDS: 1,
       POW_OPEN_BATCH: 1,
-      POW_FORCE_EDGE_1: true,
-      POW_FORCE_EDGE_LAST: true,
       POW_COMMIT_TTL_SEC: 120,
       POW_TICKET_TTL_SEC: 600,
       PROOF_TTL_SEC: 600,
@@ -3462,13 +3518,12 @@ test("atomic dual-provider request without turnstilePreflight is denied", async 
       POW_MIN_STEPS: 1,
       POW_MAX_STEPS: 8192,
       POW_HASHCASH_BITS: 0,
+      POW_PAGE_BYTES: 64,
+      POW_MIX_ROUNDS: 2,
       POW_SEGMENT_LEN: 32,
       POW_SAMPLE_K: 1,
-      POW_SPINE_K: 0,
       POW_CHAL_ROUNDS: 1,
       POW_OPEN_BATCH: 1,
-      POW_FORCE_EDGE_1: true,
-      POW_FORCE_EDGE_LAST: true,
       POW_COMMIT_TTL_SEC: 120,
       POW_TICKET_TTL_SEC: 600,
       PROOF_TTL_SEC: 600,
@@ -3615,13 +3670,12 @@ test("atomic dual-provider malformed captcha envelope returns 400", async () => 
       POW_MIN_STEPS: 1,
       POW_MAX_STEPS: 8192,
       POW_HASHCASH_BITS: 0,
+      POW_PAGE_BYTES: 64,
+      POW_MIX_ROUNDS: 2,
       POW_SEGMENT_LEN: 32,
       POW_SAMPLE_K: 1,
-      POW_SPINE_K: 0,
       POW_CHAL_ROUNDS: 1,
       POW_OPEN_BATCH: 1,
-      POW_FORCE_EDGE_1: true,
-      POW_FORCE_EDGE_LAST: true,
       POW_COMMIT_TTL_SEC: 120,
       POW_TICKET_TTL_SEC: 600,
       PROOF_TTL_SEC: 600,
@@ -3766,13 +3820,12 @@ test("atomic dual-provider request with mismatched preflight evidence is denied"
       POW_MIN_STEPS: 1,
       POW_MAX_STEPS: 8192,
       POW_HASHCASH_BITS: 0,
+      POW_PAGE_BYTES: 64,
+      POW_MIX_ROUNDS: 2,
       POW_SEGMENT_LEN: 32,
       POW_SAMPLE_K: 1,
-      POW_SPINE_K: 0,
       POW_CHAL_ROUNDS: 1,
       POW_OPEN_BATCH: 1,
-      POW_FORCE_EDGE_1: true,
-      POW_FORCE_EDGE_LAST: true,
       POW_COMMIT_TTL_SEC: 120,
       POW_TICKET_TTL_SEC: 600,
       PROOF_TTL_SEC: 600,
@@ -4049,13 +4102,12 @@ test("atomic recaptcha mode disables proof-cookie bypass", async () => {
       POW_MIN_STEPS: 1,
       POW_MAX_STEPS: 8192,
       POW_HASHCASH_BITS: 0,
+      POW_PAGE_BYTES: 64,
+      POW_MIX_ROUNDS: 2,
       POW_SEGMENT_LEN: 32,
       POW_SAMPLE_K: 1,
-      POW_SPINE_K: 0,
       POW_CHAL_ROUNDS: 1,
       POW_OPEN_BATCH: 1,
-      POW_FORCE_EDGE_1: true,
-      POW_FORCE_EDGE_LAST: true,
       POW_COMMIT_TTL_SEC: 120,
       POW_TICKET_TTL_SEC: 600,
       PROOF_TTL_SEC: 600,
@@ -4214,13 +4266,12 @@ test("split core1 enforces business gate for non-navigation unauthorized request
       POW_MIN_STEPS: 1,
       POW_MAX_STEPS: 1,
       POW_HASHCASH_BITS: 0,
+      POW_PAGE_BYTES: 64,
+      POW_MIX_ROUNDS: 2,
       POW_SEGMENT_LEN: 1,
       POW_SAMPLE_K: 0,
-      POW_SPINE_K: 0,
       POW_CHAL_ROUNDS: 1,
       POW_OPEN_BATCH: 1,
-      POW_FORCE_EDGE_1: true,
-      POW_FORCE_EDGE_LAST: true,
       POW_COMMIT_TTL_SEC: 120,
       POW_TICKET_TTL_SEC: 600,
       PROOF_TTL_SEC: 600,
@@ -4330,13 +4381,12 @@ test("split core1 enforces navigation unauthorized challenge html", async () => 
       POW_MIN_STEPS: 1,
       POW_MAX_STEPS: 1,
       POW_HASHCASH_BITS: 0,
+      POW_PAGE_BYTES: 64,
+      POW_MIX_ROUNDS: 2,
       POW_SEGMENT_LEN: 1,
       POW_SAMPLE_K: 0,
-      POW_SPINE_K: 0,
       POW_CHAL_ROUNDS: 1,
       POW_OPEN_BATCH: 1,
-      POW_FORCE_EDGE_1: true,
-      POW_FORCE_EDGE_LAST: true,
       POW_COMMIT_TTL_SEC: 120,
       POW_TICKET_TTL_SEC: 600,
       PROOF_TTL_SEC: 600,
@@ -4449,13 +4499,12 @@ test("split core1 forwards valid proof path to origin", async () => {
       POW_MIN_STEPS: 1,
       POW_MAX_STEPS: 1,
       POW_HASHCASH_BITS: 0,
+      POW_PAGE_BYTES: 64,
+      POW_MIX_ROUNDS: 2,
       POW_SEGMENT_LEN: 1,
       POW_SAMPLE_K: 0,
-      POW_SPINE_K: 0,
       POW_CHAL_ROUNDS: 1,
       POW_OPEN_BATCH: 1,
-      POW_FORCE_EDGE_1: true,
-      POW_FORCE_EDGE_LAST: true,
       POW_COMMIT_TTL_SEC: 120,
       POW_TICKET_TTL_SEC: 600,
       PROOF_TTL_SEC: 600,
@@ -4631,13 +4680,12 @@ test("split core1 preserves stale/cheat hints on api deny", async () => {
       POW_MIN_STEPS: 1,
       POW_MAX_STEPS: 1,
       POW_HASHCASH_BITS: 0,
+      POW_PAGE_BYTES: 64,
+      POW_MIX_ROUNDS: 2,
       POW_SEGMENT_LEN: 1,
       POW_SAMPLE_K: 0,
-      POW_SPINE_K: 0,
       POW_CHAL_ROUNDS: 1,
       POW_OPEN_BATCH: 1,
-      POW_FORCE_EDGE_1: true,
-      POW_FORCE_EDGE_LAST: true,
       POW_COMMIT_TTL_SEC: 120,
       POW_TICKET_TTL_SEC: 600,
       PROOF_TTL_SEC: 600,
@@ -4787,21 +4835,19 @@ test("split core1 preserves stale/cheat hints on api deny", async () => {
         method: "POST",
         headers: badOpenHeaders,
         body: JSON.stringify({
+          sid: challengeBody.sid,
           cursor: challengeBody.cursor,
           token: challengeBody.token,
           captchaToken: JSON.stringify({ turnstile: "split-turn-token-1234567890" }),
           opens: [
             {
-              i: 1,
-              page: base64Url(crypto.randomBytes(64)),
-              p0: base64Url(crypto.randomBytes(64)),
-              p1: base64Url(crypto.randomBytes(64)),
-              p2: base64Url(crypto.randomBytes(64)),
-              proof: {
-                page: [],
-                p0: [],
-                p1: [],
-                p2: [],
+              i: challengeBody.indices[0],
+              seg: challengeBody.segs[0],
+              nodes: {
+                [String(challengeBody.indices[0])]: {
+                  pageB64: base64Url(crypto.randomBytes(64)),
+                  proof: [],
+                },
               },
             },
           ],
@@ -4835,21 +4881,19 @@ test("split core1 preserves stale/cheat hints on api deny", async () => {
         method: "POST",
         headers: staleOpenHeaders,
         body: JSON.stringify({
+          sid: challengeBody.sid,
           cursor: challengeBody.cursor,
           token: challengeBody.token,
           captchaToken: JSON.stringify({ turnstile: "split-turn-token-1234567890" }),
           opens: [
             {
-              i: 1,
-              page: base64Url(crypto.randomBytes(64)),
-              p0: base64Url(crypto.randomBytes(64)),
-              p1: base64Url(crypto.randomBytes(64)),
-              p2: base64Url(crypto.randomBytes(64)),
-              proof: {
-                page: [],
-                p0: [],
-                p1: [],
-                p2: [],
+              i: challengeBody.indices[0],
+              seg: challengeBody.segs[0],
+              nodes: {
+                [String(challengeBody.indices[0])]: {
+                  pageB64: base64Url(crypto.randomBytes(64)),
+                  proof: [],
+                },
               },
             },
           ],

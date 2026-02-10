@@ -269,7 +269,7 @@ const leadingZeroBits = (bytes) => {
   return count;
 };
 
-const hashcashRootLast = async (root, lastPage) => sha256(encoder.encode("hashcash|v3|"), root, lastPage);
+const hashcashRootLast = async (root, lastPage) => sha256(encoder.encode("hashcash|v4|"), root, lastPage);
 
 const clampSegmentLen = (value) => Math.max(1, Math.min(16, Math.floor(value)));
 

@@ -107,13 +107,12 @@ Each `CONFIG` entry looks like:
 | `POW_MIN_STEPS` | `number` | `512` | Minimum step count (clamps computed steps). |
 | `POW_MAX_STEPS` | `number` | `8192` | Maximum step count (clamps computed steps). |
 | `POW_HASHCASH_BITS` | `number` | `3` | Extra “root-bound hashcash” check on the last index (0 disables). |
+| `POW_PAGE_BYTES` | `number` | `16384` | MHG page size in bytes. Values are normalized to a multiple of 16 (minimum 16). |
+| `POW_MIX_ROUNDS` | `number` | `2` | MHG AES mix rounds per page (`1..4`, clamped). |
 | `POW_SEGMENT_LEN` | `string, number` | `"48-64"` | Segment length: fixed `N` or range `"min-max"` (each clamped to `1..64`). |
 | `POW_SAMPLE_K` | `number` | `15` | Extra sampled indices per round (total extra ≈ `POW_SAMPLE_K * POW_CHAL_ROUNDS`). |
-| `POW_SPINE_K` | `number` | `2` | Number of “spine” constraints per batch (`0` disables). |
 | `POW_CHAL_ROUNDS` | `number` | `12` | Challenge rounds (controls how many indices are requested). |
-| `POW_OPEN_BATCH` | `number` | `15` | Indices per `/open` batch (clamped to `1..32`). |
-| `POW_FORCE_EDGE_1` | `boolean` | `true` | Always include index `1` in sampled indices. |
-| `POW_FORCE_EDGE_LAST` | `boolean` | `true` | Always include the last index (forced on when `POW_HASHCASH_BITS > 0`). |
+| `POW_OPEN_BATCH` | `number` | `15` | Indices per `/open` batch (clamped to `1..256`). |
 | `POW_COMMIT_TTL_SEC` | `number` | `120` | TTL for `__Host-pow_commit` (commit cookie). |
 | `POW_TICKET_TTL_SEC` | `number` | `600` | TTL for challenge tickets. |
 | `PROOF_TTL_SEC` | `number` | `600` | TTL for `__Host-proof`. |
@@ -132,6 +131,7 @@ Each `CONFIG` entry looks like:
 | `POW_BIND_COUNTRY` | `boolean` | `false` | Bind to `request.cf.country`. |
 | `POW_BIND_ASN` | `boolean` | `false` | Bind to `request.cf.asn`. |
 | `POW_BIND_TLS` | `boolean` | `true` | Bind to TLS fingerprint derived from `request.cf.tlsClientExtensionsSha1` + `tlsClientCiphersSha1`. |
+| `POW_COMMIT_COOKIE` | `string` | `"__Host-pow_commit"` | Global commit cookie name (fixed default from `pow-config`; per-entry override is ignored). |
 | `INNER_AUTH_QUERY_NAME` | `string` | `""` | Query param name for internal bypass. Requires `INNER_AUTH_QUERY_VALUE`. |
 | `INNER_AUTH_QUERY_VALUE` | `string` | `""` | Query param value for internal bypass. Requires `INNER_AUTH_QUERY_NAME`. |
 | `INNER_AUTH_HEADER_NAME` | `string` | `""` | Header name for internal bypass. Requires `INNER_AUTH_HEADER_VALUE`. |
@@ -304,7 +304,7 @@ In combined mode, PoW is bound to the active captcha envelope via `captchaTag(v1
 
 - `captchaTag = base64url(sha256("ctag|v1|t=<turnstile>|r=<recaptcha_v3>").slice(0, 12))`
 - PoW seed uses `bindingString + "|" + captchaTag`.
-- `__Host-pow_commit` (v4) carries `captchaTag` and the final `/open` verifies `captchaToken → captchaTag`.
+- `__Host-pow_commit` (v5) carries `captchaTag` and the final `/open` verifies `captchaToken → captchaTag`.
 
 This guarantees **one token → one PoW**, preventing “1 PoW + N tokens”.
 
@@ -336,7 +336,7 @@ and return only `success: true/false`. Today it does not. `cData` is opaque and 
 - Material string: `ctag|v1|t=<turnstile>|r=<recaptcha_v3>` (missing provider => empty string).
 - `captchaTag = base64url(sha256(material).slice(0, 12))` (96-bit tag, 16 chars base64url).
 - Used to bind PoW/consume tokens to a specific captcha solve without carrying the full token.
-- Stored inside signed artifacts: `__Host-pow_commit` (v4) and `consume` (v2).
+- Stored inside signed artifacts: `__Host-pow_commit` (v5) and `consume` (v2).
 - Recomputed on the server from canonical envelope and compared (`captchaTag` must match).
 - For non-captcha flows, `captchaTag = "any"`.
 
@@ -350,7 +350,7 @@ PoW uses a stateless CCR API:
    - The snippet verifies the ticket binding and mints a short-lived `__Host-pow_commit` cookie.
    - In combined mode, `/commit` must include `captchaToken` to bind `captchaTag` early.
 2. **Challenge**: the browser calls `POST /__pow/challenge`.
-   - The snippet uses deterministic RNG derived from the commit to generate sampled `indices`, `segLen`, optional `spinePos`, and a batch `token`.
+   - The snippet uses deterministic RNG derived from the commit to generate sampled indices, per-index segment lengths, and a batch token.
 3. **Open**: the browser calls `POST /__pow/open` with `opens` for the sampled indices.
     - The snippet verifies and advances the cursor; repeats until done, then issues `__Host-proof` (non-atomic).
     - In combined mode, the final `/open` must include `captchaToken` and triggers provider verification (non-atomic).
@@ -378,7 +378,7 @@ This is **not** a standard Hashcash stamp format. It is a lightweight, *commitme
 
 - It is only checked when the sampled index is the **last step** (`i = L`).
 - The server computes:
-  - `digest = SHA256("hashcash|v3|" || merkleRoot || chain[L])`
+- `digest = SHA256("hashcash|v4|" || merkleRoot || chain[L])`
   - and requires `leadingZeroBits(digest) >= POW_HASHCASH_BITS`.
 
 Why it exists:

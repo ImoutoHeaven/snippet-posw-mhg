@@ -80,11 +80,8 @@ const FULL_CONFIG = {
   POW_MIX_ROUNDS: 2,
   POW_SEGMENT_LEN: "48-64",
   POW_SAMPLE_K: 15,
-  POW_SPINE_K: 2,
   POW_CHAL_ROUNDS: 12,
   POW_OPEN_BATCH: 15,
-  POW_FORCE_EDGE_1: true,
-  POW_FORCE_EDGE_LAST: true,
   POW_COMMIT_TTL_SEC: 120,
   POW_TICKET_TTL_SEC: 600,
   PROOF_TTL_SEC: 600,
@@ -172,8 +169,11 @@ const buildTestModule = async (secret = "config-secret") => {
     businessGateSource,
     templateSource,
     mhgGraphSource,
+    mhgHashSource,
     mhgMixSource,
     mhgMerkleSource,
+    mhgVerifySource,
+    mhgConstantsSource,
   ] = await Promise.all([
     readFile(join(repoRoot, "pow-core-1.js"), "utf8"),
     readFile(join(repoRoot, "pow-core-2.js"), "utf8"),
@@ -184,8 +184,11 @@ const buildTestModule = async (secret = "config-secret") => {
     readOptionalFile(join(repoRoot, "lib", "pow", "business-gate.js")),
     readFile(join(repoRoot, "template.html"), "utf8"),
     readFile(join(repoRoot, "lib", "mhg", "graph.js"), "utf8"),
+    readFile(join(repoRoot, "lib", "mhg", "hash.js"), "utf8"),
     readFile(join(repoRoot, "lib", "mhg", "mix-aes.js"), "utf8"),
     readFile(join(repoRoot, "lib", "mhg", "merkle.js"), "utf8"),
+    readFile(join(repoRoot, "lib", "mhg", "verify.js"), "utf8"),
+    readFile(join(repoRoot, "lib", "mhg", "constants.js"), "utf8"),
   ]);
 
   const core1Source = replaceConfigSecret(core1Raw, secret);
@@ -203,8 +206,11 @@ const buildTestModule = async (secret = "config-secret") => {
     writeFile(join(tmpDir, "pow-core-2.js"), core2Source),
     writeFile(join(tmpDir, "lib", "pow", "transit-auth.js"), transitSource),
     writeFile(join(tmpDir, "lib", "mhg", "graph.js"), mhgGraphSource),
+    writeFile(join(tmpDir, "lib", "mhg", "hash.js"), mhgHashSource),
     writeFile(join(tmpDir, "lib", "mhg", "mix-aes.js"), mhgMixSource),
     writeFile(join(tmpDir, "lib", "mhg", "merkle.js"), mhgMerkleSource),
+    writeFile(join(tmpDir, "lib", "mhg", "verify.js"), mhgVerifySource),
+    writeFile(join(tmpDir, "lib", "mhg", "constants.js"), mhgConstantsSource),
   ];
   if (innerAuthSource !== null) writes.push(writeFile(join(tmpDir, "lib", "pow", "inner-auth.js"), innerAuthSource));
   if (internalHeadersSource !== null) {

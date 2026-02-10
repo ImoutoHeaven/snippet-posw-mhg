@@ -82,7 +82,17 @@ const captchaTagV1 = (turnToken = "", recaptchaToken = "") => {
   return base64Url(crypto.createHash("sha256").update(material).digest().subarray(0, 12));
 };
 
-const makePowBindingString = (ticket, hostname, pathHash, ipScope, country, asn, tlsFingerprint) =>
+const makePowBindingString = (
+  ticket,
+  hostname,
+  pathHash,
+  ipScope,
+  country,
+  asn,
+  tlsFingerprint,
+  pageBytes,
+  mixRounds
+) =>
   [
     String(ticket.v),
     String(ticket.e),
@@ -95,6 +105,8 @@ const makePowBindingString = (ticket, hostname, pathHash, ipScope, country, asn,
     country,
     asn,
     tlsFingerprint,
+    String(pageBytes),
+    String(mixRounds),
   ].join("|");
 
 const assertExpireWindow = (expireHeader) => {
@@ -183,8 +195,11 @@ const buildCoreModules = async (secret = "config-secret") => {
     apiEngineSource,
     businessGateSource,
     mhgGraphSource,
+    mhgHashSource,
     mhgMixSource,
     mhgMerkleSource,
+    mhgVerifySource,
+    mhgConstantsSource,
   ] = await Promise.all([
     readFile(join(repoRoot, "pow-core-1.js"), "utf8"),
     readFile(join(repoRoot, "pow-core-2.js"), "utf8"),
@@ -194,8 +209,11 @@ const buildCoreModules = async (secret = "config-secret") => {
     readOptionalFile(join(repoRoot, "lib", "pow", "api-engine.js")),
     readOptionalFile(join(repoRoot, "lib", "pow", "business-gate.js")),
     readFile(join(repoRoot, "lib", "mhg", "graph.js"), "utf8"),
+    readFile(join(repoRoot, "lib", "mhg", "hash.js"), "utf8"),
     readFile(join(repoRoot, "lib", "mhg", "mix-aes.js"), "utf8"),
     readFile(join(repoRoot, "lib", "mhg", "merkle.js"), "utf8"),
+    readFile(join(repoRoot, "lib", "mhg", "verify.js"), "utf8"),
+    readFile(join(repoRoot, "lib", "mhg", "constants.js"), "utf8"),
   ]);
 
   const core1Source = replaceConfigSecret(core1SourceRaw, secret);
@@ -209,8 +227,11 @@ const buildCoreModules = async (secret = "config-secret") => {
     writeFile(join(tmpDir, "pow-core-2.js"), core2Source),
     writeFile(join(tmpDir, "lib", "pow", "transit-auth.js"), transitSource),
     writeFile(join(tmpDir, "lib", "mhg", "graph.js"), mhgGraphSource),
+    writeFile(join(tmpDir, "lib", "mhg", "hash.js"), mhgHashSource),
     writeFile(join(tmpDir, "lib", "mhg", "mix-aes.js"), mhgMixSource),
     writeFile(join(tmpDir, "lib", "mhg", "merkle.js"), mhgMerkleSource),
+    writeFile(join(tmpDir, "lib", "mhg", "verify.js"), mhgVerifySource),
+    writeFile(join(tmpDir, "lib", "mhg", "constants.js"), mhgConstantsSource),
   ];
   if (innerAuthSource !== null) {
     writes.push(writeFile(join(tmpDir, "lib", "pow", "inner-auth.js"), innerAuthSource));
@@ -660,41 +681,6 @@ test("pow-config preserves numeric POW_SEGMENT_LEN", async () => {
     assert.ok(decoded, "payload decodes");
     const parsed = JSON.parse(decoded);
     assert.equal(parsed.c.POW_SEGMENT_LEN, 32);
-  } finally {
-    globalThis.fetch = originalFetch;
-    restoreGlobals();
-  }
-});
-
-test("pow-config allows POW_SPINE_K to disable spine", async () => {
-  const restoreGlobals = ensureGlobals();
-  const modulePath = await buildConfigModule("config-secret", {
-    configOverrides: { POW_SPINE_K: 0 },
-  });
-  const mod = await import(`${pathToFileURL(modulePath).href}?v=${Date.now()}`);
-  const handler = mod.default.fetch;
-  let forwarded = null;
-  const originalFetch = globalThis.fetch;
-  try {
-    globalThis.fetch = async (request) => {
-      forwarded = request;
-      return new Response("ok", { status: 200 });
-    };
-
-    const req = new Request("https://example.com/protected", {
-      headers: {
-        "CF-Connecting-IP": "1.2.3.4",
-      },
-    });
-    const res = await handler(req);
-    assert.equal(res.status, 200);
-    assert.ok(forwarded, "fetch called with modified request");
-
-    const { payload } = readInnerPayload(forwarded.headers);
-    const decoded = base64UrlDecode(payload);
-    assert.ok(decoded, "payload decodes");
-    const parsed = JSON.parse(decoded);
-    assert.equal(parsed.c.POW_SPINE_K, 0);
   } finally {
     globalThis.fetch = originalFetch;
     restoreGlobals();
@@ -1399,7 +1385,9 @@ test("pow-config records turnstile preflight evidence for atomic dual-provider t
       "1.2.3.4/32",
       "any",
       "any",
-      "any"
+      "any",
+      16384,
+      2
     );
     ticket.mac = hmacSha256Base64Url("pow-secret", binding);
     const ticketB64 = base64Url(
