@@ -39,6 +39,9 @@ const u32be = (value) => {
   return out;
 };
 
+const MERKLE_LEAF_PREFIX = "MHG1-LEAF";
+const MERKLE_NODE_PREFIX = "MHG1-NODE";
+
 const concat = (...chunks) => {
   let total = 0;
   for (const chunk of chunks) total += chunk.length;
@@ -57,8 +60,8 @@ const sha256 = async (...chunks) => {
   return new Uint8Array(digest);
 };
 
-const leafHash = async (page) => sha256(encoder.encode("mhg:leaf"), page);
-const nodeHash = async (left, right) => sha256(encoder.encode("mhg:node"), left, right);
+const leafHash = async (index, page) => sha256(encoder.encode(MERKLE_LEAF_PREFIX), u32be(index), page);
+const nodeHash = async (left, right) => sha256(encoder.encode(MERKLE_NODE_PREFIX), left, right);
 
 const deriveKey = async ({ graphSeed, nonce, index }) => {
   const idx = u32be(index);
@@ -150,7 +153,7 @@ const parentsOf = (index, graphSeed) => {
 };
 
 const buildMerkle = async (pages) => {
-  const leaves = await Promise.all(pages.map((page) => leafHash(page)));
+  const leaves = await Promise.all(pages.map((page, index) => leafHash(index, page)));
   const levels = [leaves];
   while (levels[levels.length - 1].length > 1) {
     const prev = levels[levels.length - 1];
