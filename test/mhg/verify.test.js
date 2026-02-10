@@ -48,6 +48,56 @@ const makeOpenVector = async ({ omit = [] } = {}) => {
   };
 };
 
+const makeLargeOpenVector = async ({ steps = 40, seg = 32, omit = [] } = {}) => {
+  const graphSeed = Uint8Array.from({ length: 16 }, (_, i) => i + 1);
+  const nonce = Uint8Array.from({ length: 16 }, (_, i) => 16 - i);
+  const pageBytes = 64;
+
+  const pages = new Array(steps + 1);
+  pages[0] = await makeGenesisPage({ graphSeed, nonce, pageBytes });
+  for (let i = 1; i <= steps; i += 1) {
+    const p = await parentsOf(i, graphSeed);
+    pages[i] = await mixPage({
+      i,
+      p0: pages[p.p0],
+      p1: pages[p.p1],
+      p2: pages[p.p2],
+      graphSeed,
+      nonce,
+      pageBytes,
+    });
+  }
+
+  const tree = await buildMerkle(pages);
+  const need = new Set();
+  const eqStart = Math.max(1, steps - seg + 1);
+  for (let j = eqStart; j <= steps; j += 1) {
+    const p = await parentsOf(j, graphSeed);
+    need.add(j);
+    need.add(p.p0);
+    need.add(p.p1);
+    need.add(p.p2);
+  }
+
+  const nodes = {};
+  for (const idx of need) {
+    if (omit.includes(idx)) continue;
+    nodes[String(idx)] = {
+      pageB64: b64u(pages[idx]),
+      proof: buildProof(tree, idx).map((x) => b64u(x)),
+    };
+  }
+
+  return {
+    root: tree.root,
+    leafCount: tree.leafCount,
+    graphSeed,
+    nonce,
+    pageBytes,
+    opens: [{ i: steps, seg, nodes }],
+  };
+};
+
 test("segmentLen=2 verifies equation closure", async () => {
   const { verifyBatch } = await import("../../lib/mhg/verify.js");
   const out = await verifyBatch({ fixture: "valid-seg2" });
@@ -81,4 +131,14 @@ test("seg=1 still verifies predecessor relation", async () => {
   const { verifyOpenBatchVector } = await import("../../lib/mhg/verify.js");
   const out = await verifyOpenBatchVector(await makeOpenVector());
   assert.equal(out.ok, true);
+});
+
+test("seg>16 must verify full closure without truncation", async () => {
+  const { verifyOpenBatchVector } = await import("../../lib/mhg/verify.js");
+  const ok = await verifyOpenBatchVector(await makeLargeOpenVector({ steps: 40, seg: 32 }));
+  assert.equal(ok.ok, true);
+
+  const out = await verifyOpenBatchVector(await makeLargeOpenVector({ steps: 40, seg: 32, omit: [9] }));
+  assert.equal(out.ok, false);
+  assert.equal(out.reason, "missing_witness");
 });

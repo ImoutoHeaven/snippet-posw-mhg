@@ -1425,6 +1425,11 @@ const getPowBindingValues = async (canonicalPath, config, derived) => {
   return getPowBindingValuesWithPathHash(pathHash, config, derived);
 };
 
+const getPowDifficultyBinding = (config) => ({
+  pageBytes: Math.max(1, Math.floor(Number(config?.POW_PAGE_BYTES) || 0)),
+  mixRounds: Math.max(1, Math.floor(Number(config?.POW_MIX_ROUNDS) || 0)),
+});
+
 const makePowBindingString = (
   ticket,
   hostname,
@@ -1432,7 +1437,9 @@ const makePowBindingString = (
   ipScope,
   country,
   asn,
-  tlsFingerprint
+  tlsFingerprint,
+  pageBytes,
+  mixRounds
 ) => {
   const host = typeof hostname === "string" ? hostname.toLowerCase() : "";
   return (
@@ -1456,12 +1463,17 @@ const makePowBindingString = (
     "|" +
     asn +
     "|" +
-    tlsFingerprint
+    tlsFingerprint +
+    "|" +
+    pageBytes +
+    "|" +
+    mixRounds
   );
 };
 
-const verifyTicketMac = async (ticket, hostname, bindingValues, powSecret) => {
+const verifyTicketMac = async (ticket, hostname, bindingValues, config, powSecret) => {
   if (!powSecret) return "";
+  const difficultyBinding = getPowDifficultyBinding(config);
   const bindingString = makePowBindingString(
     ticket,
     hostname,
@@ -1469,7 +1481,9 @@ const verifyTicketMac = async (ticket, hostname, bindingValues, powSecret) => {
     bindingValues.ipScope,
     bindingValues.country,
     bindingValues.asn,
-    bindingValues.tlsFingerprint
+    bindingValues.tlsFingerprint,
+    difficultyBinding.pageBytes,
+    difficultyBinding.mixRounds
   );
   const expectedMac = await hmacSha256Base64UrlNoPad(powSecret, bindingString);
   if (!timingSafeEqual(expectedMac, ticket.mac)) return "";
@@ -1645,7 +1659,13 @@ const runTurnstilePreflight = async ({
       preflight.reason = "ticket_invalid";
       return preflight;
     }
-    const bindingString = await verifyTicketMac(ticket, new URL(request.url).hostname, bindingValues, powSecret);
+    const bindingString = await verifyTicketMac(
+      ticket,
+      new URL(request.url).hostname,
+      bindingValues,
+      config,
+      powSecret,
+    );
     if (!bindingString) {
       preflight.reason = "ticket_invalid";
       return preflight;

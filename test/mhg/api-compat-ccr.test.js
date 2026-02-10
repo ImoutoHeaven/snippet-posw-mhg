@@ -110,8 +110,11 @@ const buildPowModule = async (secret = CONFIG_SECRET) => {
     businessGateSource,
     templateSource,
     mhgGraphSource,
+    mhgHashSource,
+    mhgConstantsSource,
     mhgMixSource,
     mhgMerkleSource,
+    mhgVerifySource,
   ] = await Promise.all([
     readFile(join(repoRoot, "pow-core-1.js"), "utf8"),
     readFile(join(repoRoot, "pow-core-2.js"), "utf8"),
@@ -122,8 +125,11 @@ const buildPowModule = async (secret = CONFIG_SECRET) => {
     readOptionalFile(join(repoRoot, "lib", "pow", "business-gate.js")),
     readFile(join(repoRoot, "template.html"), "utf8"),
     readFile(join(repoRoot, "lib", "mhg", "graph.js"), "utf8"),
+    readFile(join(repoRoot, "lib", "mhg", "hash.js"), "utf8"),
+    readFile(join(repoRoot, "lib", "mhg", "constants.js"), "utf8"),
     readFile(join(repoRoot, "lib", "mhg", "mix-aes.js"), "utf8"),
     readFile(join(repoRoot, "lib", "mhg", "merkle.js"), "utf8"),
+    readFile(join(repoRoot, "lib", "mhg", "verify.js"), "utf8"),
   ]);
 
   const core1Source = replaceConfigSecret(core1Raw, secret);
@@ -143,8 +149,11 @@ const buildPowModule = async (secret = CONFIG_SECRET) => {
     writeFile(join(tmpDir, "lib", "pow", "inner-auth.js"), innerAuthSource),
     writeFile(join(tmpDir, "lib", "pow", "internal-headers.js"), internalHeadersSource),
     writeFile(join(tmpDir, "lib", "mhg", "graph.js"), mhgGraphSource),
+    writeFile(join(tmpDir, "lib", "mhg", "hash.js"), mhgHashSource),
+    writeFile(join(tmpDir, "lib", "mhg", "constants.js"), mhgConstantsSource),
     writeFile(join(tmpDir, "lib", "mhg", "mix-aes.js"), mhgMixSource),
     writeFile(join(tmpDir, "lib", "mhg", "merkle.js"), mhgMerkleSource),
+    writeFile(join(tmpDir, "lib", "mhg", "verify.js"), mhgVerifySource),
   ];
   if (apiEngineSource !== null) writes.push(writeFile(join(tmpDir, "lib", "pow", "api-engine.js"), apiEngineSource));
   if (businessGateInjected !== null) {
@@ -235,6 +244,8 @@ const makeInnerPayload = () => ({
     POW_SAMPLE_K: 2,
     POW_OPEN_BATCH: 2,
     POW_HASHCASH_BITS: 0,
+    POW_PAGE_BYTES: 16384,
+    POW_MIX_ROUNDS: 2,
     POW_SEGMENT_LEN: 2,
     POW_COMMIT_TTL_SEC: 120,
     POW_TICKET_TTL_SEC: 180,
@@ -322,8 +333,11 @@ const buildCore2Module = async (secret = CONFIG_SECRET) => {
     internalHeadersSource,
     apiEngineSource,
     mhgGraphSource,
+    mhgHashSource,
+    mhgConstantsSource,
     mhgMixSource,
     mhgMerkleSource,
+    mhgVerifySource,
   ] =
     await Promise.all([
       readFile(join(repoRoot, "pow-core-2.js"), "utf8"),
@@ -332,8 +346,11 @@ const buildCore2Module = async (secret = CONFIG_SECRET) => {
       readFile(join(repoRoot, "lib", "pow", "internal-headers.js"), "utf8"),
       readOptionalFile(join(repoRoot, "lib", "pow", "api-engine.js")),
       readFile(join(repoRoot, "lib", "mhg", "graph.js"), "utf8"),
+      readFile(join(repoRoot, "lib", "mhg", "hash.js"), "utf8"),
+      readFile(join(repoRoot, "lib", "mhg", "constants.js"), "utf8"),
       readFile(join(repoRoot, "lib", "mhg", "mix-aes.js"), "utf8"),
       readFile(join(repoRoot, "lib", "mhg", "merkle.js"), "utf8"),
+      readFile(join(repoRoot, "lib", "mhg", "verify.js"), "utf8"),
     ]);
 
   const core2Source = replaceConfigSecret(core2SourceRaw, secret);
@@ -346,8 +363,11 @@ const buildCore2Module = async (secret = CONFIG_SECRET) => {
     writeFile(join(tmpDir, "lib", "pow", "inner-auth.js"), innerAuthSource),
     writeFile(join(tmpDir, "lib", "pow", "internal-headers.js"), internalHeadersSource),
     writeFile(join(tmpDir, "lib", "mhg", "graph.js"), mhgGraphSource),
+    writeFile(join(tmpDir, "lib", "mhg", "hash.js"), mhgHashSource),
+    writeFile(join(tmpDir, "lib", "mhg", "constants.js"), mhgConstantsSource),
     writeFile(join(tmpDir, "lib", "mhg", "mix-aes.js"), mhgMixSource),
     writeFile(join(tmpDir, "lib", "mhg", "merkle.js"), mhgMerkleSource),
+    writeFile(join(tmpDir, "lib", "mhg", "verify.js"), mhgVerifySource),
   ];
   if (apiEngineSource !== null) {
     writes.push(writeFile(join(tmpDir, "lib", "pow", "api-engine.js"), apiEngineSource));
@@ -412,7 +432,9 @@ const makeTicketB64 = ({ powSecret, payload, pathHash, host = "example.com" }) =
   const bindCountry = payload.c.POW_BIND_COUNTRY === true ? payload.d.country : "any";
   const bindAsn = payload.c.POW_BIND_ASN === true ? payload.d.asn : "any";
   const bindTls = payload.c.POW_BIND_TLS === true ? payload.d.tlsFingerprint : "any";
-  const binding = `${ticket.v}|${ticket.e}|${ticket.L}|${ticket.r}|${ticket.cfgId}|${host.toLowerCase()}|${bindPath}|${bindIp}|${bindCountry}|${bindAsn}|${bindTls}`;
+  const pageBytes = Math.max(1, Math.floor(Number(payload.c.POW_PAGE_BYTES) || 0));
+  const mixRounds = Math.max(1, Math.floor(Number(payload.c.POW_MIX_ROUNDS) || 0));
+  const binding = `${ticket.v}|${ticket.e}|${ticket.L}|${ticket.r}|${ticket.cfgId}|${host.toLowerCase()}|${bindPath}|${bindIp}|${bindCountry}|${bindAsn}|${bindTls}|${pageBytes}|${mixRounds}`;
   ticket.mac = base64Url(crypto.createHmac("sha256", powSecret).update(binding).digest());
   return base64Url(
     Buffer.from(
@@ -480,7 +502,7 @@ const createMhgSolver = async ({ ticketB64, steps, hashcashBits, segmentLen }) =
 const runOpenToFinal = async (handler, payload, commitCookie, challengeBody, solveOpens) => {
   let state = challengeBody;
   while (state.done === false) {
-    const opens = await solveOpens(state.indices);
+    const opens = await solveOpens(state.indices, state.segs);
     const res = await handler(
       new Request("https://example.com/__pow/open", {
         method: "POST",
@@ -490,6 +512,7 @@ const runOpenToFinal = async (handler, payload, commitCookie, challengeBody, sol
           Cookie: commitCookie,
         },
         body: JSON.stringify({
+          sid: state.sid,
           cursor: state.cursor,
           token: state.token,
           opens,
@@ -566,8 +589,8 @@ const runCcrBootstrap = async (handler) => {
   );
   assert.equal(challengeRes.status, 200);
   const challengeBody = await challengeRes.json();
-  const solveOpens = async (indices) => {
-    const out = await solver.call("OPEN", { indices });
+  const solveOpens = async (indices, segs) => {
+    const out = await solver.call("OPEN", { indices, segs });
     return out.opens;
   };
   return {
@@ -633,8 +656,8 @@ const runCcrBootstrapSplit = async (handler) => {
   );
   assert.equal(challengeRes.status, 200);
   const challengeBody = await challengeRes.json();
-  const solveOpens = async (indices) => {
-    const out = await solver.call("OPEN", { indices });
+  const solveOpens = async (indices, segs) => {
+    const out = await solver.call("OPEN", { indices, segs });
     return out.opens;
   };
 
@@ -655,11 +678,12 @@ test("challenge/open return required fields and status", async () => {
   try {
     bootstrap = await runCcrBootstrap(mod.default.fetch);
     const { payload, commitCookie, challengeBody, solveOpens } = bootstrap;
-    const opens = await solveOpens(challengeBody.indices);
+    const opens = await solveOpens(challengeBody.indices, challengeBody.segs);
     assert.equal(challengeBody.done, false);
     assert.ok(Array.isArray(challengeBody.indices));
     assert.ok(Array.isArray(challengeBody.segs));
     assert.equal(challengeBody.indices.length, challengeBody.segs.length);
+    assert.equal(typeof challengeBody.sid, "string");
     assert.equal(typeof challengeBody.token, "string");
     assert.ok(Number.isInteger(challengeBody.cursor));
 
@@ -672,6 +696,7 @@ test("challenge/open return required fields and status", async () => {
           Cookie: commitCookie,
         },
         body: JSON.stringify({
+          sid: challengeBody.sid,
           cursor: challengeBody.cursor,
           token: challengeBody.token,
           opens,
@@ -688,6 +713,7 @@ test("challenge/open return required fields and status", async () => {
       assert.ok(openBody.cursor > challengeBody.cursor);
       assert.ok(Array.isArray(openBody.indices));
       assert.ok(Array.isArray(openBody.segs));
+      assert.equal(typeof openBody.sid, "string");
       assert.equal(typeof openBody.token, "string");
     }
   } finally {
@@ -726,7 +752,7 @@ test("invalid open token -> 403 + cheat", async () => {
   try {
     bootstrap = await runCcrBootstrap(mod.default.fetch);
     const { payload, commitCookie, challengeBody, solveOpens } = bootstrap;
-    const opens = await solveOpens(challengeBody.indices);
+    const opens = await solveOpens(challengeBody.indices, challengeBody.segs);
     const badToken = challengeBody.token.slice(0, -1) + (challengeBody.token.endsWith("A") ? "B" : "A");
     const res = await mod.default.fetch(
       new Request("https://example.com/__pow/open", {
@@ -737,6 +763,7 @@ test("invalid open token -> 403 + cheat", async () => {
           Cookie: commitCookie,
         },
         body: JSON.stringify({
+          sid: challengeBody.sid,
           cursor: challengeBody.cursor,
           token: badToken,
           opens,
@@ -761,9 +788,10 @@ test("invalid mhg witness -> 403 + cheat", async () => {
   try {
     bootstrap = await runCcrBootstrap(mod.default.fetch);
     const { payload, commitCookie, challengeBody, solveOpens } = bootstrap;
-    const opens = await solveOpens(challengeBody.indices);
+    const opens = await solveOpens(challengeBody.indices, challengeBody.segs);
     const tampered = structuredClone(opens);
-    tampered[0].page = tamperBase64UrlBytes(tampered[0].page);
+    const firstNodeId = Object.keys(tampered[0].nodes || {})[0];
+    tampered[0].nodes[firstNodeId].pageB64 = tamperBase64UrlBytes(tampered[0].nodes[firstNodeId].pageB64);
     const res = await mod.default.fetch(
       new Request("https://example.com/__pow/open", {
         method: "POST",
@@ -773,6 +801,7 @@ test("invalid mhg witness -> 403 + cheat", async () => {
           Cookie: commitCookie,
         },
         body: JSON.stringify({
+          sid: challengeBody.sid,
           cursor: challengeBody.cursor,
           token: challengeBody.token,
           opens: tampered,
@@ -783,6 +812,86 @@ test("invalid mhg witness -> 403 + cheat", async () => {
     );
     assert.equal(res.status, 403);
     assert.equal(res.headers.get("x-pow-h"), "cheat");
+  } finally {
+    if (bootstrap) bootstrap.disposeSolver();
+    restoreGlobals();
+  }
+});
+
+test("legacy open witness shape is rejected with 400", async () => {
+  const restoreGlobals = ensureGlobals();
+  const modulePath = await buildPowModule();
+  const mod = await import(`${pathToFileURL(modulePath).href}?v=${Date.now()}`);
+  let bootstrap;
+  try {
+    bootstrap = await runCcrBootstrap(mod.default.fetch);
+    const { payload, commitCookie, challengeBody } = bootstrap;
+    const legacyOpens = challengeBody.indices.map((idx) => ({
+      i: idx,
+      page: base64Url(crypto.randomBytes(64)),
+      p0: base64Url(crypto.randomBytes(64)),
+      p1: base64Url(crypto.randomBytes(64)),
+      p2: base64Url(crypto.randomBytes(64)),
+      proof: { page: [], p0: [], p1: [], p2: [] },
+    }));
+    const res = await mod.default.fetch(
+      new Request("https://example.com/__pow/open", {
+        method: "POST",
+        headers: {
+          ...makeInnerHeaders(payload),
+          "Content-Type": "application/json",
+          Cookie: commitCookie,
+        },
+        body: JSON.stringify({
+          sid: challengeBody.sid,
+          cursor: challengeBody.cursor,
+          token: challengeBody.token,
+          opens: legacyOpens,
+        }),
+      }),
+      {},
+      {},
+    );
+    assert.equal(res.status, 400);
+  } finally {
+    if (bootstrap) bootstrap.disposeSolver();
+    restoreGlobals();
+  }
+});
+
+test("ticket mac binds pageBytes and mixRounds", async () => {
+  const restoreGlobals = ensureGlobals();
+  const modulePath = await buildPowModule();
+  const mod = await import(`${pathToFileURL(modulePath).href}?v=${Date.now()}`);
+  let bootstrap;
+  try {
+    bootstrap = await runCcrBootstrap(mod.default.fetch);
+    const { payload, commitCookie, challengeBody, solveOpens } = bootstrap;
+    const opens = await solveOpens(challengeBody.indices, challengeBody.segs);
+
+    payload.c.POW_PAGE_BYTES = 32768;
+    payload.c.POW_MIX_ROUNDS = 4;
+
+    const res = await mod.default.fetch(
+      new Request("https://example.com/__pow/open", {
+        method: "POST",
+        headers: {
+          ...makeInnerHeaders(payload),
+          "Content-Type": "application/json",
+          Cookie: commitCookie,
+        },
+        body: JSON.stringify({
+          sid: challengeBody.sid,
+          cursor: challengeBody.cursor,
+          token: challengeBody.token,
+          opens,
+        }),
+      }),
+      {},
+      {},
+    );
+
+    assert.equal(res.status, 403);
   } finally {
     if (bootstrap) bootstrap.disposeSolver();
     restoreGlobals();
@@ -882,6 +991,7 @@ test("malformed open payload -> 400", async () => {
           Cookie: commitCookie,
         },
         body: JSON.stringify({
+          sid: challengeBody.sid,
           cursor: challengeBody.cursor,
           token: challengeBody.token,
         }),
@@ -908,12 +1018,13 @@ test("split core-2 ccr challenge/open return required fields and terminal state"
     assert.ok(Array.isArray(challengeBody.indices));
     assert.ok(Array.isArray(challengeBody.segs));
     assert.equal(challengeBody.indices.length, challengeBody.segs.length);
+    assert.equal(typeof challengeBody.sid, "string");
     assert.equal(typeof challengeBody.token, "string");
     assert.ok(Number.isInteger(challengeBody.cursor));
 
     let state = challengeBody;
     while (state.done === false) {
-      const opens = await solveOpens(state.indices);
+      const opens = await solveOpens(state.indices, state.segs);
       const openRes = await core2Fetch(
         new Request("https://example.com/__pow/open", {
           method: "POST",
@@ -923,6 +1034,7 @@ test("split core-2 ccr challenge/open return required fields and terminal state"
             Cookie: commitCookie,
           },
           body: JSON.stringify({
+            sid: state.sid,
             cursor: state.cursor,
             token: state.token,
             opens,

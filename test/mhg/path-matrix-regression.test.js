@@ -73,8 +73,11 @@ const buildPowModule = async (secret = CONFIG_SECRET) => {
     businessGateSource,
     templateSource,
     mhgGraphSource,
+    mhgHashSource,
+    mhgConstantsSource,
     mhgMixSource,
     mhgMerkleSource,
+    mhgVerifySource,
   ] = await Promise.all([
     readFile(join(repoRoot, "pow-core-1.js"), "utf8"),
     readFile(join(repoRoot, "pow-core-2.js"), "utf8"),
@@ -85,8 +88,11 @@ const buildPowModule = async (secret = CONFIG_SECRET) => {
     readOptionalFile(join(repoRoot, "lib", "pow", "business-gate.js")),
     readFile(join(repoRoot, "template.html"), "utf8"),
     readFile(join(repoRoot, "lib", "mhg", "graph.js"), "utf8"),
+    readFile(join(repoRoot, "lib", "mhg", "hash.js"), "utf8"),
+    readFile(join(repoRoot, "lib", "mhg", "constants.js"), "utf8"),
     readFile(join(repoRoot, "lib", "mhg", "mix-aes.js"), "utf8"),
     readFile(join(repoRoot, "lib", "mhg", "merkle.js"), "utf8"),
+    readFile(join(repoRoot, "lib", "mhg", "verify.js"), "utf8"),
   ]);
 
   const core1Source = replaceConfigSecret(core1Raw, secret);
@@ -106,8 +112,11 @@ const buildPowModule = async (secret = CONFIG_SECRET) => {
     writeFile(join(tmpDir, "lib", "pow", "inner-auth.js"), innerAuthSource),
     writeFile(join(tmpDir, "lib", "pow", "internal-headers.js"), internalHeadersSource),
     writeFile(join(tmpDir, "lib", "mhg", "graph.js"), mhgGraphSource),
+    writeFile(join(tmpDir, "lib", "mhg", "hash.js"), mhgHashSource),
+    writeFile(join(tmpDir, "lib", "mhg", "constants.js"), mhgConstantsSource),
     writeFile(join(tmpDir, "lib", "mhg", "mix-aes.js"), mhgMixSource),
     writeFile(join(tmpDir, "lib", "mhg", "merkle.js"), mhgMerkleSource),
+    writeFile(join(tmpDir, "lib", "mhg", "verify.js"), mhgVerifySource),
   ];
   if (apiEngineSource !== null) writes.push(writeFile(join(tmpDir, "lib", "pow", "api-engine.js"), apiEngineSource));
   if (businessGateInjected !== null) {
@@ -335,6 +344,8 @@ const makeInnerPayload = ({ powcheck, atomic, turncheck, recaptchaEnabled, provi
     POW_SAMPLE_K: 2,
     POW_OPEN_BATCH: 2,
     POW_HASHCASH_BITS: 0,
+    POW_PAGE_BYTES: 16384,
+    POW_MIX_ROUNDS: 2,
     POW_SEGMENT_LEN: 2,
     POW_COMMIT_TTL_SEC: 120,
     POW_TICKET_TTL_SEC: 180,
@@ -394,6 +405,34 @@ const deriveMhgNonce16 = (nonce) => {
   return crypto.createHash("sha256").update(raw).digest().subarray(0, 16);
 };
 
+const buildEqSet = (index, segmentLen) => {
+  const start = Math.max(1, index - segmentLen + 1);
+  const out = [];
+  for (let i = start; i <= index; i += 1) out.push(i);
+  return out;
+};
+
+const buildOpenEntryFromBundle = ({ bundle, idx, seg }) => {
+  const segmentLen = Math.max(1, Math.floor(Number(seg) || 1));
+  const eqSet = buildEqSet(idx, segmentLen);
+  const need = new Set();
+  for (const j of eqSet) {
+    const parents = bundle.parentByIndex.get(j);
+    need.add(j);
+    need.add(parents.p0);
+    need.add(parents.p1);
+    need.add(parents.p2);
+  }
+  const nodes = {};
+  for (const needIdx of Array.from(need).sort((a, b) => a - b)) {
+    nodes[String(needIdx)] = {
+      pageB64: base64Url(bundle.pages[needIdx]),
+      proof: bundle.buildProof(bundle.tree, needIdx).map((sib) => base64Url(sib)),
+    };
+  }
+  return { i: idx, seg: segmentLen, nodes };
+};
+
 const buildMhgWitnessBundle = async ({ ticketB64, nonce }) => {
   const { parentsOf } = await import("../../lib/mhg/graph.js");
   const { makeGenesisPage, mixPage } = await import("../../lib/mhg/mix-aes.js");
@@ -419,24 +458,7 @@ const buildMhgWitnessBundle = async ({ ticketB64, nonce }) => {
     });
   }
   const tree = await buildMerkle(pages);
-  const witnessByIndex = new Map();
-  for (let i = 1; i <= ticket.L; i += 1) {
-    const parents = parentByIndex.get(i);
-    witnessByIndex.set(i, {
-      i,
-      p0: base64Url(pages[parents.p0]),
-      p1: base64Url(pages[parents.p1]),
-      p2: base64Url(pages[parents.p2]),
-      page: base64Url(pages[i]),
-      proof: {
-        page: buildProof(tree, i).map((sib) => base64Url(sib)),
-        p0: buildProof(tree, parents.p0).map((sib) => base64Url(sib)),
-        p1: buildProof(tree, parents.p1).map((sib) => base64Url(sib)),
-        p2: buildProof(tree, parents.p2).map((sib) => base64Url(sib)),
-      },
-    });
-  }
-  return { rootB64: base64Url(tree.root), witnessByIndex };
+  return { rootB64: base64Url(tree.root), parentByIndex, pages, tree, buildProof };
 };
 
 const PATH_CHECKLIST = [
@@ -659,13 +681,16 @@ const runOnePath = async (mod, spec, failures) => {
       let finalBody = null;
 
       while (state.done === false) {
-        const opens = state.indices.map((idx) => witness.witnessByIndex.get(idx));
+        const opens = state.indices.map((idx, pos) =>
+          buildOpenEntryFromBundle({ bundle: witness, idx, seg: state.segs[pos] ?? 1 })
+        );
         const openBefore = snapshot();
         const openRes = await mod.default.fetch(
           new Request("https://example.com/__pow/open", {
             method: "POST",
             headers: { ...freshHeaders(), "Content-Type": "application/json", Cookie: commitCookie },
             body: JSON.stringify({
+              sid: state.sid,
               cursor: state.cursor,
               token: state.token,
               captchaToken: needTurn || needRecaptcha ? tokenEnvelope : undefined,
@@ -904,7 +929,9 @@ const runSplitLinkedCase = async ({ pathId }) => {
     assert.equal(challengeRes.status, 200);
     let state = await challengeRes.json();
     while (state.done === false) {
-      const opens = state.indices.map((idx) => witness.witnessByIndex.get(idx));
+      const opens = state.indices.map((idx, pos) =>
+        buildOpenEntryFromBundle({ bundle: witness, idx, seg: state.segs[pos] ?? 1 })
+      );
       const openRes = await powHandler(
         new Request("https://example.com/__pow/open", {
           method: "POST",
@@ -914,6 +941,7 @@ const runSplitLinkedCase = async ({ pathId }) => {
             Cookie: commitCookie,
           },
           body: JSON.stringify({
+            sid: state.sid,
             cursor: state.cursor,
             token: state.token,
             captchaToken: captchaEnvelope,
