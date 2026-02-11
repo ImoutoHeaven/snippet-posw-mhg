@@ -107,13 +107,13 @@ Each `CONFIG` entry looks like:
 | `POW_DIFFICULTY_COEFF` | `number` | `1.0` | Difficulty multiplier (steps ≈ `base * coeff`). |
 | `POW_MIN_STEPS` | `number` | `512` | Minimum step count (clamps computed steps). |
 | `POW_MAX_STEPS` | `number` | `8192` | Maximum step count (clamps computed steps). |
-| `POW_HASHCASH_BITS` | `number` | `3` | Extra “root-bound hashcash” check on the last index (0 disables). |
+| `POW_HASHCASH_BITS` | `number` | `0` | Extra “root-bound hashcash” check on the last index (0 disables). |
 | `POW_PAGE_BYTES` | `number` | `16384` | MHG page size in bytes. Values are normalized to a multiple of 16 (minimum 16). |
 | `POW_MIX_ROUNDS` | `number` | `2` | MHG AES mix rounds per page (`1..4`, clamped). |
 | `POW_SEGMENT_LEN` | `string, number` | `2` | Segment length: fixed `N` or range `"min-max"` (each clamped to `1..16`). |
-| `POW_SAMPLE_K` | `number` | `15` | Extra sampled indices per round (total extra ≈ `POW_SAMPLE_K * POW_CHAL_ROUNDS`). |
-| `POW_CHAL_ROUNDS` | `number` | `12` | Challenge rounds (controls how many indices are requested). |
-| `POW_OPEN_BATCH` | `number` | `15` | Indices per `/open` batch (clamped to `1..256`). |
+| `POW_SAMPLE_K` | `number` | `4` | Extra sampled indices per round (total extra ≈ `POW_SAMPLE_K * POW_CHAL_ROUNDS`). |
+| `POW_CHAL_ROUNDS` | `number` | `10` | Challenge rounds (controls how many indices are requested). |
+| `POW_OPEN_BATCH` | `number` | `4` | Indices per `/open` batch (clamped to `1..256`). |
 | `POW_COMMIT_TTL_SEC` | `number` | `120` | TTL for `__Host-pow_commit` (commit cookie). |
 | `POW_TICKET_TTL_SEC` | `number` | `600` | TTL for challenge tickets. |
 | `PROOF_TTL_SEC` | `number` | `600` | TTL for `__Host-proof`. |
@@ -121,16 +121,16 @@ Each `CONFIG` entry looks like:
 | `PROOF_RENEW_MAX` | `number` | `2` | Max renewal count (hard cap; signed). |
 | `PROOF_RENEW_WINDOW_SEC` | `number` | `90` | Only renew when `exp - now <= window`. |
 | `PROOF_RENEW_MIN_SEC` | `number` | `30` | Minimum seconds between renewals. |
-| `POW_BIND_PATH` | `boolean` | `true` | Bind to canonical path hash; when enabled and `bindPathMode` is `query`/`header`, missing/invalid/oversized bindPath returns `400` (fail-closed). |
+| `POW_BIND_PATH` | `boolean` | `false` | Bind to canonical path hash; when enabled and `bindPathMode` is `query`/`header`, missing/invalid/oversized bindPath returns `400` (fail-closed). |
 | `bindPathMode` | `"none", "query", "header"` | `"none"` | How to derive canonical path for binding (proxy-style endpoints). |
 | `bindPathQueryName` | `string` | `"path"` | Query param name when `bindPathMode: "query"`. |
 | `bindPathHeaderName` | `string` | `""` | Header name when `bindPathMode: "header"`. |
 | `stripBindPathHeader` | `boolean` | `false` | If `true` and `bindPathMode: "header"`, delete the header before proxying upstream. |
 | `POW_BIND_IPRANGE` | `boolean` | `true` | Bind to client IP CIDR (uses `CF-Connecting-IP`). |
 | `IPV4_PREFIX` | `number` | `32` | IPv4 CIDR prefix length for IP binding (`0..32`). |
-| `IPV6_PREFIX` | `number` | `64` | IPv6 CIDR prefix length for IP binding (`0..128`). |
-| `POW_BIND_COUNTRY` | `boolean` | `false` | Bind to `request.cf.country`. |
-| `POW_BIND_ASN` | `boolean` | `false` | Bind to `request.cf.asn`. |
+| `IPV6_PREFIX` | `number` | `128` | IPv6 CIDR prefix length for IP binding (`0..128`). |
+| `POW_BIND_COUNTRY` | `boolean` | `true` | Bind to `request.cf.country`. |
+| `POW_BIND_ASN` | `boolean` | `true` | Bind to `request.cf.asn`. |
 | `POW_BIND_TLS` | `boolean` | `true` | Bind to TLS fingerprint derived from `request.cf.tlsClientExtensionsSha1` + `tlsClientCiphersSha1`. |
 | `POW_COMMIT_COOKIE` | `string` | `"__Host-pow_commit"` | Global commit cookie name (fixed default from `pow-config`; per-entry override is ignored). |
 | `INNER_AUTH_QUERY_NAME` | `string` | `""` | Query param name for internal bypass. Requires `INNER_AUTH_QUERY_VALUE`. |
