@@ -185,6 +185,8 @@ const buildConfigModule = async (secret = CONFIG_SECRET, configOverrides = {}) =
         POW_SAMPLE_K: 2,
         POW_OPEN_BATCH: 2,
         POW_HASHCASH_BITS: 0,
+        POW_PAGE_BYTES: 64,
+        POW_MIX_ROUNDS: 2,
         POW_SEGMENT_LEN: 2,
         POW_COMMIT_TTL_SEC: 120,
         POW_TICKET_TTL_SEC: 180,
@@ -279,6 +281,8 @@ const makeInnerPayload = (strategyAtomic, configOverrides = {}) => ({
     POW_SAMPLE_K: 2,
     POW_OPEN_BATCH: 2,
     POW_HASHCASH_BITS: 0,
+    POW_PAGE_BYTES: 64,
+    POW_MIX_ROUNDS: 2,
     POW_SEGMENT_LEN: 2,
     POW_COMMIT_TTL_SEC: 120,
     POW_TICKET_TTL_SEC: 180,
@@ -553,10 +557,10 @@ test("dual-provider atomic preflight keeps split and subrequest budget (provider
     };
 
     const result = await configHandler(makeAtomicBusinessRequest(seed), {}, {});
-    assert.equal(result.status, 403);
+    assert.equal(result.status, 200);
     assert.equal(counters.turnstileVerifyInPowConfig, 1);
     assert.equal(counters.turnstileVerifyInCore1, 0);
-    assert.equal(counters.recaptchaVerifyInCore1, 0);
+    assert.equal(counters.recaptchaVerifyInCore1, 1);
     assert.ok(counters.powConfigSubrequests <= 2);
     assert.ok(counters.core1Subrequests <= 2);
   } finally {

@@ -273,6 +273,20 @@ const hashcashRootLast = async (root, lastPage) => sha256(encoder.encode("hashca
 
 const clampSegmentLen = (value) => Math.max(1, Math.min(16, Math.floor(value)));
 
+const normalizePageBytes = (value, fallback = 64) => {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return fallback;
+  const pageBytes = Math.floor(num);
+  if (pageBytes < 16) return fallback;
+  return Math.floor(pageBytes / 16) * 16;
+};
+
+const normalizeMixRounds = (value, fallback = 2) => {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return fallback;
+  return Math.max(1, Math.min(4, Math.floor(num)));
+};
+
 const buildEqSet = (index, segmentLen) => {
   const start = Math.max(1, index - segmentLen + 1);
   const out = [];
@@ -306,7 +320,7 @@ const toOpenEntry = async ({ idx, seg, pages, levels, graphSeed }) => {
   };
 };
 
-const buildGraphPages = async ({ graphSeed, nonce, pageBytes, pages }) => {
+const buildGraphPages = async ({ graphSeed, nonce, pageBytes, mixRounds = 2, pages }) => {
   const out = new Array(pages);
   out[0] = await makeGenesisPage({ graphSeed, nonce, pageBytes });
   for (let i = 1; i < pages; i += 1) {
@@ -319,6 +333,7 @@ const buildGraphPages = async ({ graphSeed, nonce, pageBytes, pages }) => {
       graphSeed,
       nonce,
       pageBytes,
+      mixRounds,
     });
   }
   return out;
@@ -330,9 +345,10 @@ export const buildCrossEndFixture = async (vector, options = {}) => {
   if (!graphSeed || graphSeed.length !== 16) throw new Error("graphSeedHex invalid");
   if (!nonce || nonce.length !== 16) throw new Error("nonceHex invalid");
   const pageBytes = Number(vector.pageBytes || 64);
+  const mixRounds = Number(vector.mixRounds || 2);
   const pageCount = Number(vector.pages || 128);
   const indices = Array.isArray(vector.indices) ? vector.indices.map((x) => Number(x)) : [];
-  const pages = await buildGraphPages({ graphSeed, nonce, pageBytes, pages: pageCount });
+  const pages = await buildGraphPages({ graphSeed, nonce, pageBytes, mixRounds, pages: pageCount });
   if (typeof options.mutatePages === "function") options.mutatePages(pages);
   const tree = await buildMerkle(pages);
   const segs = Array.isArray(vector.segs) ? vector.segs : [];
@@ -364,7 +380,8 @@ const initWorkerState = (payload) => {
     ticketB64,
     steps: Math.max(1, Math.floor(Number(payload.steps) || 1)),
     hashcashBits: Math.max(0, Math.floor(Number(payload.hashcashBits) || 0)),
-    pageBytes: 64,
+    pageBytes: normalizePageBytes(payload.pageBytes, 64),
+    mixRounds: normalizeMixRounds(payload.mixRounds, 2),
     nonce: "",
     graphSeed: null,
     nonce16: null,
@@ -393,6 +410,7 @@ const computeCommit = async () => {
       graphSeed,
       nonce: nonce16,
       pageBytes: state.pageBytes,
+      mixRounds: state.mixRounds,
       pages: state.steps + 1,
     });
     const tree = await buildMerkle(pages);

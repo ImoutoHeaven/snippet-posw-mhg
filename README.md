@@ -109,7 +109,7 @@ Each `CONFIG` entry looks like:
 | `POW_HASHCASH_BITS` | `number` | `3` | Extra “root-bound hashcash” check on the last index (0 disables). |
 | `POW_PAGE_BYTES` | `number` | `16384` | MHG page size in bytes. Values are normalized to a multiple of 16 (minimum 16). |
 | `POW_MIX_ROUNDS` | `number` | `2` | MHG AES mix rounds per page (`1..4`, clamped). |
-| `POW_SEGMENT_LEN` | `string, number` | `"48-64"` | Segment length: fixed `N` or range `"min-max"` (each clamped to `1..64`). |
+| `POW_SEGMENT_LEN` | `string, number` | `2` | Segment length: fixed `N` or range `"min-max"` (each clamped to `1..16`). |
 | `POW_SAMPLE_K` | `number` | `15` | Extra sampled indices per round (total extra ≈ `POW_SAMPLE_K * POW_CHAL_ROUNDS`). |
 | `POW_CHAL_ROUNDS` | `number` | `12` | Challenge rounds (controls how many indices are requested). |
 | `POW_OPEN_BATCH` | `number` | `15` | Indices per `/open` batch (clamped to `1..256`). |
@@ -387,19 +387,19 @@ Why it exists:
 - Because it is bound to `merkleRoot` and `chain[L]`, it cannot be “pre-stamped” independently of the actual PoSW chain commitment.
 - Increasing `POW_HASHCASH_BITS` increases the expected client work by roughly `~ 2^bits`, because the client must retry with a different nonce (which changes the whole chain commitment) until the condition holds.
 
-## PoSW + Merkle: why sampling works
+## MHG witness closure: why sampling works
 
-- The browser builds a strictly sequential hash chain of length `L` (“PoSW chain”).
-- It commits to the full chain with a Merkle root (`rootB64`).
-- For each sampled index `i`, the browser reveals:
-  - `hPrev = chain[i - segLen]` with its Merkle proof
-  - `hCurr = chain[i]` with its Merkle proof
-  - optional midpoint `hMid` proof for extra constraints (`spinePos`)
-- The snippet verifies:
-  - **in-segment sequential derivation** (`hPrev` → … → `hCurr` in exactly `segLen` steps)
-  - **Merkle membership proofs** for revealed chain values
+- The browser builds memory-hard pages `page[0..L]` and commits to the full set with a Merkle root (`rootB64`).
+- For each sampled index `i`, the browser submits one open entry: `{ i, seg, nodes }`.
+- `nodes` is a closure map keyed by index: each required node carries `{ pageB64, proof }`.
+- Server verification is strict and deterministic:
+  - build equation set `E = { i - seg + 1 .. i }` (boundary-clamped)
+  - expand dependency closure `Need(E) = E ∪ { p0(j), p1(j), p2(j) for j in E }`
+  - verify Merkle membership for every node in `Need(E)`
+  - recompute `mixPage` topologically for each `j in E` and compare with witness pages
+- When `seg=1`, predecessor relation is still enforced (`i-1 -> i`), never “current-node-only”.
 
-This makes “skipping work”, “sparse computation”, or “fabricating opens” a losing bet: the attacker must hope sampled segments never cover their “bad steps / bad intervals”.
+This makes “skipping work”, “sparse computation”, or “fabricating opens” a losing bet: any missing closure node, bad proof, or equation mismatch is rejected.
 
 ## RTT-lock and throughput ceiling
 

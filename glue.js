@@ -1411,6 +1411,8 @@ const runPowFlow = async (
   pathHash,
   hashcashBits,
   segmentLen,
+  pageBytes,
+  mixRounds,
   esmUrlB64,
   captchaToken
 ) => {
@@ -1509,6 +1511,8 @@ const runPowFlow = async (
       steps,
       hashcashBits,
       segmentLen,
+      pageBytes,
+      mixRounds,
       yieldEvery: 1024,
       progressEvery: 1024,
     };
@@ -1667,7 +1671,9 @@ export default async function runPow(
   apiPrefixB64,
   esmUrlB64,
   captchaCfgB64,
-  atomicCfg
+  atomicCfg,
+  pageBytes = 64,
+  mixRounds = 2
 ) {
   try {
     const apiPrefix = normalizeApiPrefix(decodeB64Url(String(apiPrefixB64 || "")));
@@ -1756,6 +1762,8 @@ export default async function runPow(
         pathHash,
         hashcashBits,
         segmentLen,
+        pageBytes,
+        mixRounds,
         esmUrlB64,
         ""
       );
@@ -1772,6 +1780,8 @@ export default async function runPow(
         pathHash,
         hashcashBits,
         segmentLen,
+        pageBytes,
+        mixRounds,
         esmUrlB64,
         captchaToken
       );

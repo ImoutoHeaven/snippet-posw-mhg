@@ -680,7 +680,7 @@ test("pow-config preserves numeric POW_SEGMENT_LEN", async () => {
     const decoded = base64UrlDecode(payload);
     assert.ok(decoded, "payload decodes");
     const parsed = JSON.parse(decoded);
-    assert.equal(parsed.c.POW_SEGMENT_LEN, 32);
+    assert.equal(parsed.c.POW_SEGMENT_LEN, 16);
   } finally {
     globalThis.fetch = originalFetch;
     restoreGlobals();
@@ -932,7 +932,7 @@ test("pow-config normalizes numeric string POW_SEGMENT_LEN for split core", asyn
     const decoded = base64UrlDecode(payload);
     assert.ok(decoded, "payload decodes");
     const parsed = JSON.parse(decoded);
-    assert.equal(parsed.c.POW_SEGMENT_LEN, 32);
+    assert.equal(parsed.c.POW_SEGMENT_LEN, 16);
 
     const { core1 } = await buildCoreModules(secret);
     const powRes = await core1.fetch(
@@ -980,7 +980,7 @@ test("pow-config normalizes range string POW_SEGMENT_LEN for split core", async 
     const decoded = base64UrlDecode(payload);
     assert.ok(decoded, "payload decodes");
     const parsed = JSON.parse(decoded);
-    assert.equal(parsed.c.POW_SEGMENT_LEN, "12-34");
+    assert.equal(parsed.c.POW_SEGMENT_LEN, "12-16");
 
     const { core1 } = await buildCoreModules(secret);
     const powRes = await core1.fetch(

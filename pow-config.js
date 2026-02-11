@@ -19,7 +19,7 @@ const DEFAULTS = {
   POW_HASHCASH_BITS: 3,
   POW_PAGE_BYTES: 16384,
   POW_MIX_ROUNDS: 2,
-  POW_SEGMENT_LEN: "48-64",
+  POW_SEGMENT_LEN: 2,
   POW_SAMPLE_K: 15,
   POW_CHAL_ROUNDS: 12,
   POW_OPEN_BATCH: 15,
@@ -229,17 +229,17 @@ const clampIntRange = (value, min, max) =>
 
 const normalizeSegmentLen = (value, fallback) => {
   if (typeof value === "number" && Number.isFinite(value)) {
-    return clampIntRange(value, 1, 64);
+    return clampIntRange(value, 1, 16);
   }
   if (typeof value === "string") {
     const trimmed = value.trim();
     if (/^\d+$/.test(trimmed)) {
-      return clampIntRange(Number(trimmed), 1, 64);
+      return clampIntRange(Number(trimmed), 1, 16);
     }
     const match = trimmed.match(/^(\d+)\s*-\s*(\d+)$/);
     if (match) {
-      let min = clampIntRange(Number(match[1]), 1, 64);
-      let max = clampIntRange(Number(match[2]), 1, 64);
+      let min = clampIntRange(Number(match[1]), 1, 16);
+      let max = clampIntRange(Number(match[2]), 1, 16);
       if (min > max) {
         [min, max] = [max, min];
       }

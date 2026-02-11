@@ -224,6 +224,8 @@ const makeInnerPayload = ({ atomic = false } = {}) => ({
     POW_SAMPLE_K: 2,
     POW_OPEN_BATCH: 2,
     POW_HASHCASH_BITS: 0,
+    POW_PAGE_BYTES: 64,
+    POW_MIX_ROUNDS: 2,
     POW_SEGMENT_LEN: 2,
     POW_COMMIT_TTL_SEC: 120,
     POW_TICKET_TTL_SEC: 180,

@@ -433,14 +433,13 @@ const buildOpenEntryFromBundle = ({ bundle, idx, seg }) => {
   return { i: idx, seg: segmentLen, nodes };
 };
 
-const buildMhgWitnessBundle = async ({ ticketB64, nonce }) => {
+const buildMhgWitnessBundle = async ({ ticketB64, nonce, pageBytes = 16384, mixRounds = 2 }) => {
   const { parentsOf } = await import("../../lib/mhg/graph.js");
   const { makeGenesisPage, mixPage } = await import("../../lib/mhg/mix-aes.js");
   const { buildMerkle, buildProof } = await import("../../lib/mhg/merkle.js");
   const ticket = parseTicket(ticketB64);
   const graphSeed = deriveMhgGraphSeed(ticketB64, nonce);
   const nonce16 = deriveMhgNonce16(nonce);
-  const pageBytes = 64;
   const pages = new Array(ticket.L + 1);
   pages[0] = await makeGenesisPage({ graphSeed, nonce: nonce16, pageBytes });
   const parentByIndex = new Map();
@@ -455,6 +454,7 @@ const buildMhgWitnessBundle = async ({ ticketB64, nonce }) => {
       graphSeed,
       nonce: nonce16,
       pageBytes,
+      mixRounds,
     });
   }
   const tree = await buildMerkle(pages);
@@ -625,7 +625,12 @@ const runOnePath = async (mod, spec, failures) => {
 
     if (spec.pow) {
       const nonce = base64Url(crypto.randomBytes(16));
-      const witness = await buildMhgWitnessBundle({ ticketB64: args.ticketB64, nonce });
+      const witness = await buildMhgWitnessBundle({
+        ticketB64: args.ticketB64,
+        nonce,
+        pageBytes: payload.c.POW_PAGE_BYTES,
+        mixRounds: payload.c.POW_MIX_ROUNDS,
+      });
 
       const commitBefore = snapshot();
       const commitRes = await mod.default.fetch(
@@ -890,7 +895,12 @@ const runSplitLinkedCase = async ({ pathId }) => {
     assert.ok(args);
 
     const nonce = base64Url(crypto.randomBytes(16));
-    const witness = await buildMhgWitnessBundle({ ticketB64: args.ticketB64, nonce });
+    const witness = await buildMhgWitnessBundle({
+      ticketB64: args.ticketB64,
+      nonce,
+      pageBytes: seedPayload.c.POW_PAGE_BYTES,
+      mixRounds: seedPayload.c.POW_MIX_ROUNDS,
+    });
     const commitRes = await powHandler(
       new Request("https://example.com/__pow/commit", {
         method: "POST",
@@ -1117,7 +1127,12 @@ const runStaleSemantics = async () => {
   );
 
   const nonce = base64Url(crypto.randomBytes(16));
-  const witness = await buildMhgWitnessBundle({ ticketB64: args.ticketB64, nonce });
+  const witness = await buildMhgWitnessBundle({
+    ticketB64: args.ticketB64,
+    nonce,
+    pageBytes: payload.c.POW_PAGE_BYTES,
+    mixRounds: payload.c.POW_MIX_ROUNDS,
+  });
   const commitRes = await mod.default.fetch(
     new Request("https://example.com/__pow/commit", {
       method: "POST",

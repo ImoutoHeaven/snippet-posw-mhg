@@ -487,13 +487,22 @@ const createWorkerRpc = () => {
   };
 };
 
-const createMhgSolver = async ({ ticketB64, steps, hashcashBits, segmentLen }) => {
+const createMhgSolver = async ({
+  ticketB64,
+  steps,
+  hashcashBits,
+  segmentLen,
+  pageBytes,
+  mixRounds,
+}) => {
   const rpc = createWorkerRpc();
   await rpc.call("INIT", {
     ticketB64,
     steps,
     hashcashBits,
     segmentLen,
+    pageBytes,
+    mixRounds,
     bindingString: "unused",
   });
   return rpc;
@@ -551,6 +560,8 @@ const runCcrBootstrap = async (handler) => {
     steps: ticket.L,
     hashcashBits: payload.c.POW_HASHCASH_BITS,
     segmentLen: payload.c.POW_SEGMENT_LEN,
+    pageBytes: payload.c.POW_PAGE_BYTES,
+    mixRounds: payload.c.POW_MIX_ROUNDS,
   });
   const commitResult = await solver.call("COMMIT");
   const commitRes2 = await handler(
@@ -617,6 +628,8 @@ const runCcrBootstrapSplit = async (handler) => {
     steps: ticket.L,
     hashcashBits: payload.c.POW_HASHCASH_BITS,
     segmentLen: payload.c.POW_SEGMENT_LEN,
+    pageBytes: payload.c.POW_PAGE_BYTES,
+    mixRounds: payload.c.POW_MIX_ROUNDS,
   });
   const commitResult = await solver.call("COMMIT");
 

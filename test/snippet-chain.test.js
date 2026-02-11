@@ -91,7 +91,7 @@ const decodeTicket = (ticketB64) => {
 
 const extractChallengeArgs = (html) => {
   const match = html.match(
-    /g\("([^"]+)",\s*(\d+),\s*"([^"]+)",\s*"([^"]+)",\s*\d+,\s*\d+,\s*"([^"]*)",\s*"([^"]*)",\s*"([^"]*)",\s*"([^"]*)",\s*"([^"]*)"\)/u
+    /g\("([^"]+)",\s*(\d+),\s*"([^"]+)",\s*"([^"]+)",\s*\d+,\s*\d+,\s*"([^"]*)",\s*"([^"]*)",\s*"([^"]*)",\s*"([^"]*)",\s*"([^"]*)"(?:,\s*\d+,\s*\d+)?\)/u
   );
   if (!match) return null;
   return {
