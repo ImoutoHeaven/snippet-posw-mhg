@@ -55,16 +55,17 @@ export default {
       return new Response(null, { status: 500 });
     }
 
-    if (inner && transit.apiPrefix !== routingApiPrefix) {
+    if (!inner) {
+      return new Response(null, { status: 500 });
+    }
+
+    if (transit.apiPrefix !== routingApiPrefix) {
       return new Response(null, { status: 500 });
     }
 
     const stripped = stripPowInternalHeaders(request);
 
     if (allowedKind === "api") {
-      if (!inner) {
-        return new Response(null, { status: 500 });
-      }
       const innerCtx = {
         config: inner.c,
         powSecret: inner.c?.POW_TOKEN,

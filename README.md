@@ -13,7 +13,7 @@ This project provides a self-contained L7 front gate that:
 
 - `pow-config.js`: policy frontload layer (rule match + bypass/bindPath/atomic derivation + signed inner snapshot).
 - `pow-core-1.js`: business-path gate execution layer (proof/challenge/atomic/captcha decisions), consumes `inner.s`, and forwards with transit.
-- `pow-core-2.js`: PoW API + verification engine (`/__pow/*` + validated business passthrough), validates transit before processing.
+- `pow-core-2.js`: PoW API + verification engine (`/__pow/*` + validated business passthrough), requires valid transit plus signed inner metadata before processing/forwarding.
 - `glue.js`: browser-side UI + orchestration (loaded by the challenge page).
 - `esm/esm.js`: browser-side PoW solver (`computePoswCommit`).
 - `template.html`: minimal challenge page template injected into the build.
@@ -56,8 +56,9 @@ Notes:
 
 - `pow-config` is the only policy decision point: it computes strategy and strips transient inputs before proxying.
 - `pow-core-1` is business-path execution: it validates signed inner payload, enforces gate decisions, then issues short-lived transit for core-2.
-- `pow-core-2` is execution + API: it validates transit and enforces strict kind routing (`api` vs `biz`) before PoW API/origin handling.
+- `pow-core-2` is execution + API: it requires both valid transit (`X-Pow-Transit*`) and valid signed inner (`X-Pow-Inner*`) metadata for both `api` and `biz` requests before PoW API/origin handling.
 - Transit contract is fail-closed (`X-Pow-Transit`, `X-Pow-Transit-Mac`, `X-Pow-Transit-Expire`) and all internal headers are stripped before origin forwarding.
+- Missing or invalid transit/inner metadata hard-denies with `500` by design, preventing split-hop bypass when proxy/header chains are misconfigured.
 - No-compat policy is strict: no compat, no migrate, no dead code branches.
 
 ## Config Reference

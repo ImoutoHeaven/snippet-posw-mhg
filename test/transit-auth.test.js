@@ -475,8 +475,16 @@ test("core2 accepts valid short-lived transit and strips x-pow-transit* namespac
       kind: "biz",
       method,
       pathname,
-      apiPrefix: "/protected-api",
+      apiPrefix: "/__pow",
     });
+    const innerHeaders = makeInnerHeaders({
+      secret: TEST_SECRET,
+      apiPrefix: "/__pow",
+      bindPath: pathname,
+    });
+    for (const [key, value] of innerHeaders.entries()) {
+      headers.set(key, value);
+    }
     headers.set("X-Pow-Transit-Extra", "spoof");
 
     const res = await core2.fetch(
@@ -486,10 +494,12 @@ test("core2 accepts valid short-lived transit and strips x-pow-transit* namespac
     assert.equal(res.status, 200);
     assert.ok(forwardedRequest, "origin fetch called");
     for (const key of forwardedRequest.headers.keys()) {
+      const lower = key.toLowerCase();
       assert.ok(
-        !key.toLowerCase().startsWith("x-pow-transit"),
+        !lower.startsWith("x-pow-transit"),
         `forwarded transit namespace header: ${key}`
       );
+      assert.ok(!lower.startsWith("x-pow-inner"), `forwarded inner namespace header: ${key}`);
     }
   } finally {
     globalThis.fetch = originalFetch;
@@ -720,6 +730,38 @@ test("core2 fail-closes api transit without signed inner headers", async () => {
   }
 });
 
+test("core2 fail-closes biz transit without signed inner headers", async () => {
+  const restoreGlobals = ensureGlobals();
+  const { core2 } = await buildCoreModules(TEST_SECRET);
+  const originalFetch = globalThis.fetch;
+  let originCalls = 0;
+  try {
+    globalThis.fetch = async () => {
+      originCalls += 1;
+      return new Response(null, { status: 200 });
+    };
+
+    const method = "GET";
+    const pathname = "/protected";
+    const exp = Math.floor(Date.now() / 1000) + 3;
+    const headers = makeTransitHeaders({
+      secret: TEST_SECRET,
+      exp,
+      kind: "biz",
+      method,
+      pathname,
+      apiPrefix: "/__pow",
+    });
+
+    const res = await core2.fetch(new Request(`https://example.com${pathname}`, { method, headers }));
+    assert.equal(res.status, 500);
+    assert.equal(originCalls, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreGlobals();
+  }
+});
+
 test("core2 routes encoded api path through api engine", async () => {
   const restoreGlobals = ensureGlobals();
   const { core2 } = await buildCoreModules(TEST_SECRET);
@@ -826,6 +868,14 @@ test("core2 rejects transit when api prefix header is tampered", async () => {
       pathname,
       apiPrefix: "/altpow",
     });
+    const innerHeaders = makeInnerHeaders({
+      secret: TEST_SECRET,
+      apiPrefix: "/altpow",
+      bindPath: pathname,
+    });
+    for (const [key, value] of innerHeaders.entries()) {
+      headers.set(key, value);
+    }
     headers.set("X-Pow-Transit-Api-Prefix", "/tampered");
 
     const res = await core2.fetch(
