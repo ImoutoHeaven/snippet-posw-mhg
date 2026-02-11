@@ -161,8 +161,11 @@ const buildCoreModules = async (secret) => {
     apiEngineSource,
     businessGateSource,
     mhgGraphSource,
+    mhgHashSource,
     mhgMixSource,
     mhgMerkleSource,
+    mhgVerifySource,
+    mhgConstantsSource,
   ] =
     await Promise.all([
       readFile(join(repoRoot, "pow-core-1.js"), "utf8"),
@@ -173,8 +176,11 @@ const buildCoreModules = async (secret) => {
       readOptionalFile(join(repoRoot, "lib", "pow", "api-engine.js")),
       readOptionalFile(join(repoRoot, "lib", "pow", "business-gate.js")),
       readOptionalFile(join(repoRoot, "lib", "mhg", "graph.js")),
+      readOptionalFile(join(repoRoot, "lib", "mhg", "hash.js")),
       readOptionalFile(join(repoRoot, "lib", "mhg", "mix-aes.js")),
       readOptionalFile(join(repoRoot, "lib", "mhg", "merkle.js")),
+      readOptionalFile(join(repoRoot, "lib", "mhg", "verify.js")),
+      readOptionalFile(join(repoRoot, "lib", "mhg", "constants.js")),
     ]);
 
   const core1Source = replaceConfigSecret(core1SourceRaw, secret);
@@ -198,12 +204,21 @@ const buildCoreModules = async (secret) => {
     ...(mhgGraphSource === null
       ? []
       : [writeFile(join(tmpDir, "lib", "mhg", "graph.js"), mhgGraphSource)]),
+    ...(mhgHashSource === null
+      ? []
+      : [writeFile(join(tmpDir, "lib", "mhg", "hash.js"), mhgHashSource)]),
     ...(mhgMixSource === null
       ? []
       : [writeFile(join(tmpDir, "lib", "mhg", "mix-aes.js"), mhgMixSource)]),
     ...(mhgMerkleSource === null
       ? []
       : [writeFile(join(tmpDir, "lib", "mhg", "merkle.js"), mhgMerkleSource)]),
+    ...(mhgVerifySource === null
+      ? []
+      : [writeFile(join(tmpDir, "lib", "mhg", "verify.js"), mhgVerifySource)]),
+    ...(mhgConstantsSource === null
+      ? []
+      : [writeFile(join(tmpDir, "lib", "mhg", "constants.js"), mhgConstantsSource)]),
   ]);
 
   const nonce = `${Date.now()}-${Math.random()}`;

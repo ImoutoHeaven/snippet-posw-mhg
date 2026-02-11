@@ -61,8 +61,11 @@ const buildPowModule = async (secret = CONFIG_SECRET) => {
     businessGateSource,
     templateSource,
     mhgGraphSource,
+    mhgHashSource,
     mhgMixSource,
     mhgMerkleSource,
+    mhgVerifySource,
+    mhgConstantsSource,
   ] = await Promise.all([
     readFile(join(repoRoot, "pow-core-1.js"), "utf8"),
     readFile(join(repoRoot, "pow-core-2.js"), "utf8"),
@@ -73,8 +76,11 @@ const buildPowModule = async (secret = CONFIG_SECRET) => {
     readOptionalFile(join(repoRoot, "lib", "pow", "business-gate.js")),
     readFile(join(repoRoot, "template.html"), "utf8"),
     readFile(join(repoRoot, "lib", "mhg", "graph.js"), "utf8"),
+    readFile(join(repoRoot, "lib", "mhg", "hash.js"), "utf8"),
     readFile(join(repoRoot, "lib", "mhg", "mix-aes.js"), "utf8"),
     readFile(join(repoRoot, "lib", "mhg", "merkle.js"), "utf8"),
+    readFile(join(repoRoot, "lib", "mhg", "verify.js"), "utf8"),
+    readFile(join(repoRoot, "lib", "mhg", "constants.js"), "utf8"),
   ]);
 
   const core1Source = replaceConfigSecret(core1Raw, secret);
@@ -94,8 +100,11 @@ const buildPowModule = async (secret = CONFIG_SECRET) => {
     writeFile(join(tmpDir, "lib", "pow", "inner-auth.js"), innerAuthSource),
     writeFile(join(tmpDir, "lib", "pow", "internal-headers.js"), internalHeadersSource),
     writeFile(join(tmpDir, "lib", "mhg", "graph.js"), mhgGraphSource),
+    writeFile(join(tmpDir, "lib", "mhg", "hash.js"), mhgHashSource),
     writeFile(join(tmpDir, "lib", "mhg", "mix-aes.js"), mhgMixSource),
     writeFile(join(tmpDir, "lib", "mhg", "merkle.js"), mhgMerkleSource),
+    writeFile(join(tmpDir, "lib", "mhg", "verify.js"), mhgVerifySource),
+    writeFile(join(tmpDir, "lib", "mhg", "constants.js"), mhgConstantsSource),
   ];
   if (apiEngineSource !== null) writes.push(writeFile(join(tmpDir, "lib", "pow", "api-engine.js"), apiEngineSource));
   if (businessGateInjected !== null) {
@@ -181,6 +190,8 @@ const makeInnerPayload = ({ powcheck, atomic, recaptchaEnabled, providers = "" }
     POW_SAMPLE_K: 2,
     POW_OPEN_BATCH: 2,
     POW_HASHCASH_BITS: 0,
+    POW_PAGE_BYTES: 16384,
+    POW_MIX_ROUNDS: 2,
     POW_SEGMENT_LEN: 2,
     POW_COMMIT_TTL_SEC: 120,
     POW_TICKET_TTL_SEC: 180,
@@ -291,8 +302,11 @@ const buildCore2Module = async (secret = CONFIG_SECRET) => {
     internalHeadersSource,
     apiEngineSource,
     mhgGraphSource,
+    mhgHashSource,
     mhgMixSource,
     mhgMerkleSource,
+    mhgVerifySource,
+    mhgConstantsSource,
   ] =
     await Promise.all([
       readFile(join(repoRoot, "pow-core-2.js"), "utf8"),
@@ -301,8 +315,11 @@ const buildCore2Module = async (secret = CONFIG_SECRET) => {
       readFile(join(repoRoot, "lib", "pow", "internal-headers.js"), "utf8"),
       readOptionalFile(join(repoRoot, "lib", "pow", "api-engine.js")),
       readFile(join(repoRoot, "lib", "mhg", "graph.js"), "utf8"),
+      readFile(join(repoRoot, "lib", "mhg", "hash.js"), "utf8"),
       readFile(join(repoRoot, "lib", "mhg", "mix-aes.js"), "utf8"),
       readFile(join(repoRoot, "lib", "mhg", "merkle.js"), "utf8"),
+      readFile(join(repoRoot, "lib", "mhg", "verify.js"), "utf8"),
+      readFile(join(repoRoot, "lib", "mhg", "constants.js"), "utf8"),
     ]);
 
   const core2Source = replaceConfigSecret(core2SourceRaw, secret);
@@ -315,8 +332,11 @@ const buildCore2Module = async (secret = CONFIG_SECRET) => {
     writeFile(join(tmpDir, "lib", "pow", "inner-auth.js"), innerAuthSource),
     writeFile(join(tmpDir, "lib", "pow", "internal-headers.js"), internalHeadersSource),
     writeFile(join(tmpDir, "lib", "mhg", "graph.js"), mhgGraphSource),
+    writeFile(join(tmpDir, "lib", "mhg", "hash.js"), mhgHashSource),
     writeFile(join(tmpDir, "lib", "mhg", "mix-aes.js"), mhgMixSource),
     writeFile(join(tmpDir, "lib", "mhg", "merkle.js"), mhgMerkleSource),
+    writeFile(join(tmpDir, "lib", "mhg", "verify.js"), mhgVerifySource),
+    writeFile(join(tmpDir, "lib", "mhg", "constants.js"), mhgConstantsSource),
   ];
   if (apiEngineSource !== null) {
     writes.push(writeFile(join(tmpDir, "lib", "pow", "api-engine.js"), apiEngineSource));
@@ -370,9 +390,19 @@ const withSplitApiHeaders = ({ payload, method, pathname }) => ({
 const sha256Base64Url = (value) =>
   base64Url(crypto.createHash("sha256").update(String(value || "")).digest());
 
-const makePowBindingString = (ticket, hostname, pathHash, ipScope, country, asn, tlsFingerprint) => {
+const makePowBindingString = (
+  ticket,
+  hostname,
+  pathHash,
+  ipScope,
+  country,
+  asn,
+  tlsFingerprint,
+  pageBytes,
+  mixRounds,
+) => {
   const host = typeof hostname === "string" ? hostname.toLowerCase() : "";
-  return `${ticket.v}|${ticket.e}|${ticket.L}|${ticket.r}|${ticket.cfgId}|${host}|${pathHash}|${ipScope}|${country}|${asn}|${tlsFingerprint}`;
+  return `${ticket.v}|${ticket.e}|${ticket.L}|${ticket.r}|${ticket.cfgId}|${host}|${pathHash}|${ipScope}|${country}|${asn}|${tlsFingerprint}|${pageBytes}|${mixRounds}`;
 };
 
 const resolveBindingValues = (payload, pathHash) => ({
@@ -393,6 +423,8 @@ const makeTicketB64 = ({ powSecret, payload, pathHash, host = "example.com" }) =
     mac: "",
   };
   const binding = resolveBindingValues(payload, pathHash);
+  const pageBytes = Math.max(1, Math.floor(Number(payload.c.POW_PAGE_BYTES) || 0));
+  const mixRounds = Math.max(1, Math.floor(Number(payload.c.POW_MIX_ROUNDS) || 0));
   const bindingString = makePowBindingString(
     ticket,
     host,
@@ -401,6 +433,8 @@ const makeTicketB64 = ({ powSecret, payload, pathHash, host = "example.com" }) =
     binding.country,
     binding.asn,
     binding.tlsFingerprint,
+    pageBytes,
+    mixRounds,
   );
   ticket.mac = base64Url(crypto.createHmac("sha256", powSecret).update(bindingString).digest());
   return base64Url(

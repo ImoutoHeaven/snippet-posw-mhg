@@ -155,8 +155,11 @@ const buildCore2Module = async (secret = TEST_SECRET) => {
     internalHeadersSource,
     apiEngineSource,
     mhgGraphSource,
+    mhgHashSource,
     mhgMixSource,
     mhgMerkleSource,
+    mhgVerifySource,
+    mhgConstantsSource,
   ] = await Promise.all([
     readFile(join(repoRoot, "pow-core-2.js"), "utf8"),
     readFile(join(repoRoot, "lib", "pow", "transit-auth.js"), "utf8"),
@@ -164,8 +167,11 @@ const buildCore2Module = async (secret = TEST_SECRET) => {
     readFile(join(repoRoot, "lib", "pow", "internal-headers.js"), "utf8"),
     readFile(join(repoRoot, "lib", "pow", "api-engine.js"), "utf8"),
     readFile(join(repoRoot, "lib", "mhg", "graph.js"), "utf8"),
+    readFile(join(repoRoot, "lib", "mhg", "hash.js"), "utf8"),
     readFile(join(repoRoot, "lib", "mhg", "mix-aes.js"), "utf8"),
     readFile(join(repoRoot, "lib", "mhg", "merkle.js"), "utf8"),
+    readFile(join(repoRoot, "lib", "mhg", "verify.js"), "utf8"),
+    readFile(join(repoRoot, "lib", "mhg", "constants.js"), "utf8"),
   ]);
 
   const core2Source = replaceConfigSecret(core2SourceRaw, secret);
@@ -179,8 +185,11 @@ const buildCore2Module = async (secret = TEST_SECRET) => {
     writeFile(join(tmpDir, "lib", "pow", "internal-headers.js"), internalHeadersSource),
     writeFile(join(tmpDir, "lib", "pow", "api-engine.js"), apiEngineSource),
     writeFile(join(tmpDir, "lib", "mhg", "graph.js"), mhgGraphSource),
+    writeFile(join(tmpDir, "lib", "mhg", "hash.js"), mhgHashSource),
     writeFile(join(tmpDir, "lib", "mhg", "mix-aes.js"), mhgMixSource),
     writeFile(join(tmpDir, "lib", "mhg", "merkle.js"), mhgMerkleSource),
+    writeFile(join(tmpDir, "lib", "mhg", "verify.js"), mhgVerifySource),
+    writeFile(join(tmpDir, "lib", "mhg", "constants.js"), mhgConstantsSource),
   ]);
 
   const moduleUrl = `${pathToFileURL(join(tmpDir, "pow-core-2.js")).href}?v=${Date.now()}`;

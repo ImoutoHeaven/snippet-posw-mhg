@@ -119,8 +119,11 @@ const buildCoreModules = async (secret = CONFIG_SECRET) => {
     businessGateSource,
     templateSource,
     mhgGraphSource,
+    mhgHashSource,
     mhgMixSource,
     mhgMerkleSource,
+    mhgVerifySource,
+    mhgConstantsSource,
   ] = await Promise.all([
     readFile(join(repoRoot, "pow-core-1.js"), "utf8"),
     readFile(join(repoRoot, "pow-core-2.js"), "utf8"),
@@ -131,8 +134,11 @@ const buildCoreModules = async (secret = CONFIG_SECRET) => {
     readOptionalFile(join(repoRoot, "lib", "pow", "business-gate.js")),
     readFile(join(repoRoot, "template.html"), "utf8"),
     readFile(join(repoRoot, "lib", "mhg", "graph.js"), "utf8"),
+    readFile(join(repoRoot, "lib", "mhg", "hash.js"), "utf8"),
     readFile(join(repoRoot, "lib", "mhg", "mix-aes.js"), "utf8"),
     readFile(join(repoRoot, "lib", "mhg", "merkle.js"), "utf8"),
+    readFile(join(repoRoot, "lib", "mhg", "verify.js"), "utf8"),
+    readFile(join(repoRoot, "lib", "mhg", "constants.js"), "utf8"),
   ]);
 
   const core1Source = replaceConfigSecret(core1SourceRaw, secret);
@@ -145,8 +151,11 @@ const buildCoreModules = async (secret = CONFIG_SECRET) => {
     writeFile(join(tmpDir, "pow-core-2.js"), core2Source),
     writeFile(join(tmpDir, "lib", "pow", "transit-auth.js"), transitSource),
     writeFile(join(tmpDir, "lib", "mhg", "graph.js"), mhgGraphSource),
+    writeFile(join(tmpDir, "lib", "mhg", "hash.js"), mhgHashSource),
     writeFile(join(tmpDir, "lib", "mhg", "mix-aes.js"), mhgMixSource),
     writeFile(join(tmpDir, "lib", "mhg", "merkle.js"), mhgMerkleSource),
+    writeFile(join(tmpDir, "lib", "mhg", "verify.js"), mhgVerifySource),
+    writeFile(join(tmpDir, "lib", "mhg", "constants.js"), mhgConstantsSource),
   ];
   if (innerAuthSource !== null) {
     writes.push(writeFile(join(tmpDir, "lib", "pow", "inner-auth.js"), innerAuthSource));
@@ -306,23 +315,31 @@ const buildMhgWitnessBundle = async ({ ticketB64, nonce }) => {
   }
   const tree = await buildMerkle(pages);
   const witnessByIndex = new Map();
-  for (let i = 1; i <= ticket.L; i += 1) {
-    const parents = parentByIndex.get(i);
+  for (let i = 0; i <= ticket.L; i += 1) {
     witnessByIndex.set(i, {
-      i,
-      p0: base64Url(pages[parents.p0]),
-      p1: base64Url(pages[parents.p1]),
-      p2: base64Url(pages[parents.p2]),
-      page: base64Url(pages[i]),
-      proof: {
-        page: buildProof(tree, i).map((sib) => base64Url(sib)),
-        p0: buildProof(tree, parents.p0).map((sib) => base64Url(sib)),
-        p1: buildProof(tree, parents.p1).map((sib) => base64Url(sib)),
-        p2: buildProof(tree, parents.p2).map((sib) => base64Url(sib)),
-      },
+      pageB64: base64Url(pages[i]),
+      proof: buildProof(tree, i).map((sib) => base64Url(sib)),
     });
   }
-  return { rootB64: base64Url(tree.root), witnessByIndex };
+
+  const makeOpenEntry = (index, seg) => {
+    const start = Math.max(1, index - seg + 1);
+    const needed = new Set();
+    for (let i = start; i <= index; i += 1) {
+      const parents = parentByIndex.get(i);
+      needed.add(i);
+      needed.add(parents.p0);
+      needed.add(parents.p1);
+      needed.add(parents.p2);
+    }
+    const nodes = {};
+    for (const needIdx of needed) {
+      nodes[needIdx] = witnessByIndex.get(needIdx);
+    }
+    return { i: index, seg, nodes };
+  };
+
+  return { rootB64: base64Url(tree.root), makeOpenEntry };
 };
 
 const runInnerFailClosedCases = async (handler) => {
@@ -408,13 +425,14 @@ const runForbiddenVerifyPointCases = async (handler) => {
     let nonFinalOpenSiteverifyCalls = 0;
     let atomicFinalOpenSiteverifyCalls = 0;
     while (state.done === false) {
-      const opens = state.indices.map((idx) => witness.witnessByIndex.get(idx));
+      const opens = state.indices.map((idx, pos) => witness.makeOpenEntry(idx, state.segs[pos]));
       const before = siteverifyCalls;
       const openRes = await handler(
         new Request("https://example.com/__pow/open", {
           method: "POST",
           headers: { ...headers, "Content-Type": "application/json", Cookie: commitCookie },
           body: JSON.stringify({
+            sid: state.sid,
             cursor: state.cursor,
             token: state.token,
             captchaToken: tokenEnvelope,

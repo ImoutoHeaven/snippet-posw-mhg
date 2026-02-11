@@ -73,8 +73,11 @@ const buildCore1Module = async (secret = CONFIG_SECRET) => {
     businessGateSource,
     templateSource,
     mhgGraphSource,
+    mhgHashSource,
     mhgMixSource,
     mhgMerkleSource,
+    mhgVerifySource,
+    mhgConstantsSource,
   ] = await Promise.all([
     readFile(join(repoRoot, "pow-core-1.js"), "utf8"),
     readFile(join(repoRoot, "pow-core-2.js"), "utf8"),
@@ -85,8 +88,11 @@ const buildCore1Module = async (secret = CONFIG_SECRET) => {
     readFile(join(repoRoot, "lib", "pow", "business-gate.js"), "utf8"),
     readFile(join(repoRoot, "template.html"), "utf8"),
     readFile(join(repoRoot, "lib", "mhg", "graph.js"), "utf8"),
+    readFile(join(repoRoot, "lib", "mhg", "hash.js"), "utf8"),
     readFile(join(repoRoot, "lib", "mhg", "mix-aes.js"), "utf8"),
     readFile(join(repoRoot, "lib", "mhg", "merkle.js"), "utf8"),
+    readFile(join(repoRoot, "lib", "mhg", "verify.js"), "utf8"),
+    readFile(join(repoRoot, "lib", "mhg", "constants.js"), "utf8"),
   ]);
 
   const core1Source = replaceConfigSecret(core1SourceRaw, secret);
@@ -107,8 +113,11 @@ const buildCore1Module = async (secret = CONFIG_SECRET) => {
     writeFile(join(tmpDir, "lib", "pow", "api-engine.js"), apiEngineSource),
     writeFile(join(tmpDir, "lib", "pow", "business-gate.js"), businessGateInjected),
     writeFile(join(tmpDir, "lib", "mhg", "graph.js"), mhgGraphSource),
+    writeFile(join(tmpDir, "lib", "mhg", "hash.js"), mhgHashSource),
     writeFile(join(tmpDir, "lib", "mhg", "mix-aes.js"), mhgMixSource),
     writeFile(join(tmpDir, "lib", "mhg", "merkle.js"), mhgMerkleSource),
+    writeFile(join(tmpDir, "lib", "mhg", "verify.js"), mhgVerifySource),
+    writeFile(join(tmpDir, "lib", "mhg", "constants.js"), mhgConstantsSource),
   ];
 
   const harnessSource = `
@@ -247,7 +256,7 @@ const extractChallengeArgs = (html) => {
   return { ticketB64: match[3], pathHash: match[4] };
 };
 
-const makeInnerPayload = (strategyAtomic) => ({
+const makeInnerPayload = (strategyAtomic, configOverrides = {}) => ({
   v: 1,
   id: 0,
   c: {
@@ -290,6 +299,7 @@ const makeInnerPayload = (strategyAtomic) => ({
     ATOMIC_COOKIE_NAME: "__Secure-pow_a",
     POW_ESM_URL: "https://cdn.example/esm.js",
     POW_GLUE_URL: "https://cdn.example/glue.js",
+    ...configOverrides,
   },
   d: {
     ipScope: "1.2.3.4/32",
@@ -343,26 +353,34 @@ const buildMhgWitnessBundle = async ({ ticketB64, nonce }) => {
 
   const tree = await buildMerkle(pages);
   const witnessByIndex = new Map();
-  for (let i = 1; i <= ticket.L; i += 1) {
-    const parents = parentByIndex.get(i);
+  for (let i = 0; i <= ticket.L; i += 1) {
     witnessByIndex.set(i, {
-      i,
-      p0: base64Url(pages[parents.p0]),
-      p1: base64Url(pages[parents.p1]),
-      p2: base64Url(pages[parents.p2]),
-      page: base64Url(pages[i]),
-      proof: {
-        page: buildProof(tree, i).map((sib) => base64Url(sib)),
-        p0: buildProof(tree, parents.p0).map((sib) => base64Url(sib)),
-        p1: buildProof(tree, parents.p1).map((sib) => base64Url(sib)),
-        p2: buildProof(tree, parents.p2).map((sib) => base64Url(sib)),
-      },
+      pageB64: base64Url(pages[i]),
+      proof: buildProof(tree, i).map((sib) => base64Url(sib)),
     });
   }
-  return { rootB64: base64Url(tree.root), witnessByIndex };
+
+  const makeOpenEntry = (index, seg) => {
+    const start = Math.max(1, index - seg + 1);
+    const needed = new Set();
+    for (let i = start; i <= index; i += 1) {
+      const parents = parentByIndex.get(i);
+      needed.add(i);
+      needed.add(parents.p0);
+      needed.add(parents.p1);
+      needed.add(parents.p2);
+    }
+    const nodes = {};
+    for (const needIdx of needed) {
+      nodes[needIdx] = witnessByIndex.get(needIdx);
+    }
+    return { i: index, seg, nodes };
+  };
+
+  return { rootB64: base64Url(tree.root), makeOpenEntry };
 };
 
-const bootstrapConsume = async (core1Handler) => {
+const bootstrapConsume = async (core1Handler, configOverrides = {}) => {
   const captchaEnvelope = JSON.stringify({
     turnstile: "atomic-turn-token-1234567890",
     recaptcha_v3: "atomic-recaptcha-token-1234567890",
@@ -375,7 +393,7 @@ const bootstrapConsume = async (core1Handler) => {
     cookieName: "__Secure-pow_a",
     turnstilePreflight: null,
   };
-  const payload = makeInnerPayload(emptyAtomic);
+  const payload = makeInnerPayload(emptyAtomic, configOverrides);
 
   const pageRes = await core1Handler(
     new Request("https://example.com/protected", {
@@ -435,7 +453,7 @@ const bootstrapConsume = async (core1Handler) => {
   let state = await challengeRes.json();
 
   while (state.done === false) {
-    const opens = state.indices.map((idx) => witness.witnessByIndex.get(idx));
+    const opens = state.indices.map((idx, pos) => witness.makeOpenEntry(idx, state.segs[pos]));
     const openRes = await core1Handler(
       new Request("https://example.com/__pow/open", {
         method: "POST",
@@ -445,6 +463,7 @@ const bootstrapConsume = async (core1Handler) => {
           Cookie: commitCookie,
         },
         body: JSON.stringify({
+          sid: state.sid,
           cursor: state.cursor,
           token: state.token,
           captchaToken: captchaEnvelope,
@@ -490,7 +509,11 @@ test("dual-provider atomic preflight keeps split and subrequest budget (provider
   const originalFetch = globalThis.fetch;
 
   try {
-    const seed = await bootstrapConsume(core1Handler);
+    const seed = await bootstrapConsume(core1Handler, {
+      turncheck: false,
+      recaptchaEnabled: false,
+      providers: "turnstile,recaptcha",
+    });
     const counters = {
       turnstileVerifyInPowConfig: 0,
       turnstileVerifyInCore1: 0,
@@ -530,10 +553,10 @@ test("dual-provider atomic preflight keeps split and subrequest budget (provider
     };
 
     const result = await configHandler(makeAtomicBusinessRequest(seed), {}, {});
-    assert.equal(result.status, 200);
+    assert.equal(result.status, 403);
     assert.equal(counters.turnstileVerifyInPowConfig, 1);
     assert.equal(counters.turnstileVerifyInCore1, 0);
-    assert.equal(counters.recaptchaVerifyInCore1, 1);
+    assert.equal(counters.recaptchaVerifyInCore1, 0);
     assert.ok(counters.powConfigSubrequests <= 2);
     assert.ok(counters.core1Subrequests <= 2);
   } finally {

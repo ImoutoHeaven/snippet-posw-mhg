@@ -31,8 +31,11 @@ const buildSplitCoreHarnessModule = async (secret = "config-secret") => {
     businessGateSource,
     templateSource,
     mhgGraphSource,
+    mhgHashSource,
     mhgMixSource,
     mhgMerkleSource,
+    mhgVerifySource,
+    mhgConstantsSource,
   ] = await Promise.all([
     readFile(join(repoRoot, "pow-core-1.js"), "utf8"),
     readFile(join(repoRoot, "pow-core-2.js"), "utf8"),
@@ -43,8 +46,11 @@ const buildSplitCoreHarnessModule = async (secret = "config-secret") => {
     readOptionalFile(join(repoRoot, "lib", "pow", "business-gate.js")),
     readOptionalFile(join(repoRoot, "template.html")),
     readFile(join(repoRoot, "lib", "mhg", "graph.js"), "utf8"),
+    readFile(join(repoRoot, "lib", "mhg", "hash.js"), "utf8"),
     readFile(join(repoRoot, "lib", "mhg", "mix-aes.js"), "utf8"),
     readFile(join(repoRoot, "lib", "mhg", "merkle.js"), "utf8"),
+    readFile(join(repoRoot, "lib", "mhg", "verify.js"), "utf8"),
+    readFile(join(repoRoot, "lib", "mhg", "constants.js"), "utf8"),
   ]);
 
   const core1Source = replaceConfigSecret(core1SourceRaw, secret);
@@ -58,8 +64,11 @@ const buildSplitCoreHarnessModule = async (secret = "config-secret") => {
     writeFile(join(tmpDir, "pow-core-2.js"), core2Source),
     writeFile(join(tmpDir, "lib", "pow", "transit-auth.js"), transitSource),
     writeFile(join(tmpDir, "lib", "mhg", "graph.js"), mhgGraphSource),
+    writeFile(join(tmpDir, "lib", "mhg", "hash.js"), mhgHashSource),
     writeFile(join(tmpDir, "lib", "mhg", "mix-aes.js"), mhgMixSource),
     writeFile(join(tmpDir, "lib", "mhg", "merkle.js"), mhgMerkleSource),
+    writeFile(join(tmpDir, "lib", "mhg", "verify.js"), mhgVerifySource),
+    writeFile(join(tmpDir, "lib", "mhg", "constants.js"), mhgConstantsSource),
   ];
   if (innerAuthSource !== null) {
     writes.push(writeFile(join(tmpDir, "lib", "pow", "inner-auth.js"), innerAuthSource));
