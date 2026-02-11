@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { webcrypto } from "node:crypto";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { join } from "node:path";
+import { buildCrossEndFixture } from "../../esm/mhg-worker.js";
 
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 const encoder = new TextEncoder();
@@ -22,6 +23,7 @@ const digest = async (...chunks) => {
 const runWorkerCommit = async ({
   ticketB64 = "dGVzdC10aWNrZXQ",
   steps = 8,
+  mixRounds = 2,
   hashcashBits = 0,
   progressEvery = 1,
   beforeImport,
@@ -80,7 +82,7 @@ const runWorkerCommit = async ({
     });
 
   try {
-    await call("INIT", { ticketB64, steps, hashcashBits, progressEvery });
+    await call("INIT", { ticketB64, steps, mixRounds, hashcashBits, progressEvery });
     const commit = await call("COMMIT");
     return { progress, commit };
   } finally {
@@ -154,4 +156,65 @@ test("mhg worker uses injected wasm hasher when available", async () => {
   assert.equal(typeof commit.nonce, "string");
   assert.equal(commit.nonce.length > 0, true);
   assert.equal(encoder.encode(commit.nonce).length > 0, true);
+});
+
+test("worker derives PA/PB once per page index", async () => {
+  let paCalls = 0;
+  let pbCalls = 0;
+  const decoder = new TextDecoder();
+
+  await runWorkerCommit({
+    steps: 4,
+    mixRounds: 4,
+    hashcashBits: 0,
+    progressEvery: 1,
+    beforeImport() {
+      globalThis.__MHG_HASH_WASM_FACTORY__ = async () => {
+        let buffer = new Uint8Array(0);
+        return {
+          init() {
+            buffer = new Uint8Array(0);
+          },
+          update(input) {
+            buffer = new Uint8Array(input);
+          },
+          async digest() {
+            const head = decoder.decode(buffer.subarray(0, 7));
+            if (head === "MHG1-PA") paCalls += 1;
+            if (head === "MHG1-PB") pbCalls += 1;
+            return new Uint8Array(await webcrypto.subtle.digest("SHA-256", buffer));
+          },
+        };
+      };
+    },
+  });
+
+  assert.equal(paCalls, 4);
+  assert.equal(pbCalls, 4);
+});
+
+test("worker makeGenesisPage keeps subarray view semantics", async () => {
+  const pageBytes = 64;
+  let genesisPage = null;
+
+  await buildCrossEndFixture(
+    {
+      graphSeedHex: "000102030405060708090a0b0c0d0e0f",
+      nonceHex: "0f0e0d0c0b0a09080706050403020100",
+      pageBytes,
+      mixRounds: 2,
+      pages: 4,
+      indices: [],
+      segs: [],
+    },
+    {
+      mutatePages(pages) {
+        genesisPage = pages[0];
+      },
+    },
+  );
+
+  assert.ok(genesisPage instanceof Uint8Array);
+  assert.equal(genesisPage.length, pageBytes);
+  assert.equal(genesisPage.buffer.byteLength > genesisPage.length, true);
 });

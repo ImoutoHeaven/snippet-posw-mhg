@@ -388,6 +388,13 @@ Why it exists:
 - Because it is bound to `merkleRoot` and `chain[L]`, it cannot be “pre-stamped” independently of the actual PoSW chain commitment.
 - Increasing `POW_HASHCASH_BITS` increases the expected client work by roughly `~ 2^bits`, because the client must retry with a different nonce (which changes the whole chain commitment) until the condition holds.
 
+### MHG mix hot-path optimizations
+
+This is implementation-level optimization work and does not change protocol semantics or cryptographic equations.
+
+- During `mixPage`, both server (`lib/mhg/mix-aes.js`) and worker (`esm/mhg-worker.js`) derive per-index PA/PB once and reuse across mix rounds.
+- AES-CBC trim uses `subarray(0, pageBytes)` view-based slicing instead of copy-based trim to reduce transient buffer copy overhead.
+
 ## MHG witness closure: why sampling works
 
 - The browser builds memory-hard pages `page[0..L]` and commits to the full set with a Merkle root (`rootB64`).

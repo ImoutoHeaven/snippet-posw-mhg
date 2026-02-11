@@ -110,6 +110,38 @@ test("mixPage supports configurable rounds and differs from one-round mode", asy
   assert.notDeepEqual(Buffer.from(oneRound), Buffer.from(twoRounds));
 });
 
+test("mixPage derives PA/PB once per page index", async () => {
+  const subtleDigest = globalThis.crypto.subtle.digest;
+  const origDigest = subtleDigest.bind(globalThis.crypto.subtle);
+  let paCalls = 0;
+  let pbCalls = 0;
+
+  globalThis.crypto.subtle.digest = async (algo, data) => {
+    const bytes = new Uint8Array(data);
+    const head = new TextDecoder().decode(bytes.subarray(0, 7));
+    if (head === "MHG1-PA") paCalls += 1;
+    if (head === "MHG1-PB") pbCalls += 1;
+    return origDigest(algo, data);
+  };
+
+  try {
+    const { mixPage } = await import("../../lib/mhg/mix-aes.js");
+    const graphSeed = Uint8Array.from({ length: 16 }, (_, i) => i + 5);
+    const nonce = Uint8Array.from({ length: 16 }, (_, i) => 31 - i);
+    const pageBytes = 64;
+    const p0 = Uint8Array.from({ length: pageBytes }, (_, i) => i ^ 0x23);
+    const p1 = Uint8Array.from({ length: pageBytes }, (_, i) => (i * 5) & 0xff);
+    const p2 = Uint8Array.from({ length: pageBytes }, (_, i) => (255 - i * 3) & 0xff);
+
+    await mixPage({ i: 7, p0, p1, p2, graphSeed, nonce, pageBytes, mixRounds: 4 });
+  } finally {
+    globalThis.crypto.subtle.digest = subtleDigest;
+  }
+
+  assert.equal(paCalls, 1);
+  assert.equal(pbCalls, 1);
+});
+
 test("createMixContext imports key once and reuses it across rounds", async () => {
   const { createMixContext, mixPage } = await import("../../lib/mhg/mix-aes.js");
 
@@ -128,4 +160,16 @@ test("createMixContext imports key once and reuses it across rounds", async () =
   assert.ok(ctx.key, "context should cache imported key");
   assert.strictEqual(ctx.key, keyRef);
   assert.deepEqual(Buffer.from(first), Buffer.from(second));
+});
+
+test("makeGenesisPage returns a view over padded AES output", async () => {
+  const { makeGenesisPage } = await import("../../lib/mhg/mix-aes.js");
+  const graphSeed = Uint8Array.from({ length: 16 }, (_, i) => i + 2);
+  const nonce = Uint8Array.from({ length: 16 }, (_, i) => 20 - i);
+  const pageBytes = 64;
+
+  const out = await makeGenesisPage({ graphSeed, nonce, pageBytes });
+
+  assert.equal(out.length, pageBytes);
+  assert.equal(out.buffer.byteLength > out.length, true);
 });

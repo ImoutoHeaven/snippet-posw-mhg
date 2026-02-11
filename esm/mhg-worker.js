@@ -206,7 +206,7 @@ const rotlBytes = (buf, k) => {
 
 const aesCbcNoPadding = async ({ key, iv, input, pageBytes }) => {
   const encrypted = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-CBC", iv }, key, input));
-  return encrypted.slice(0, pageBytes);
+  return encrypted.subarray(0, pageBytes);
 };
 
 const makeGenesisPage = async ({ graphSeed, nonce, pageBytes }) => {
@@ -217,18 +217,17 @@ const makeGenesisPage = async ({ graphSeed, nonce, pageBytes }) => {
 
 const mixPage = async ({ i, p0, p1, p2, graphSeed, nonce, pageBytes, mixRounds = 2 }) => {
   const key = await getImportedKey({ graphSeed, nonce });
+  const pa = await sha256(encoder.encode("MHG1-PA"), graphSeed, nonce, u32be(i));
+  const pb = await sha256(encoder.encode("MHG1-PB"), graphSeed, nonce, u32be(i));
+  const off1 = readU32be(pa, 0) % pageBytes;
+  const off2 = readU32be(pa, 4) % pageBytes;
+  const off3 = readU32be(pa, 8) % pageBytes;
+  const off4 = readU32be(pa, 12) % pageBytes;
+  const off5 = readU32be(pa, 16) % pageBytes;
+  const iv1 = pb.slice(0, 16);
+  const iv2 = pb.slice(16, 32);
   let state = p0;
   for (let round = 0; round < mixRounds; round += 1) {
-    const pa = await sha256(encoder.encode("MHG1-PA"), graphSeed, nonce, u32be(i));
-    const pb = await sha256(encoder.encode("MHG1-PB"), graphSeed, nonce, u32be(i));
-    const off1 = readU32be(pa, 0) % pageBytes;
-    const off2 = readU32be(pa, 4) % pageBytes;
-    const off3 = readU32be(pa, 8) % pageBytes;
-    const off4 = readU32be(pa, 12) % pageBytes;
-    const off5 = readU32be(pa, 16) % pageBytes;
-    const iv1 = pb.slice(0, 16);
-    const iv2 = pb.slice(16, 32);
-
     const x0 = xor3(state, rotlBytes(p1, off1), rotlBytes(p2, off2));
     const x1 = await aesCbcNoPadding({ key, iv: iv1, input: x0, pageBytes });
     const x2 = xor3(x1, rotlBytes(p1, off3), rotlBytes(p2, off4));

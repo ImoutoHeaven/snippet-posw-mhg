@@ -51,3 +51,12 @@ test("README removes stale fields and documents whitepaper knobs", async () => {
     /\| `POW_OPEN_BATCH` \| `number` \| `15` \|[^\n]*`1\.\.256`[^\n]*\|/u
   );
 });
+
+test("README documents MHG mix implementation-only optimizations", async () => {
+  const readme = await readFile("README.md", "utf8");
+
+  assert.match(readme, /implementation-level optimization/u);
+  assert.match(readme, /does not change protocol semantics/u);
+  assert.match(readme, /derive per-index PA\/PB once and reuse across mix rounds/u);
+  assert.match(readme, /AES-CBC trim uses `subarray\(0, pageBytes\)` view-based slicing/u);
+});
