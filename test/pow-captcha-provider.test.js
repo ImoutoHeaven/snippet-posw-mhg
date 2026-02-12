@@ -66,6 +66,7 @@ const buildCore1Module = async (secret = "config-secret") => {
     innerAuthSource,
     internalHeadersSource,
     apiEngineSource,
+    siteverifyClientSource,
     businessGateSource,
     templateSource,
     mhgGraphSource,
@@ -81,6 +82,7 @@ const buildCore1Module = async (secret = "config-secret") => {
     readFile(join(repoRoot, "lib", "pow", "inner-auth.js"), "utf8"),
     readFile(join(repoRoot, "lib", "pow", "internal-headers.js"), "utf8"),
     readFile(join(repoRoot, "lib", "pow", "api-engine.js"), "utf8"),
+    readFile(join(repoRoot, "lib", "pow", "siteverify-client.js"), "utf8"),
     readFile(join(repoRoot, "lib", "pow", "business-gate.js"), "utf8"),
     readFile(join(repoRoot, "template.html"), "utf8"),
     readFile(join(repoRoot, "lib", "mhg", "graph.js"), "utf8"),
@@ -102,7 +104,7 @@ const buildCore1Module = async (secret = "config-secret") => {
     JSON.stringify(templateSource)
     )
     .concat(
-      "\nexport const __captchaTesting = { pickRecaptchaPair, captchaTagV1, verifyCaptchaForTicket };\n"
+      "\nexport const __captchaTesting = { pickRecaptchaPair, captchaTagV1, verifyRequiredCaptchaForTicket };\n"
     );
   const writes = [
     writeFile(join(tmpDir, "pow-core-1.js"), core1Source),
@@ -111,6 +113,7 @@ const buildCore1Module = async (secret = "config-secret") => {
     writeFile(join(tmpDir, "lib", "pow", "inner-auth.js"), innerAuthSource),
     writeFile(join(tmpDir, "lib", "pow", "internal-headers.js"), internalHeadersSource),
     writeFile(join(tmpDir, "lib", "pow", "api-engine.js"), apiEngineSource),
+    writeFile(join(tmpDir, "lib", "pow", "siteverify-client.js"), siteverifyClientSource),
     writeFile(join(tmpDir, "lib", "pow", "business-gate.js"), businessGateInjected),
     writeFile(join(tmpDir, "lib", "mhg", "graph.js"), mhgGraphSource),
     writeFile(join(tmpDir, "lib", "mhg", "hash.js"), mhgHashSource),
@@ -152,7 +155,7 @@ export default {
 export const __captchaTesting = {
   pickRecaptchaPair: businessGate.__captchaTesting.pickRecaptchaPair,
   captchaTagV1: businessGate.__captchaTesting.captchaTagV1,
-  verifyCaptchaForTicket: businessGate.__captchaTesting.verifyCaptchaForTicket,
+  verifyRequiredCaptchaForTicket: businessGate.__captchaTesting.verifyRequiredCaptchaForTicket,
 };
 `;
   const tmpPath = join(tmpDir, "pow-provider-test.js");
@@ -230,93 +233,61 @@ test("captchaTag(v1) binds turnstile and recaptcha tokens", async () => {
   }
 });
 
-test("recaptcha verify requires hostname score action remoteip", async () => {
+test("verifyRequiredCaptchaForTicket routes recaptcha through aggregator", async () => {
   const restoreGlobals = ensureGlobals();
   const originalFetch = globalThis.fetch;
   try {
     const testing = await loadTestingApi();
+    let calledUrl = "";
+    let body = "";
     const request = new Request("https://example.com/protected", {
       headers: { "CF-Connecting-IP": "1.2.3.4" },
     });
-
-    const runCase = async (payload) => {
-      let calledUrl = "";
-      globalThis.fetch = async (url) => {
-        calledUrl = String(url);
-        return new Response(JSON.stringify(payload), { status: 200 });
-      };
-      const ok = await testing.verifyCaptchaForTicket(request, {
-        provider: "recaptcha_v3",
-        secret: "recaptcha-secret",
-        token: "recaptcha-token",
-        ticketMac: "unused-for-recaptcha",
-        action: "submit",
-        minScore: 0.7,
+    globalThis.fetch = async (url, init) => {
+      calledUrl = String(url);
+      body = init && typeof init.body === "string" ? init.body : "";
+      return new Response(JSON.stringify({ ok: true, reason: "ok", checks: {}, providers: {} }), {
+        status: 200,
       });
-      return { ok, calledUrl };
     };
 
-    const expectedAction = "submit";
+    const result = await testing.verifyRequiredCaptchaForTicket(
+      request,
+      {
+        recaptchaEnabled: true,
+        RECAPTCHA_PAIRS: [
+          { sitekey: "rk-1", secret: "rs-1" },
+          { sitekey: "rk-2", secret: "rs-2" },
+        ],
+        RECAPTCHA_ACTION: "submit",
+        RECAPTCHA_MIN_SCORE: 0.7,
+        SITEVERIFY_URL: "https://sv.example/siteverify",
+        SITEVERIFY_AUTH_KID: "v1",
+        SITEVERIFY_AUTH_SECRET: "shared-secret",
+      },
+      { mac: "ticket-mac-1" },
+      JSON.stringify({ recaptcha_v3: "recaptcha-token-123456" }),
+    );
 
-    const pass = await runCase({
-      success: true,
-      hostname: "example.com",
-      remoteip: "1.2.3.4",
-      score: 0.9,
-      action: expectedAction,
-    });
-    assert.equal(pass.ok, true);
-    assert.equal(pass.calledUrl, "https://www.google.com/recaptcha/api/siteverify");
-
-    const noHostname = await runCase({
-      success: true,
-      remoteip: "1.2.3.4",
-      score: 0.9,
-      action: expectedAction,
-    });
-    assert.equal(noHostname.ok, false);
-
-    const badScore = await runCase({
-      success: true,
-      hostname: "example.com",
-      remoteip: "1.2.3.4",
-      score: 0.5,
-      action: expectedAction,
-    });
-    assert.equal(badScore.ok, false);
-
-    const noRemoteIp = await runCase({
-      success: true,
-      hostname: "example.com",
-      score: 0.9,
-      action: expectedAction,
-    });
-    assert.equal(noRemoteIp.ok, true);
-
-    const badAction = await runCase({
-      success: true,
-      hostname: "example.com",
-      remoteip: "1.2.3.4",
-      score: 0.9,
-      action: "wrong-action",
-    });
-    assert.equal(badAction.ok, false);
-
-    const badRemoteIp = await runCase({
-      success: true,
-      hostname: "example.com",
-      remoteip: "9.9.9.9",
-      score: 0.9,
-      action: expectedAction,
-    });
-    assert.equal(badRemoteIp.ok, false);
+    assert.equal(result.ok, true);
+    assert.equal(calledUrl, "https://sv.example/siteverify");
+    const payload = JSON.parse(body);
+    assert.equal(payload.ticketMac, "ticket-mac-1");
+    assert.equal(payload.remoteip, "1.2.3.4");
+    assert.equal(payload.token.recaptcha_v3, "recaptcha-token-123456");
+    assert.equal(payload.checks.recaptchaAction, "submit");
+    assert.equal(payload.checks.recaptchaMinScore, 0.7);
+    assert.deepEqual(payload.providers.recaptcha_v3.pairs, [
+      { sitekey: "rk-1", secret: "rs-1" },
+      { sitekey: "rk-2", secret: "rs-2" },
+    ]);
   } finally {
     globalThis.fetch = originalFetch;
     restoreGlobals();
   }
 });
 
-test("turnstile verify still requires cdata binding", async () => {
+test("verifyRequiredCaptchaForTicket rejects malformed turnstile envelope", async () => {
   const restoreGlobals = ensureGlobals();
   const originalFetch = globalThis.fetch;
   try {
@@ -324,30 +295,30 @@ test("turnstile verify still requires cdata binding", async () => {
     const request = new Request("https://example.com/protected", {
       headers: { "CF-Connecting-IP": "1.2.3.4" },
     });
-
-    let calledUrl = "";
-    globalThis.fetch = async (url) => {
-      calledUrl = String(url);
-      return new Response(JSON.stringify({ success: true, cdata: "mismatch" }), { status: 200 });
+    let called = false;
+    globalThis.fetch = async () => {
+      called = true;
+      return new Response(JSON.stringify({ ok: true, reason: "ok", checks: {}, providers: {} }), {
+        status: 200,
+      });
     };
-    const mismatch = await testing.verifyCaptchaForTicket(request, {
-      provider: "turnstile",
-      secret: "turnstile-secret",
-      token: "turnstile-token-value",
-      ticketMac: "expected-mac",
-    });
-    assert.equal(mismatch, false);
-    assert.equal(calledUrl, "https://challenges.cloudflare.com/turnstile/v0/siteverify");
 
-    globalThis.fetch = async () =>
-      new Response(JSON.stringify({ success: true, cdata: "expected-mac" }), { status: 200 });
-    const match = await testing.verifyCaptchaForTicket(request, {
-      provider: "turnstile",
-      secret: "turnstile-secret",
-      token: "turnstile-token-value",
-      ticketMac: "expected-mac",
-    });
-    assert.equal(match, true);
+    const result = await testing.verifyRequiredCaptchaForTicket(
+      request,
+      {
+        turncheck: true,
+        TURNSTILE_SECRET: "turn-secret",
+        SITEVERIFY_URL: "https://sv.example/siteverify",
+        SITEVERIFY_AUTH_KID: "v1",
+        SITEVERIFY_AUTH_SECRET: "shared-secret",
+      },
+      { mac: "ticket-mac-1" },
+      JSON.stringify({ recaptcha_v3: "wrong-key" }),
+    );
+
+    assert.equal(result.ok, false);
+    assert.equal(result.malformed, true);
+    assert.equal(called, false);
   } finally {
     globalThis.fetch = originalFetch;
     restoreGlobals();

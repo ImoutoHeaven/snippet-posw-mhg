@@ -86,6 +86,9 @@ Each `CONFIG` entry looks like:
 | `POW_TOKEN` | `string` | — | HMAC secret for ticket binding + cookie MACs. Required when any of `powcheck`/`turncheck`/`recaptchaEnabled` is `true`. |
 | `TURNSTILE_SITEKEY` | `string` | — | Turnstile site key (client-side). Required when `turncheck: true`. |
 | `TURNSTILE_SECRET` | `string` | — | Turnstile secret key (used for `siteverify`, includes `remoteip`). Required when `turncheck: true`. |
+| `SITEVERIFY_URL` | `string` | `""` | Siteverify aggregator endpoint URL (forwarded by runtime config surface). |
+| `SITEVERIFY_AUTH_KID` | `string` | `"v1"` | Siteverify aggregator auth key id (forwarded by runtime config surface). |
+| `SITEVERIFY_AUTH_SECRET` | `string` | `""` | Siteverify aggregator auth secret (forwarded by runtime config surface). |
 | `RECAPTCHA_PAIRS` | `Array<{sitekey:string,secret:string}>` | `[]` | reCAPTCHA v3 key pairs. Server picks one deterministically from `ticket.mac` (`kid = sha256("kid|ticket.mac") mod pairs.length`). |
 | `RECAPTCHA_MIN_SCORE` | `number` | `0.5` | Minimum accepted reCAPTCHA v3 score (`0..1`). |
 | `RECAPTCHA_ACTION` | `string` | `"submit"` | Expected reCAPTCHA v3 action label. Can be overridden per `CONFIG` entry. |
@@ -280,22 +283,23 @@ Provider network verification is only performed at allowed points (`/__pow/cap`,
   - `cheat` hard-fails immediately (no reload path).
 - Client retries are transport-only: retry loop applies to fetch/network interruption errors, not HTTP status codes (including `403`).
 
-### Atomic dual-provider split (Turnstile + reCAPTCHA)
+### Atomic dual-provider aggregator model (Turnstile + reCAPTCHA)
 
 When `ATOMIC_CONSUME=true` and both providers are required on a business request (`turncheck=true` + `recaptchaEnabled=true`):
 
-- `pow-config` performs Turnstile preflight (`siteverify`) after atomic prechecks (`consume` integrity for combined mode, ticket MAC/binding for captcha-only mode).
-- `pow-config` signs `atomic.turnstilePreflight` into `inner.s` (`checked/ok/reason/ticketMac/tokenTag`).
-- `pow-core-2` requires valid preflight evidence in this path, fail-closes on missing/mismatched evidence, skips Turnstile network verify, and only runs reCAPTCHA verify before origin fetch.
+- `pow-config` does policy and forwarding only; it does not run provider verification.
+- `pow-core-2` calls the siteverify aggregator once and consumes unified `{ ok, reason, checks, providers }` output.
+- Aggregator auth and response contract is strict: auth failure => 404; non-auth responses are fixed 200 with ok/reason.
+- Provider entries keep raw diagnostics: rawResponse always returned; provider network failure maps to provider `httpStatus=502`.
 
 Subrequest matrix (API + business paths):
 
 | Flow | `pow-config` subrequests | `pow-core-1` subrequests | `pow-core-2` subrequests | Total |
 |---|---:|---:|---:|---:|
-| Non-atomic (`ATOMIC_CONSUME=false`) via `/__pow/cap` | `1` (forwarding the request to `pow-core-1`) | `1` (forwarding the request to `pow-core-2`) | `1` (single provider) / `2` (dual provider) | `3` / `4` |
-| Non-atomic combined final `/__pow/open` | `1` (forwarding the request to `pow-core-1`) | `1` (forwarding the request to `pow-core-2`) | `1` (single provider) / `2` (dual provider) | `3` / `4` |
-| Atomic, single-provider business request | `1` (forwarding the request to `pow-core-1`) | `1` (forwarding the request to `pow-core-2`) | `2` (provider verify + origin fetch) | `4` |
-| Atomic, dual-provider business request | `2` (Turnstile preflight + forwarding the request to `pow-core-1`) | `1` (forwarding the request to `pow-core-2`) | `2` (reCAPTCHA verify + origin fetch) | `5` |
+| Non-atomic (`ATOMIC_CONSUME=false`) via `/__pow/cap` | `1` (forwarding the request to `pow-core-1`) | `1` (forwarding the request to `pow-core-2`) | `1` (aggregator verify) | `3` |
+| Non-atomic combined final `/__pow/open` | `1` (forwarding the request to `pow-core-1`) | `1` (forwarding the request to `pow-core-2`) | `1` (aggregator verify) | `3` |
+| Atomic, single-provider business request | `1` (forwarding the request to `pow-core-1`) | `1` (forwarding the request to `pow-core-2`) | `2` (aggregator verify + origin fetch) | `4` |
+| Atomic, dual-provider business request | `1` (forwarding the request to `pow-core-1`) | `1` (forwarding the request to `pow-core-2`) | `2` (aggregator verify + origin fetch) | `4` |
 
 The key budget guardrail is per-snippet, not total chain calls: atomic dual-provider stays at `<=2` subrequests in each snippet scope.
 
@@ -486,40 +490,37 @@ The following table details the subrequest count and execution flow for all 16 p
 ### Core Concepts
 
 *   **Subrequest**: A `fetch()` network request initiated within a Snippet. Cloudflare's Pro plan limits this to 2 per Snippet execution.
-*   **`pow-config` subrequests**: Always includes forwarding the request to `pow-core-1`. An additional `siteverify` request is made if preflight is triggered.
+*   **`pow-config` subrequests**: Includes forwarding the request to `pow-core-1` only.
 *   **`pow-core-1` subrequests**: Includes forwarding the request to `pow-core-2` after inner validation and business-path decisions.
-*   **`pow-core-2` subrequests**: Includes forwarding to origin when the request is allowed; additional `siteverify` requests are made when required by flow.
-*   **Siteverify Timing**: The point at which a token is verified against the Turnstile or reCAPTCHA `siteverify` endpoint.
-*   **Preflight**: A special optimization that is only active when `Atomic` + `Turnstile` + `reCAPTCHA` are all enabled on a business path. It performs Turnstile verification in `pow-config.js` to ensure each Snippet's subrequest count does not exceed 2.
+*   **`pow-core-2` subrequests**: Includes aggregator verify and origin-forward calls when required by flow.
+*   **Siteverify Timing**: Verification is performed by the external siteverify aggregator, invoked by `pow-core-2` at allowed verify points.
 
 ### Flow Analysis Table
 
-| # | PoW (P) | Atomic (A) | Turnstile (T) | reCAPTCHA (R) | Path Description | `pow-config` Subrequests | `pow-core-1` subrequests | `pow-core-2` subrequests | Siteverify Timing & Preflight | Core API Interaction |
+| # | PoW (P) | Atomic (A) | Turnstile (T) | reCAPTCHA (R) | Path Description | `pow-config` Subrequests | `pow-core-1` subrequests | `pow-core-2` subrequests | Siteverify Timing | Core API Interaction |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **0** | **Off** | **Off** | **Off** | **Off** | **No Protection** | 1 (forward) | 1 (forward) | 1 (forward) | None | None, request passes through |
-| **1** | **Off** | **Off** | **Off** | **On** | **Non-Atomic, reCAPTCHA only** | 1 (forward) | 1 (forward) | 1 (in `/cap`) | `pow-core-2` in `/cap` (reCAPTCHA); No Preflight | `POST /__pow/cap` |
-| **2** | **Off** | **Off** | **On** | **Off** | **Non-Atomic, Turnstile only** | 1 (forward) | 1 (forward) | 1 (in `/cap`) | `pow-core-2` in `/cap` (Turnstile); No Preflight | `POST /__pow/cap` |
-| **3** | **Off** | **Off** | **On** | **On** | **Non-Atomic, Dual Captcha** | 1 (forward) | 1 (forward) | **2** (in `/cap`) | `pow-core-2` in `/cap` (Both); No Preflight | `POST /__pow/cap` |
+| **1** | **Off** | **Off** | **Off** | **On** | **Non-Atomic, reCAPTCHA only** | 1 (forward) | 1 (forward) | 1 (in `/cap`) | `pow-core-2` in `/cap` via aggregator (reCAPTCHA) | `POST /__pow/cap` |
+| **2** | **Off** | **Off** | **On** | **Off** | **Non-Atomic, Turnstile only** | 1 (forward) | 1 (forward) | 1 (in `/cap`) | `pow-core-2` in `/cap` via aggregator (Turnstile) | `POST /__pow/cap` |
+| **3** | **Off** | **Off** | **On** | **On** | **Non-Atomic, Dual Captcha** | 1 (forward) | 1 (forward) | 1 (in `/cap`) | `pow-core-2` in `/cap` via aggregator (dual-provider fan-out) | `POST /__pow/cap` |
 | **4** | **Off** | **On** | **Off** | **Off** | **Invalid Path** (Same as #0) | 1 (forward) | 1 (forward) | 1 (forward) | None | None, request passes through |
-| **5** | **Off** | **On** | **Off** | **On** | **Atomic, reCAPTCHA only** | 1 (forward) | 1 (forward) | **2** (on business path) | `pow-core-2` on business path (reCAPTCHA); No Preflight | Business request w/ token |
-| **6** | **Off** | **On** | **On** | **Off** | **Atomic, Turnstile only** | 1 (forward) | 1 (forward) | **2** (on business path) | `pow-core-2` on business path (Turnstile); No Preflight | Business request w/ token |
-| **7** | **Off** | **On** | **On** | **On** | **Atomic, Dual Captcha** | **2** (on business path) | 1 (forward) | **2** (on business path) | `pow-config` (Turnstile), `pow-core-2` (reCAPTCHA); **Preflight Enabled** | Business request w/ token |
+| **5** | **Off** | **On** | **Off** | **On** | **Atomic, reCAPTCHA only** | 1 (forward) | 1 (forward) | **2** (on business path) | `pow-core-2` on business path via aggregator (reCAPTCHA + origin) | Business request w/ token |
+| **6** | **Off** | **On** | **On** | **Off** | **Atomic, Turnstile only** | 1 (forward) | 1 (forward) | **2** (on business path) | `pow-core-2` on business path via aggregator (Turnstile + origin) | Business request w/ token |
+| **7** | **Off** | **On** | **On** | **On** | **Atomic, Dual Captcha** | 1 (forward) | 1 (forward) | **2** (on business path) | `pow-core-2` on business path via aggregator (dual-provider fan-out + origin) | Business request w/ token |
 | **8** | **On** | **Off** | **Off** | **Off** | **PoW only** | 1 (forward) | 1 (forward) | 0 (in PoW API) | None | `/commit`, `/challenge`, `/open` |
-| **9** | **On** | **Off** | **Off** | **On** | **Non-Atomic, PoW + reCAPTCHA** | 1 (forward) | 1 (forward) | 1 (in `/open`) | `pow-core-2` in final `/open` (reCAPTCHA); No Preflight | PoW API |
-| **10** | **On** | **Off** | **On** | **Off** | **Non-Atomic, PoW + Turnstile** | 1 (forward) | 1 (forward) | 1 (in `/open`) | `pow-core-2` in final `/open` (Turnstile); No Preflight | PoW API |
-| **11** | **On** | **Off** | **On** | **On** | **Non-Atomic, PoW + Dual Captcha** | 1 (forward) | 1 (forward) | **2** (in `/open`) | `pow-core-2` in final `/open` (Both); No Preflight | PoW API |
+| **9** | **On** | **Off** | **Off** | **On** | **Non-Atomic, PoW + reCAPTCHA** | 1 (forward) | 1 (forward) | 1 (in `/open`) | `pow-core-2` in final `/open` via aggregator (reCAPTCHA) | PoW API |
+| **10** | **On** | **Off** | **On** | **Off** | **Non-Atomic, PoW + Turnstile** | 1 (forward) | 1 (forward) | 1 (in `/open`) | `pow-core-2` in final `/open` via aggregator (Turnstile) | PoW API |
+| **11** | **On** | **Off** | **On** | **On** | **Non-Atomic, PoW + Dual Captcha** | 1 (forward) | 1 (forward) | 1 (in `/open`) | `pow-core-2` in final `/open` via aggregator (dual-provider fan-out) | PoW API |
 | **12** | **On** | **On** | **Off** | **Off** | **Invalid Path** (Same as #8) | 1 (forward) | 1 (forward) | 0 (in PoW API) | None | PoW API |
-| **13** | **On** | **On** | **Off** | **On** | **Atomic, PoW + reCAPTCHA** | 1 (forward) | 1 (forward) | **2** (on business path) | `pow-core-2` on business path (reCAPTCHA); No Preflight | PoW API + Business request |
-| **14** | **On** | **On** | **On** | **Off** | **Atomic, PoW + Turnstile** | 1 (forward) | 1 (forward) | **2** (on business path) | `pow-core-2` on business path (Turnstile); No Preflight | PoW API + Business request |
-| **15** | **On** | **On** | **On** | **On** | **Atomic, PoW + Dual Captcha** | **2** (on business path) | 1 (forward) | **2** (on business path) | `pow-config` (Turnstile), `pow-core-2` (reCAPTCHA); **Preflight Enabled** | PoW API + Business request |
+| **13** | **On** | **On** | **Off** | **On** | **Atomic, PoW + reCAPTCHA** | 1 (forward) | 1 (forward) | **2** (on business path) | `pow-core-2` on business path via aggregator (reCAPTCHA + origin) | PoW API + Business request |
+| **14** | **On** | **On** | **On** | **Off** | **Atomic, PoW + Turnstile** | 1 (forward) | 1 (forward) | **2** (on business path) | `pow-core-2` on business path via aggregator (Turnstile + origin) | PoW API + Business request |
+| **15** | **On** | **On** | **On** | **On** | **Atomic, PoW + Dual Captcha** | 1 (forward) | 1 (forward) | **2** (on business path) | `pow-core-2` on business path via aggregator (dual-provider fan-out + origin) | PoW API + Business request |
 
 ### Key Path Analysis
 
 *   **Paths #0, #4, #12**: These are simplified or invalid configurations. In paths #4 and #12, `Atomic` mode is enabled but has no effect without a Captcha provider, so their behavior degenerates to paths #0 and #8, respectively.
-*   **Non-Atomic Captcha Paths (#1, #2, #3)**: `siteverify` occurs within `pow-core-2` when it handles the `/cap` API request. When two captcha providers are required (path #3), `pow-core-2` makes 2 subrequests. This is valid because the `/cap` API endpoint only returns a cookie and does not forward to the origin.
-*   **Atomic Single-Captcha Paths (#5, #6, #13, #14)**: `siteverify` occurs within `pow-core-2` on the final business request. `pow-config` forwards to `pow-core-1`, `pow-core-1` forwards to `pow-core-2`, and `pow-core-2` performs provider verify + origin forward.
-*   **The Most Complex Paths (#7, #15)**: This is where the Preflight mechanism is critical.
-    1.  `pow-config` intercepts the business request, sees that dual atomic verification is needed, initiates Turnstile `siteverify`, signs the result into `inner.s`, and forwards to `pow-core-1`.
-    2.  `pow-core-1` validates inner payload and transit-routes the request to `pow-core-2`; `pow-core-2` trusts signed preflight evidence, verifies reCAPTCHA, then forwards to origin.
+*   **Non-Atomic Captcha Paths (#1, #2, #3)**: verification runs in `pow-core-2` through one aggregator subrequest at `/cap`, including dual-provider fan-out inside aggregator.
+*   **Atomic Single-Captcha Paths (#5, #6, #13, #14)**: verification runs in `pow-core-2` on the final business request; `pow-core-2` performs aggregator verify + origin forward.
+*   **Atomic Dual-Captcha Paths (#7, #15)**: `pow-config` and `pow-core-1` each forward once; `pow-core-2` performs one aggregator verify (dual-provider fan-out) and then forwards to origin.
 
-This table clearly illustrates how the system's architecture, through flow splitting and the Preflight mechanism, masterfully adheres to the strict subrequest limits of the Cloudflare Snippets platform across all 16 possible configurations.
+This table reflects the aggregator-only verification architecture while keeping each snippet within Cloudflare subrequest budget limits.

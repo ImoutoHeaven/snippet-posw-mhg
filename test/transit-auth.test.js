@@ -160,6 +160,7 @@ const buildCoreModules = async (secret) => {
     internalHeadersSource,
     apiEngineSource,
     businessGateSource,
+    siteverifyClientSource,
     mhgGraphSource,
     mhgHashSource,
     mhgMixSource,
@@ -175,6 +176,7 @@ const buildCoreModules = async (secret) => {
       readFile(join(repoRoot, "lib", "pow", "internal-headers.js"), "utf8"),
       readOptionalFile(join(repoRoot, "lib", "pow", "api-engine.js")),
       readOptionalFile(join(repoRoot, "lib", "pow", "business-gate.js")),
+      readOptionalFile(join(repoRoot, "lib", "pow", "siteverify-client.js")),
       readOptionalFile(join(repoRoot, "lib", "mhg", "graph.js")),
       readOptionalFile(join(repoRoot, "lib", "mhg", "hash.js")),
       readOptionalFile(join(repoRoot, "lib", "mhg", "mix-aes.js")),
@@ -201,6 +203,9 @@ const buildCoreModules = async (secret) => {
     ...(businessGateSource === null
       ? []
       : [writeFile(join(tmpDir, "lib", "pow", "business-gate.js"), businessGateSource)]),
+    ...(siteverifyClientSource === null
+      ? []
+      : [writeFile(join(tmpDir, "lib", "pow", "siteverify-client.js"), siteverifyClientSource)]),
     ...(mhgGraphSource === null
       ? []
       : [writeFile(join(tmpDir, "lib", "mhg", "graph.js"), mhgGraphSource)]),

@@ -117,6 +117,7 @@ const buildCoreModules = async (secret = CONFIG_SECRET) => {
     internalHeadersSource,
     apiEngineSource,
     businessGateSource,
+    siteverifyClientSource,
     templateSource,
     mhgGraphSource,
     mhgHashSource,
@@ -132,6 +133,7 @@ const buildCoreModules = async (secret = CONFIG_SECRET) => {
     readOptionalFile(join(repoRoot, "lib", "pow", "internal-headers.js")),
     readOptionalFile(join(repoRoot, "lib", "pow", "api-engine.js")),
     readOptionalFile(join(repoRoot, "lib", "pow", "business-gate.js")),
+    readOptionalFile(join(repoRoot, "lib", "pow", "siteverify-client.js")),
     readFile(join(repoRoot, "template.html"), "utf8"),
     readFile(join(repoRoot, "lib", "mhg", "graph.js"), "utf8"),
     readFile(join(repoRoot, "lib", "mhg", "hash.js"), "utf8"),
@@ -174,6 +176,9 @@ const buildCoreModules = async (secret = CONFIG_SECRET) => {
       JSON.stringify(templateSource)
     );
     writes.push(writeFile(join(tmpDir, "lib", "pow", "business-gate.js"), businessGateInjected));
+  }
+  if (siteverifyClientSource !== null) {
+    writes.push(writeFile(join(tmpDir, "lib", "pow", "siteverify-client.js"), siteverifyClientSource));
   }
   await Promise.all(writes);
 

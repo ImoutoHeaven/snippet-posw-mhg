@@ -194,6 +194,7 @@ const buildCoreModules = async (secret = "config-secret") => {
     internalHeadersSource,
     apiEngineSource,
     businessGateSource,
+    siteverifyClientSource,
     mhgGraphSource,
     mhgHashSource,
     mhgMixSource,
@@ -208,6 +209,7 @@ const buildCoreModules = async (secret = "config-secret") => {
     readOptionalFile(join(repoRoot, "lib", "pow", "internal-headers.js")),
     readOptionalFile(join(repoRoot, "lib", "pow", "api-engine.js")),
     readOptionalFile(join(repoRoot, "lib", "pow", "business-gate.js")),
+    readOptionalFile(join(repoRoot, "lib", "pow", "siteverify-client.js")),
     readFile(join(repoRoot, "lib", "mhg", "graph.js"), "utf8"),
     readFile(join(repoRoot, "lib", "mhg", "hash.js"), "utf8"),
     readFile(join(repoRoot, "lib", "mhg", "mix-aes.js"), "utf8"),
@@ -246,6 +248,11 @@ const buildCoreModules = async (secret = "config-secret") => {
   }
   if (businessGateSource !== null) {
     writes.push(writeFile(join(tmpDir, "lib", "pow", "business-gate.js"), businessGateSource));
+  }
+  if (siteverifyClientSource !== null) {
+    writes.push(
+      writeFile(join(tmpDir, "lib", "pow", "siteverify-client.js"), siteverifyClientSource)
+    );
   }
   await Promise.all(writes);
 
@@ -1278,7 +1285,7 @@ test("pow-config frontloads atomic strategy with cookie priority and strips requ
   }
 });
 
-test("pow-config skips turnstile preflight when consume integrity precheck fails", async () => {
+test("pow-config omits turnstilePreflight when consume integrity precheck fails", async () => {
   const restoreGlobals = ensureGlobals();
   const modulePath = await buildConfigModule("config-secret", {
     configOverrides: {
@@ -1330,16 +1337,14 @@ test("pow-config skips turnstile preflight when consume integrity precheck fails
     const decoded = base64UrlDecode(payload);
     assert.ok(decoded, "payload decodes");
     const parsed = JSON.parse(decoded);
-    assert.equal(parsed.s.atomic.turnstilePreflight?.checked, true);
-    assert.equal(parsed.s.atomic.turnstilePreflight?.ok, false);
-    assert.equal(parsed.s.atomic.turnstilePreflight?.reason, "consume_invalid");
+    assert.equal(parsed.s.atomic.turnstilePreflight, undefined);
   } finally {
     globalThis.fetch = originalFetch;
     restoreGlobals();
   }
 });
 
-test("pow-config records turnstile preflight evidence for atomic dual-provider ticket flow", async () => {
+test("pow-config omits turnstilePreflight for atomic dual-provider ticket flow", async () => {
   const restoreGlobals = ensureGlobals();
   const modulePath = await buildConfigModule("config-secret", {
     configOverrides: {
@@ -1415,28 +1420,21 @@ test("pow-config records turnstile preflight evidence for atomic dual-provider t
     );
     const res = await handler(req);
     assert.equal(res.status, 200);
-    assert.ok(forwarded, "request forwards after successful preflight");
-    assert.equal(turnstileCalls, 1, "preflight should call turnstile siteverify once");
+    assert.ok(forwarded, "request forwards without preflight evidence");
+    assert.equal(turnstileCalls, 0, "pow-config should not call turnstile siteverify");
 
     const { payload } = readInnerPayload(forwarded.headers);
     const decoded = base64UrlDecode(payload);
     assert.ok(decoded, "payload decodes");
     const parsed = JSON.parse(decoded);
-    assert.equal(parsed.s.atomic.turnstilePreflight?.checked, true);
-    assert.equal(parsed.s.atomic.turnstilePreflight?.ok, true);
-    assert.equal(parsed.s.atomic.turnstilePreflight?.reason, "");
-    assert.equal(parsed.s.atomic.turnstilePreflight?.ticketMac, ticket.mac);
-    assert.equal(
-      parsed.s.atomic.turnstilePreflight?.tokenTag,
-      captchaTagV1(turnToken, "atomic-recaptcha-token-1234567890")
-    );
+    assert.equal(parsed.s.atomic.turnstilePreflight, undefined);
   } finally {
     globalThis.fetch = originalFetch;
     restoreGlobals();
   }
 });
 
-test("pow-config skips turnstile preflight when bind strategy is invalid", async () => {
+test("pow-config omits turnstilePreflight when bind strategy is invalid", async () => {
   const restoreGlobals = ensureGlobals();
   const modulePath = await buildConfigModule("config-secret", {
     configOverrides: {
@@ -1491,9 +1489,7 @@ test("pow-config skips turnstile preflight when bind strategy is invalid", async
     assert.ok(decoded, "payload decodes");
     const parsed = JSON.parse(decoded);
     assert.equal(parsed.s.bind.ok, false);
-    assert.equal(parsed.s.atomic.turnstilePreflight?.checked, false);
-    assert.equal(parsed.s.atomic.turnstilePreflight?.ok, false);
-    assert.equal(parsed.s.atomic.turnstilePreflight?.reason, "not_applicable");
+    assert.equal(parsed.s.atomic.turnstilePreflight, undefined);
   } finally {
     globalThis.fetch = originalFetch;
     restoreGlobals();

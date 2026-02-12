@@ -59,6 +59,7 @@ const buildPowModule = async (secret = CONFIG_SECRET) => {
     internalHeadersSource,
     apiEngineSource,
     businessGateSource,
+    siteverifyClientSource,
     templateSource,
     mhgGraphSource,
     mhgHashSource,
@@ -74,6 +75,7 @@ const buildPowModule = async (secret = CONFIG_SECRET) => {
     readFile(join(repoRoot, "lib", "pow", "internal-headers.js"), "utf8"),
     readOptionalFile(join(repoRoot, "lib", "pow", "api-engine.js")),
     readOptionalFile(join(repoRoot, "lib", "pow", "business-gate.js")),
+    readOptionalFile(join(repoRoot, "lib", "pow", "siteverify-client.js")),
     readFile(join(repoRoot, "template.html"), "utf8"),
     readFile(join(repoRoot, "lib", "mhg", "graph.js"), "utf8"),
     readFile(join(repoRoot, "lib", "mhg", "hash.js"), "utf8"),
@@ -109,6 +111,9 @@ const buildPowModule = async (secret = CONFIG_SECRET) => {
   if (apiEngineSource !== null) writes.push(writeFile(join(tmpDir, "lib", "pow", "api-engine.js"), apiEngineSource));
   if (businessGateInjected !== null) {
     writes.push(writeFile(join(tmpDir, "lib", "pow", "business-gate.js"), businessGateInjected));
+  }
+  if (siteverifyClientSource !== null) {
+    writes.push(writeFile(join(tmpDir, "lib", "pow", "siteverify-client.js"), siteverifyClientSource));
   }
   const secretLiteral = JSON.stringify(secret);
   const bridgeSource = `
@@ -180,6 +185,9 @@ const makeInnerPayload = ({ powcheck, atomic, recaptchaEnabled, providers = "" }
     RECAPTCHA_ACTION: "submit",
     RECAPTCHA_MIN_SCORE: 0.5,
     RECAPTCHA_PAIRS: [{ sitekey: "site", secret: "recaptcha-secret" }],
+    SITEVERIFY_URL: "https://sv.example/siteverify",
+    SITEVERIFY_AUTH_KID: "v1",
+    SITEVERIFY_AUTH_SECRET: "shared-secret",
     POW_VERSION: 3,
     POW_API_PREFIX: "/__pow",
     POW_DIFFICULTY_BASE: 16,
@@ -301,6 +309,7 @@ const buildCore2Module = async (secret = CONFIG_SECRET) => {
     innerAuthSource,
     internalHeadersSource,
     apiEngineSource,
+    siteverifyClientSource,
     mhgGraphSource,
     mhgHashSource,
     mhgMixSource,
@@ -314,6 +323,7 @@ const buildCore2Module = async (secret = CONFIG_SECRET) => {
       readFile(join(repoRoot, "lib", "pow", "inner-auth.js"), "utf8"),
       readFile(join(repoRoot, "lib", "pow", "internal-headers.js"), "utf8"),
       readOptionalFile(join(repoRoot, "lib", "pow", "api-engine.js")),
+      readOptionalFile(join(repoRoot, "lib", "pow", "siteverify-client.js")),
       readFile(join(repoRoot, "lib", "mhg", "graph.js"), "utf8"),
       readFile(join(repoRoot, "lib", "mhg", "hash.js"), "utf8"),
       readFile(join(repoRoot, "lib", "mhg", "mix-aes.js"), "utf8"),
@@ -340,6 +350,9 @@ const buildCore2Module = async (secret = CONFIG_SECRET) => {
   ];
   if (apiEngineSource !== null) {
     writes.push(writeFile(join(tmpDir, "lib", "pow", "api-engine.js"), apiEngineSource));
+  }
+  if (siteverifyClientSource !== null) {
+    writes.push(writeFile(join(tmpDir, "lib", "pow", "siteverify-client.js"), siteverifyClientSource));
   }
   await Promise.all(writes);
 
@@ -452,14 +465,13 @@ test("/cap keeps cap-only/combined/malformed semantics", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (input) => {
     const url = typeof input === "string" ? input : input.url;
-    if (String(url).includes("www.google.com/recaptcha/api/siteverify")) {
+    if (String(url).includes("sv.example/siteverify")) {
       return new Response(
         JSON.stringify({
-          success: true,
-          hostname: "example.com",
-          remoteip: "1.2.3.4",
-          action: "submit",
-          score: 0.9,
+          ok: true,
+          reason: "ok",
+          checks: {},
+          providers: {},
         }),
         { status: 200, headers: { "Content-Type": "application/json" } }
       );
@@ -504,14 +516,13 @@ test("split core-2 /cap keeps cap-only/combined/malformed semantics", async () =
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (input) => {
     const url = typeof input === "string" ? input : input.url;
-    if (String(url).includes("www.google.com/recaptcha/api/siteverify")) {
+    if (String(url).includes("sv.example/siteverify")) {
       return new Response(
         JSON.stringify({
-          success: true,
-          hostname: "example.com",
-          remoteip: "1.2.3.4",
-          action: "submit",
-          score: 0.9,
+          ok: true,
+          reason: "ok",
+          checks: {},
+          providers: {},
         }),
         { status: 200, headers: { "Content-Type": "application/json" } },
       );

@@ -8,8 +8,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const CONFIG_SECRET = "config-secret";
 const POW_SECRET = "pow-secret";
-const TURNSTILE_SITEVERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
-const RECAPTCHA_SITEVERIFY_URL = "https://www.google.com/recaptcha/api/siteverify";
+const SITEVERIFY_URL = "https://sv.example/siteverify";
 
 const TURN_TOKEN = "turnstile-token-value-1234567890";
 const RECAPTCHA_TOKEN = "recaptcha-token-value-1234567890";
@@ -70,6 +69,7 @@ const buildPowModule = async (secret = CONFIG_SECRET) => {
     innerAuthSource,
     internalHeadersSource,
     apiEngineSource,
+    siteverifyClientSource,
     businessGateSource,
     templateSource,
     mhgGraphSource,
@@ -85,6 +85,7 @@ const buildPowModule = async (secret = CONFIG_SECRET) => {
     readFile(join(repoRoot, "lib", "pow", "inner-auth.js"), "utf8"),
     readFile(join(repoRoot, "lib", "pow", "internal-headers.js"), "utf8"),
     readOptionalFile(join(repoRoot, "lib", "pow", "api-engine.js")),
+    readOptionalFile(join(repoRoot, "lib", "pow", "siteverify-client.js")),
     readOptionalFile(join(repoRoot, "lib", "pow", "business-gate.js")),
     readFile(join(repoRoot, "template.html"), "utf8"),
     readFile(join(repoRoot, "lib", "mhg", "graph.js"), "utf8"),
@@ -119,6 +120,9 @@ const buildPowModule = async (secret = CONFIG_SECRET) => {
     writeFile(join(tmpDir, "lib", "mhg", "verify.js"), mhgVerifySource),
   ];
   if (apiEngineSource !== null) writes.push(writeFile(join(tmpDir, "lib", "pow", "api-engine.js"), apiEngineSource));
+  if (siteverifyClientSource !== null) {
+    writes.push(writeFile(join(tmpDir, "lib", "pow", "siteverify-client.js"), siteverifyClientSource));
+  }
   if (businessGateInjected !== null) {
     writes.push(writeFile(join(tmpDir, "lib", "pow", "business-gate.js"), businessGateInjected));
   }
@@ -192,6 +196,9 @@ const buildConfigModule = async (secret = CONFIG_SECRET, overrides = {}) => {
         powcheck: true,
         turncheck: true,
         recaptchaEnabled: true,
+        SITEVERIFY_URL: SITEVERIFY_URL,
+        SITEVERIFY_AUTH_KID: "v1",
+        SITEVERIFY_AUTH_SECRET: "siteverify-secret",
         RECAPTCHA_PAIRS: [{ sitekey: "rk-1", secret: "rs-1" }],
         RECAPTCHA_ACTION: "submit",
         RECAPTCHA_MIN_SCORE: 0.5,
@@ -298,15 +305,6 @@ const extractChallengeArgs = (html) => {
   return { ticketB64: match[3], pathHash: match[4] };
 };
 
-const captchaTagV1 = async (turnToken, recaptchaToken) =>
-  base64Url(
-    crypto
-      .createHash("sha256")
-      .update(`ctag|v1|t=${String(turnToken || "")}|r=${String(recaptchaToken || "")}`)
-      .digest()
-      .subarray(0, 12)
-  );
-
 const resolveCaptchaRequirements = (spec) => {
   let needTurn = spec.turncheck === true;
   let needRecaptcha = spec.recaptchaEnabled === true;
@@ -330,6 +328,9 @@ const makeInnerPayload = ({ powcheck, atomic, turncheck, recaptchaEnabled, provi
     turncheck,
     recaptchaEnabled,
     providers,
+    SITEVERIFY_URL: SITEVERIFY_URL,
+    SITEVERIFY_AUTH_KID: "v1",
+    SITEVERIFY_AUTH_SECRET: "siteverify-secret",
     RECAPTCHA_PAIRS: [{ sitekey: "rk-1", secret: "rs-1" }],
     RECAPTCHA_ACTION: "submit",
     RECAPTCHA_MIN_SCORE: 0.5,
@@ -381,7 +382,6 @@ const makeInnerPayload = ({ powcheck, atomic, turncheck, recaptchaEnabled, provi
         consumeToken: "",
         fromCookie: false,
         cookieName: "",
-        turnstilePreflight: null,
       },
   },
 });
@@ -493,22 +493,22 @@ const assertDeltaBudget = (failures, pathId, reason, delta) => {
 
 const assertVerifyPlacement = (failures, pathId, key, observed) => {
   const expected = {
-    no_protection: { capTurn: 0, capRecaptcha: 0, finalTurn: 0, finalRecaptcha: 0, businessTurn: 0, businessRecaptcha: 0 },
-    cap_recaptcha: { capTurn: 0, capRecaptcha: 1, finalTurn: 0, finalRecaptcha: 0, businessTurn: 0, businessRecaptcha: 0 },
-    cap_turnstile: { capTurn: 1, capRecaptcha: 0, finalTurn: 0, finalRecaptcha: 0, businessTurn: 0, businessRecaptcha: 0 },
-    cap_dual: { capTurn: 1, capRecaptcha: 1, finalTurn: 0, finalRecaptcha: 0, businessTurn: 0, businessRecaptcha: 0 },
-    degraded_no_protection: { capTurn: 0, capRecaptcha: 0, finalTurn: 0, finalRecaptcha: 0, businessTurn: 0, businessRecaptcha: 0 },
-    atomic_business_recaptcha: { capTurn: 0, capRecaptcha: 0, finalTurn: 0, finalRecaptcha: 0, businessTurn: 0, businessRecaptcha: 1 },
-    atomic_business_turnstile: { capTurn: 0, capRecaptcha: 0, finalTurn: 0, finalRecaptcha: 0, businessTurn: 1, businessRecaptcha: 0 },
-    atomic_business_dual_split: { capTurn: 0, capRecaptcha: 0, finalTurn: 0, finalRecaptcha: 0, businessTurn: 0, businessRecaptcha: 1 },
-    pow_only: { capTurn: 0, capRecaptcha: 0, finalTurn: 0, finalRecaptcha: 0, businessTurn: 0, businessRecaptcha: 0 },
-    pow_final_recaptcha: { capTurn: 0, capRecaptcha: 0, finalTurn: 0, finalRecaptcha: 1, businessTurn: 0, businessRecaptcha: 0 },
-    pow_final_turnstile: { capTurn: 0, capRecaptcha: 0, finalTurn: 1, finalRecaptcha: 0, businessTurn: 0, businessRecaptcha: 0 },
-    pow_final_dual: { capTurn: 0, capRecaptcha: 0, finalTurn: 1, finalRecaptcha: 1, businessTurn: 0, businessRecaptcha: 0 },
-    pow_only_degraded: { capTurn: 0, capRecaptcha: 0, finalTurn: 0, finalRecaptcha: 0, businessTurn: 0, businessRecaptcha: 0 },
-    pow_atomic_business_recaptcha: { capTurn: 0, capRecaptcha: 0, finalTurn: 0, finalRecaptcha: 0, businessTurn: 0, businessRecaptcha: 1 },
-    pow_atomic_business_turnstile: { capTurn: 0, capRecaptcha: 0, finalTurn: 0, finalRecaptcha: 0, businessTurn: 1, businessRecaptcha: 0 },
-    pow_atomic_business_dual_split: { capTurn: 0, capRecaptcha: 0, finalTurn: 0, finalRecaptcha: 0, businessTurn: 0, businessRecaptcha: 1 },
+    no_protection: { capVerify: 0, finalVerify: 0, businessVerify: 0 },
+    cap_recaptcha: { capVerify: 1, finalVerify: 0, businessVerify: 0 },
+    cap_turnstile: { capVerify: 1, finalVerify: 0, businessVerify: 0 },
+    cap_dual: { capVerify: 1, finalVerify: 0, businessVerify: 0 },
+    degraded_no_protection: { capVerify: 0, finalVerify: 0, businessVerify: 0 },
+    atomic_business_recaptcha: { capVerify: 0, finalVerify: 0, businessVerify: 1 },
+    atomic_business_turnstile: { capVerify: 0, finalVerify: 0, businessVerify: 1 },
+    atomic_business_dual_split: { capVerify: 0, finalVerify: 0, businessVerify: 1 },
+    pow_only: { capVerify: 0, finalVerify: 0, businessVerify: 0 },
+    pow_final_recaptcha: { capVerify: 0, finalVerify: 1, businessVerify: 0 },
+    pow_final_turnstile: { capVerify: 0, finalVerify: 1, businessVerify: 0 },
+    pow_final_dual: { capVerify: 0, finalVerify: 1, businessVerify: 0 },
+    pow_only_degraded: { capVerify: 0, finalVerify: 0, businessVerify: 0 },
+    pow_atomic_business_recaptcha: { capVerify: 0, finalVerify: 0, businessVerify: 1 },
+    pow_atomic_business_turnstile: { capVerify: 0, finalVerify: 0, businessVerify: 1 },
+    pow_atomic_business_dual_split: { capVerify: 0, finalVerify: 0, businessVerify: 1 },
   }[key];
 
   for (const field of Object.keys(expected)) {
@@ -521,16 +521,14 @@ const assertVerifyPlacement = (failures, pathId, key, observed) => {
 const runOnePath = async (mod, spec, failures) => {
   const tokenEnvelope = JSON.stringify({ turnstile: TURN_TOKEN, recaptcha_v3: RECAPTCHA_TOKEN });
   const { needTurn, needRecaptcha } = resolveCaptchaRequirements(spec);
-  const counters = { turn: 0, recaptcha: 0, origin: 0 };
+  const counters = { aggregator: 0, origin: 0 };
   let activeTicketMac = "";
 
   const snapshot = () => ({ ...counters });
   const delta = (before, after) => ({
-    turn: after.turn - before.turn,
-    recaptcha: after.recaptcha - before.recaptcha,
+    aggregator: after.aggregator - before.aggregator,
     origin: after.origin - before.origin,
-    total:
-      after.turn - before.turn + (after.recaptcha - before.recaptcha) + (after.origin - before.origin),
+    total: after.aggregator - before.aggregator + (after.origin - before.origin),
   });
 
   const originalFetch = globalThis.fetch;
@@ -538,19 +536,31 @@ const runOnePath = async (mod, spec, failures) => {
     globalThis.fetch = async (input, init) => {
       const req = input instanceof Request ? input : new Request(input, init);
       const reqUrl = String(req.url);
-      if (reqUrl === TURNSTILE_SITEVERIFY_URL) {
-        counters.turn += 1;
-        return new Response(JSON.stringify({ success: true, cdata: activeTicketMac }), { status: 200 });
-      }
-      if (reqUrl === RECAPTCHA_SITEVERIFY_URL) {
-        counters.recaptcha += 1;
+      if (reqUrl === SITEVERIFY_URL) {
+        counters.aggregator += 1;
         return new Response(
           JSON.stringify({
-            success: true,
-            hostname: "example.com",
-            remoteip: "1.2.3.4",
-            action: "submit",
-            score: 0.9,
+            ok: true,
+            reason: "ok",
+            checks: {
+              recaptchaAction: "submit",
+              recaptchaMinScore: 0.5,
+            },
+            providers: {
+              turnstile: {
+                ok: true,
+                httpStatus: 200,
+                normalized: { success: true, cdata: activeTicketMac },
+                rawResponse: { success: true, cdata: activeTicketMac },
+              },
+              recaptcha_v3: {
+                ok: true,
+                httpStatus: 200,
+                normalized: { success: true, action: "submit", score: 0.9 },
+                rawResponse: { success: true, action: "submit", score: 0.9 },
+                pickedPairIndex: 0,
+              },
+            },
           }),
           { status: 200, headers: { "Content-Type": "application/json" } }
         );
@@ -585,7 +595,7 @@ const runOnePath = async (mod, spec, failures) => {
     }
     activeTicketMac = parseTicket(args.ticketB64).mac;
 
-    let capDelta = { turn: 0, recaptcha: 0, origin: 0, total: 0 };
+    let capDelta = { aggregator: 0, origin: 0, total: 0 };
     if (spec.cap !== null) {
       const capBefore = snapshot();
       const capRes = await mod.default.fetch(
@@ -614,14 +624,10 @@ const runOnePath = async (mod, spec, failures) => {
     }
 
     const observed = {
-      capTurn: capDelta.turn,
-      capRecaptcha: capDelta.recaptcha,
-      finalTurn: 0,
-      finalRecaptcha: 0,
-      businessTurn: 0,
-      businessRecaptcha: 0,
-      forbiddenTurn: 0,
-      forbiddenRecaptcha: 0,
+      capVerify: capDelta.aggregator,
+      finalVerify: 0,
+      businessVerify: 0,
+      forbiddenVerify: 0,
     };
 
     if (spec.pow) {
@@ -656,8 +662,7 @@ const runOnePath = async (mod, spec, failures) => {
       const commitAfter = snapshot();
       const commitDelta = delta(commitBefore, commitAfter);
       assertDeltaBudget(failures, spec.pathId, "commit_budget", commitDelta);
-      observed.forbiddenTurn += commitDelta.turn;
-      observed.forbiddenRecaptcha += commitDelta.recaptcha;
+      observed.forbiddenVerify += commitDelta.aggregator;
       if (commitRes.status !== 200) {
         pushFailure(failures, spec.pathId, "commit_status", 200, commitRes.status);
         return;
@@ -677,8 +682,7 @@ const runOnePath = async (mod, spec, failures) => {
       const challengeAfter = snapshot();
       const challengeDelta = delta(challengeBefore, challengeAfter);
       assertDeltaBudget(failures, spec.pathId, "challenge_budget", challengeDelta);
-      observed.forbiddenTurn += challengeDelta.turn;
-      observed.forbiddenRecaptcha += challengeDelta.recaptcha;
+      observed.forbiddenVerify += challengeDelta.aggregator;
       if (challengeRes.status !== 200) {
         pushFailure(failures, spec.pathId, "challenge_status", 200, challengeRes.status);
         return;
@@ -715,11 +719,9 @@ const runOnePath = async (mod, spec, failures) => {
         }
         const body = await openRes.json();
         if (body.done === false) {
-          observed.forbiddenTurn += openDelta.turn;
-          observed.forbiddenRecaptcha += openDelta.recaptcha;
+          observed.forbiddenVerify += openDelta.aggregator;
         } else {
-          observed.finalTurn += openDelta.turn;
-          observed.finalRecaptcha += openDelta.recaptcha;
+          observed.finalVerify += openDelta.aggregator;
           finalBody = body;
         }
         state = body;
@@ -729,16 +731,6 @@ const runOnePath = async (mod, spec, failures) => {
         if (!finalBody || typeof finalBody.consume !== "string") {
           pushFailure(failures, spec.pathId, "consume_token", "present", finalBody?.consume ?? null);
         } else {
-          const turnstilePreflight =
-            needTurn && needRecaptcha
-              ? {
-                  checked: true,
-                  ok: true,
-                  reason: "",
-                  ticketMac: activeTicketMac,
-                  tokenTag: await captchaTagV1(TURN_TOKEN, RECAPTCHA_TOKEN),
-                }
-              : null;
           const businessPayload = makeInnerPayload({
             powcheck: spec.pow,
             atomic: spec.atomic,
@@ -751,7 +743,6 @@ const runOnePath = async (mod, spec, failures) => {
               consumeToken: finalBody.consume,
               fromCookie: false,
               cookieName: "",
-              turnstilePreflight,
             },
           });
           const businessBefore = snapshot();
@@ -770,24 +761,13 @@ const runOnePath = async (mod, spec, failures) => {
           const businessAfter = snapshot();
           const businessDelta = delta(businessBefore, businessAfter);
           assertDeltaBudget(failures, spec.pathId, "business_budget", businessDelta);
-          observed.businessTurn += businessDelta.turn;
-          observed.businessRecaptcha += businessDelta.recaptcha;
+          observed.businessVerify += businessDelta.aggregator;
           if (businessRes.status !== 200) {
             pushFailure(failures, spec.pathId, "business_status", 200, businessRes.status);
           }
         }
       }
     } else if (spec.atomic && (needTurn || needRecaptcha)) {
-      const turnstilePreflight =
-        needTurn && needRecaptcha
-          ? {
-              checked: true,
-              ok: true,
-              reason: "",
-              ticketMac: activeTicketMac,
-              tokenTag: await captchaTagV1(TURN_TOKEN, RECAPTCHA_TOKEN),
-            }
-          : null;
       const businessPayload = makeInnerPayload({
         powcheck: spec.pow,
         atomic: spec.atomic,
@@ -800,7 +780,6 @@ const runOnePath = async (mod, spec, failures) => {
           consumeToken: "",
           fromCookie: false,
           cookieName: "",
-          turnstilePreflight,
         },
       });
       const businessBefore = snapshot();
@@ -819,20 +798,19 @@ const runOnePath = async (mod, spec, failures) => {
       const businessAfter = snapshot();
       const businessDelta = delta(businessBefore, businessAfter);
       assertDeltaBudget(failures, spec.pathId, "business_budget", businessDelta);
-      observed.businessTurn += businessDelta.turn;
-      observed.businessRecaptcha += businessDelta.recaptcha;
+      observed.businessVerify += businessDelta.aggregator;
       if (businessRes.status !== 200) {
         pushFailure(failures, spec.pathId, "business_status", 200, businessRes.status);
       }
     }
 
-    if (observed.forbiddenTurn !== 0 || observed.forbiddenRecaptcha !== 0) {
+    if (observed.forbiddenVerify !== 0) {
       pushFailure(
         failures,
         spec.pathId,
         "forbidden_verify_points",
-        { turn: 0, recaptcha: 0 },
-        { turn: observed.forbiddenTurn, recaptcha: observed.forbiddenRecaptcha }
+        { verify: 0 },
+        { verify: observed.forbiddenVerify }
       );
     }
     assertVerifyPlacement(failures, spec.pathId, spec.key, observed);
@@ -865,7 +843,6 @@ const runSplitLinkedCase = async ({ pathId }) => {
     consumeToken: "",
     fromCookie: false,
     cookieName: "__Secure-pow_a",
-    turnstilePreflight: null,
   };
   const seedPayload = makeInnerPayload({
     powcheck: true,
@@ -970,41 +947,44 @@ const runSplitLinkedCase = async ({ pathId }) => {
     const seedTicketMac = parseTicket(args.ticketB64).mac;
 
     const counters = {
-      turnInPowConfig: 0,
-      turnInPowJs: 0,
-      recaptchaInPowConfig: 0,
-      recaptchaInPowJs: 0,
+      aggregatorInPowConfig: 0,
+      aggregatorInPowJs: 0,
       powConfigSubrequests: 0,
       powJsSubrequests: 0,
     };
     globalThis.fetch = async (input, init) => {
       const req = input instanceof Request ? input : new Request(input, init);
       const reqUrl = String(req.url);
-      if (reqUrl === TURNSTILE_SITEVERIFY_URL) {
+      if (reqUrl === SITEVERIFY_URL) {
         if (inPowHandler) {
-          counters.turnInPowJs += 1;
+          counters.aggregatorInPowJs += 1;
           counters.powJsSubrequests += 1;
         } else {
-          counters.turnInPowConfig += 1;
-          counters.powConfigSubrequests += 1;
-        }
-        return new Response(JSON.stringify({ success: true, cdata: seedTicketMac }), { status: 200 });
-      }
-      if (reqUrl === RECAPTCHA_SITEVERIFY_URL) {
-        if (inPowHandler) {
-          counters.recaptchaInPowJs += 1;
-          counters.powJsSubrequests += 1;
-        } else {
-          counters.recaptchaInPowConfig += 1;
+          counters.aggregatorInPowConfig += 1;
           counters.powConfigSubrequests += 1;
         }
         return new Response(
           JSON.stringify({
-            success: true,
-            hostname: "example.com",
-            remoteip: "1.2.3.4",
-            action: "submit",
-            score: 0.9,
+            ok: true,
+            reason: "ok",
+            checks: {
+              recaptchaAction: "submit",
+              recaptchaMinScore: 0.5,
+            },
+            providers: {
+              turnstile: {
+                ok: true,
+                httpStatus: 200,
+                normalized: { success: true, cdata: seedTicketMac },
+                rawResponse: { success: true, cdata: seedTicketMac },
+              },
+              recaptcha_v3: {
+                ok: true,
+                httpStatus: 200,
+                normalized: { success: true, action: "submit", score: 0.9 },
+                rawResponse: { success: true, action: "submit", score: 0.9 },
+              },
+            },
           }),
           { status: 200, headers: { "Content-Type": "application/json" } }
         );
@@ -1065,23 +1045,23 @@ const runMatrix16 = async () => {
             hint: split.hint,
           });
         }
-        if (split.turnInPowConfig !== 1) {
-          pushFailure(failures, spec.pathId, "split_turnstile_in_pow_config", 1, split.turnInPowConfig);
+        if (split.aggregatorInPowConfig !== 0) {
+          pushFailure(
+            failures,
+            spec.pathId,
+            "split_aggregator_in_pow_config",
+            0,
+            split.aggregatorInPowConfig
+          );
         }
-        if (split.turnInPowJs !== 0) {
-          pushFailure(failures, spec.pathId, "split_turnstile_in_pow_js", 0, split.turnInPowJs);
-        }
-        if (split.recaptchaInPowJs !== 1) {
-          pushFailure(failures, spec.pathId, "split_recaptcha_in_pow_js", 1, split.recaptchaInPowJs);
-        }
-        if (split.recaptchaInPowConfig !== 0) {
-          pushFailure(failures, spec.pathId, "split_recaptcha_in_pow_config", 0, split.recaptchaInPowConfig);
+        if (split.aggregatorInPowJs !== 1) {
+          pushFailure(failures, spec.pathId, "split_aggregator_in_pow_js", 1, split.aggregatorInPowJs);
         }
         if (split.powConfigSubrequests > 2) {
           pushFailure(failures, spec.pathId, "split_pow_config_budget", "<=2", split.powConfigSubrequests);
         }
-        if (split.powJsSubrequests > 2) {
-          pushFailure(failures, spec.pathId, "split_pow_js_budget", "<=2", split.powJsSubrequests);
+        if (split.powJsSubrequests > 3) {
+          pushFailure(failures, spec.pathId, "split_pow_js_budget", "<=3", split.powJsSubrequests);
         }
       }
     }

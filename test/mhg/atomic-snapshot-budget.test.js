@@ -29,6 +29,7 @@ const buildSplitCoreHarnessModule = async (secret = "config-secret") => {
     internalHeadersSource,
     apiEngineSource,
     businessGateSource,
+    siteverifyClientSource,
     templateSource,
     mhgGraphSource,
     mhgHashSource,
@@ -44,6 +45,7 @@ const buildSplitCoreHarnessModule = async (secret = "config-secret") => {
     readOptionalFile(join(repoRoot, "lib", "pow", "internal-headers.js")),
     readOptionalFile(join(repoRoot, "lib", "pow", "api-engine.js")),
     readOptionalFile(join(repoRoot, "lib", "pow", "business-gate.js")),
+    readOptionalFile(join(repoRoot, "lib", "pow", "siteverify-client.js")),
     readOptionalFile(join(repoRoot, "template.html")),
     readFile(join(repoRoot, "lib", "mhg", "graph.js"), "utf8"),
     readFile(join(repoRoot, "lib", "mhg", "hash.js"), "utf8"),
@@ -90,6 +92,9 @@ const buildSplitCoreHarnessModule = async (secret = "config-secret") => {
       );
     }
     writes.push(writeFile(join(tmpDir, "lib", "pow", "business-gate.js"), businessGateInjected));
+  }
+  if (siteverifyClientSource !== null) {
+    writes.push(writeFile(join(tmpDir, "lib", "pow", "siteverify-client.js"), siteverifyClientSource));
   }
 
 const harnessSource = `

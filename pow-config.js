@@ -61,6 +61,9 @@ const DEFAULTS = {
   RECAPTCHA_PAIRS: [],
   RECAPTCHA_ACTION: "submit",
   RECAPTCHA_MIN_SCORE: 0.5,
+  SITEVERIFY_URL: "",
+  SITEVERIFY_AUTH_KID: "v1",
+  SITEVERIFY_AUTH_SECRET: "",
 };
 
 const normalizeCompiledEntry = (entry) => ({
@@ -185,8 +188,6 @@ const NONCE_MAX_LEN = 64;
 const CAPTCHA_TAG_LEN = 16;
 const TURN_TOKEN_MIN_LEN = 20;
 const TURN_TOKEN_MAX_LEN = 4096;
-const PREFLIGHT_REASON_MAX_LEN = 64;
-const TURNSTILE_SITEVERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
 
 const isBase64Url = (value, minLen, maxLen) => {
   if (typeof value !== "string") return false;
@@ -536,43 +537,6 @@ const validateAtomicSnapshot = (atomic) => {
   }
 
   if (atomic.ticketB64 && !BASE64URL_RE.test(atomic.ticketB64)) {
-    return { ok: false, status: 400 };
-  }
-
-  const preflight =
-    atomic.turnstilePreflight && typeof atomic.turnstilePreflight === "object"
-      ? atomic.turnstilePreflight
-      : null;
-  if (!preflight) {
-    return { ok: false, status: 400 };
-  }
-  if (
-    typeof preflight.checked !== "boolean" ||
-    typeof preflight.ok !== "boolean" ||
-    typeof preflight.reason !== "string" ||
-    typeof preflight.ticketMac !== "string" ||
-    typeof preflight.tokenTag !== "string"
-  ) {
-    return { ok: false, status: 400 };
-  }
-  if (
-    preflight.reason.length > PREFLIGHT_REASON_MAX_LEN ||
-    preflight.ticketMac.length > B64_HASH_MAX_LEN ||
-    preflight.tokenTag.length > CAPTCHA_TAG_LEN
-  ) {
-    return { ok: false, status: 431 };
-  }
-  if (
-    CONTROL_CHAR_RE.test(preflight.reason) ||
-    CONTROL_CHAR_RE.test(preflight.ticketMac) ||
-    CONTROL_CHAR_RE.test(preflight.tokenTag)
-  ) {
-    return { ok: false, status: 400 };
-  }
-  if (preflight.ticketMac && !BASE64URL_RE.test(preflight.ticketMac)) {
-    return { ok: false, status: 400 };
-  }
-  if (preflight.tokenTag && !BASE64URL_RE.test(preflight.tokenTag)) {
     return { ok: false, status: 400 };
   }
 
@@ -1227,6 +1191,12 @@ const normalizeConfig = (baseConfig) => {
     POW_GLUE_URL: normalizeString(merged.POW_GLUE_URL, DEFAULTS.POW_GLUE_URL),
     TURNSTILE_SITEKEY: normalizeString(merged.TURNSTILE_SITEKEY, ""),
     TURNSTILE_SECRET: normalizeString(merged.TURNSTILE_SECRET, ""),
+    SITEVERIFY_URL: normalizeString(merged.SITEVERIFY_URL, DEFAULTS.SITEVERIFY_URL),
+    SITEVERIFY_AUTH_KID: normalizeString(merged.SITEVERIFY_AUTH_KID, DEFAULTS.SITEVERIFY_AUTH_KID),
+    SITEVERIFY_AUTH_SECRET: normalizeString(
+      merged.SITEVERIFY_AUTH_SECRET,
+      DEFAULTS.SITEVERIFY_AUTH_SECRET
+    ),
     RECAPTCHA_PAIRS: normalizeRecaptchaPairs(merged.RECAPTCHA_PAIRS),
     RECAPTCHA_ACTION: (() => {
       const action = normalizeString(merged.RECAPTCHA_ACTION, DEFAULTS.RECAPTCHA_ACTION).trim();
@@ -1490,200 +1460,6 @@ const verifyTicketMac = async (ticket, hostname, bindingValues, config, powSecre
   return bindingString;
 };
 
-const parseCanonicalCaptchaTokens = (captchaToken, needTurn, needRecaptcha) => {
-  let envelope = null;
-  if (typeof captchaToken === "string") {
-    const raw = captchaToken.trim();
-    if (!raw) return null;
-    try {
-      envelope = JSON.parse(raw);
-    } catch {
-      return null;
-    }
-  } else {
-    envelope = captchaToken;
-  }
-  if (!envelope || typeof envelope !== "object" || Array.isArray(envelope)) return null;
-  const keys = Object.keys(envelope);
-  for (const key of keys) {
-    if (key !== "turnstile" && key !== "recaptcha_v3") return null;
-    if (typeof envelope[key] !== "string") return null;
-  }
-
-  const turnstile = needTurn ? validateTurnToken(envelope.turnstile || "") : "";
-  const recaptcha_v3 = needRecaptcha ? validateTurnToken(envelope.recaptcha_v3 || "") : "";
-  if ((needTurn && !turnstile) || (needRecaptcha && !recaptcha_v3)) return null;
-  return { turnstile, recaptcha_v3 };
-};
-
-const validateTurnToken = (value) => {
-  if (!value || typeof value !== "string") return null;
-  const token = value.trim();
-  if (token.length < TURN_TOKEN_MIN_LEN || token.length > TURN_TOKEN_MAX_LEN) return null;
-  if (CONTROL_CHAR_RE.test(token)) return null;
-  return token;
-};
-
-const captchaTagV1 = async (turnToken, recaptchaToken) => {
-  const material = `ctag|v1|t=${turnToken}|r=${recaptchaToken}`;
-  return base64UrlEncodeNoPad((await sha256Bytes(material)).slice(0, 12));
-};
-
-const verifyTurnstileSiteverify = async (request, secret, token) => {
-  if (!secret || !token) return { ok: false, cdata: "" };
-  const form = new URLSearchParams();
-  form.set("secret", secret);
-  form.set("response", token);
-  const remoteip = getClientIP(request);
-  if (remoteip && remoteip !== "0.0.0.0") {
-    form.set("remoteip", remoteip);
-  }
-  let verifyRes;
-  try {
-    verifyRes = await fetch(TURNSTILE_SITEVERIFY_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: form,
-    });
-  } catch {
-    return { ok: false, cdata: "" };
-  }
-  let parsed;
-  try {
-    parsed = await verifyRes.json();
-  } catch {
-    parsed = null;
-  }
-  if (!parsed || parsed.success !== true) return { ok: false, cdata: "" };
-  return { ok: true, cdata: typeof parsed.cdata === "string" ? parsed.cdata : "" };
-};
-
-const defaultTurnstilePreflight = () => ({
-  checked: false,
-  ok: false,
-  reason: "not_applicable",
-  ticketMac: "",
-  tokenTag: "",
-});
-
-const resolveCaptchaRequirements = (config) => {
-  let needTurn = config.turncheck === true;
-  let needRecaptcha = config.recaptchaEnabled === true;
-  if (!needTurn && !needRecaptcha) {
-    const providersRaw = typeof config.providers === "string" ? config.providers : "";
-    const providers = providersRaw
-      .split(/[\s,]+/u)
-      .map((entry) => entry.trim().toLowerCase())
-      .filter(Boolean);
-    needTurn = providers.includes("turnstile");
-    needRecaptcha = providers.includes("recaptcha") || providers.includes("recaptcha_v3");
-  }
-  return { needTurn, needRecaptcha };
-};
-
-const shouldRunTurnstilePreflight = (requestPath, config, bind) => {
-  const { needTurn, needRecaptcha } = resolveCaptchaRequirements(config);
-  return (
-  config.ATOMIC_CONSUME === true &&
-  needTurn === true &&
-  needRecaptcha === true &&
-  bind.ok === true &&
-  !requestPath.startsWith(`${config.POW_API_PREFIX}/`)
-  );
-};
-
-const runTurnstilePreflight = async ({
-  request,
-  requestPath,
-  cfgId,
-  config,
-  bind,
-  atomic,
-  nowSeconds,
-  derived,
-}) => {
-  const preflight = {
-    checked: true,
-    ok: false,
-    reason: "missing_atomic",
-    ticketMac: "",
-    tokenTag: "",
-  };
-
-  const shouldCheck = shouldRunTurnstilePreflight(requestPath, config, bind);
-  if (!shouldCheck) return preflight;
-
-  const tokens = parseCanonicalCaptchaTokens(atomic.captchaToken, true, true);
-  const turnToken = tokens && tokens.turnstile;
-  const recaptchaToken = tokens && tokens.recaptcha_v3;
-  if (!turnToken || !recaptchaToken) {
-    preflight.reason = "missing_atomic";
-    return preflight;
-  }
-
-  const requiredMask = (config.powcheck === true ? 1 : 0) | 2 | 4;
-  const powSecret = typeof config.POW_TOKEN === "string" ? config.POW_TOKEN : "";
-  let ticket = null;
-  let nextDerived = derived;
-  const canonicalPath = bind.canonicalPath || requestPath;
-
-  if (config.powcheck === true) {
-    const consumeCheck = await verifyConsumeIntegrity(
-      atomic.consumeToken,
-      powSecret,
-      nowSeconds,
-      requiredMask,
-      { withReason: true }
-    );
-    if (!consumeCheck || consumeCheck.ok !== true) {
-      preflight.reason = consumeCheck && consumeCheck.reason ? consumeCheck.reason : "consume_invalid";
-      return preflight;
-    }
-    const consume = consumeCheck.parsed;
-    ticket = parsePowTicketFull(consume.ticketB64);
-    if (!ticket || ticket.cfgId !== cfgId) {
-      preflight.reason = "ticket_invalid";
-      return preflight;
-    }
-  } else {
-    ticket = parsePowTicketFull(atomic.ticketB64);
-    if (!ticket || ticket.cfgId !== cfgId || ticket.e <= nowSeconds) {
-      preflight.reason = "ticket_invalid";
-      return preflight;
-    }
-    if (!nextDerived) {
-      nextDerived = await buildDerivedBindings(request, config);
-    }
-    const bindingValues = await getPowBindingValues(canonicalPath, config, nextDerived);
-    if (!bindingValues) {
-      preflight.reason = "ticket_invalid";
-      return preflight;
-    }
-    const bindingString = await verifyTicketMac(
-      ticket,
-      new URL(request.url).hostname,
-      bindingValues,
-      config,
-      powSecret,
-    );
-    if (!bindingString) {
-      preflight.reason = "ticket_invalid";
-      return preflight;
-    }
-  }
-
-  const verify = await verifyTurnstileSiteverify(request, config.TURNSTILE_SECRET, turnToken);
-  if (!verify.ok || verify.cdata !== ticket.mac) {
-    preflight.reason = "turn_verify_failed";
-    return preflight;
-  }
-
-  preflight.ok = true;
-  preflight.reason = "";
-  preflight.ticketMac = ticket.mac;
-  preflight.tokenTag = await captchaTagV1(turnToken, recaptchaToken);
-  return { ...preflight, derived: nextDerived };
-};
 
 const parsePowCommitCookie = (value) => {
   if (!value) return null;
@@ -1817,31 +1593,6 @@ export default {
     const atomic = extractAtomicAuth(forwardRequest, forwardUrl, normalizedConfig);
     forwardRequest = atomic.forwardRequest;
 
-    const nowSeconds = Math.floor(Date.now() / 1000);
-    let derivedBindings = null;
-    const preflight = defaultTurnstilePreflight();
-    const shouldRunPreflight = shouldRunTurnstilePreflight(requestPath, normalizedConfig, bind);
-    if (shouldRunPreflight) {
-      const result = await runTurnstilePreflight({
-        request: forwardRequest,
-        requestPath,
-        cfgId: resolved.cfgId,
-        config: normalizedConfig,
-        bind,
-        atomic,
-        nowSeconds,
-        derived: derivedBindings,
-      });
-      preflight.checked = result.checked;
-      preflight.ok = result.ok;
-      preflight.reason = result.reason;
-      preflight.ticketMac = result.ticketMac;
-      preflight.tokenTag = result.tokenTag;
-      if (result.derived && typeof result.derived === "object") {
-        derivedBindings = result.derived;
-      }
-    }
-
     const strategySnapshot = {
       nav: {},
       bypass: { bypass: bypass.bypass },
@@ -1856,7 +1607,6 @@ export default {
         consumeToken: atomic.consumeToken,
         fromCookie: atomic.fromCookie,
         cookieName: atomic.cookieName,
-        turnstilePreflight: preflight,
       },
     };
 
@@ -1869,8 +1619,7 @@ export default {
       forwardRequest,
       resolved.cfgId,
       normalizedConfig,
-      strategySnapshot,
-      derivedBindings
+      strategySnapshot
     );
 
     const headers = stripInnerHeaders(new Headers(forwardRequest.headers));

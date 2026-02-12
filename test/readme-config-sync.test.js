@@ -60,3 +60,19 @@ test("README documents MHG mix implementation-only optimizations", async () => {
   assert.match(readme, /derive per-index PA\/PB once and reuse across mix rounds/u);
   assert.match(readme, /AES-CBC trim uses `subarray\(0, pageBytes\)` view-based slicing/u);
 });
+
+test("README documents siteverify aggregator contract and removes preflight model", async () => {
+  const readme = await readFile("README.md", "utf8");
+
+  assert.equal(readme.includes("turnstilePreflight"), false);
+  assert.equal(readme.includes("Preflight"), false);
+  assert.match(readme, /siteverify aggregator/u);
+  assert.match(readme, /auth failure => 404/u);
+  assert.match(readme, /fixed 200 with ok\/reason/u);
+  assert.match(readme, /rawResponse always returned/u);
+  assert.match(readme, /provider network failure maps to provider `httpStatus=502`/u);
+  assert.equal(
+    readme.includes("Turnstile preflight + forwarding the request to `pow-core-1`"),
+    false
+  );
+});

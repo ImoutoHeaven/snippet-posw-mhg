@@ -5,6 +5,7 @@ import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { __testNormalizeConfig } from "../pow-config.js";
 
 const ensureGlobals = () => {
   const priorCrypto = globalThis.crypto;
@@ -135,6 +136,13 @@ const FULL_STRATEGY = {
   },
 };
 
+test("normalizeConfig includes siteverify aggregator keys", () => {
+  const cfg = __testNormalizeConfig({});
+  assert.equal(typeof cfg.SITEVERIFY_URL, "string");
+  assert.equal(typeof cfg.SITEVERIFY_AUTH_KID, "string");
+  assert.equal(typeof cfg.SITEVERIFY_AUTH_SECRET, "string");
+});
+
 const buildInnerHeaders = (payloadObj, secret, expOverride) => {
   const payload = base64Url(Buffer.from(JSON.stringify(payloadObj), "utf8"));
   const exp = Number.isFinite(expOverride)
@@ -167,6 +175,7 @@ const buildTestModule = async (secret = "config-secret") => {
     internalHeadersSource,
     apiEngineSource,
     businessGateSource,
+    siteverifyClientSource,
     templateSource,
     mhgGraphSource,
     mhgHashSource,
@@ -182,6 +191,7 @@ const buildTestModule = async (secret = "config-secret") => {
     readOptionalFile(join(repoRoot, "lib", "pow", "internal-headers.js")),
     readOptionalFile(join(repoRoot, "lib", "pow", "api-engine.js")),
     readOptionalFile(join(repoRoot, "lib", "pow", "business-gate.js")),
+    readOptionalFile(join(repoRoot, "lib", "pow", "siteverify-client.js")),
     readFile(join(repoRoot, "template.html"), "utf8"),
     readFile(join(repoRoot, "lib", "mhg", "graph.js"), "utf8"),
     readFile(join(repoRoot, "lib", "mhg", "hash.js"), "utf8"),
@@ -219,6 +229,9 @@ const buildTestModule = async (secret = "config-secret") => {
   if (apiEngineSource !== null) writes.push(writeFile(join(tmpDir, "lib", "pow", "api-engine.js"), apiEngineSource));
   if (businessGateInjected !== null) {
     writes.push(writeFile(join(tmpDir, "lib", "pow", "business-gate.js"), businessGateInjected));
+  }
+  if (siteverifyClientSource !== null) {
+    writes.push(writeFile(join(tmpDir, "lib", "pow", "siteverify-client.js"), siteverifyClientSource));
   }
 
   const secretLiteral = JSON.stringify(secret);

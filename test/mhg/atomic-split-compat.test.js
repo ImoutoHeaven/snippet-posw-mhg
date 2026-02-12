@@ -8,8 +8,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const CONFIG_SECRET = "config-secret";
 const POW_SECRET = "pow-secret";
-const TURNSTILE_SITEVERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
-const RECAPTCHA_SITEVERIFY_URL = "https://www.google.com/recaptcha/api/siteverify";
+const SITEVERIFY_AGGREGATOR_URL = "https://sv.example/siteverify";
 
 const base64Url = (buffer) =>
   Buffer.from(buffer)
@@ -71,6 +70,7 @@ const buildCore1Module = async (secret = CONFIG_SECRET) => {
     internalHeadersSource,
     apiEngineSource,
     businessGateSource,
+    siteverifyClientSource,
     templateSource,
     mhgGraphSource,
     mhgHashSource,
@@ -86,6 +86,7 @@ const buildCore1Module = async (secret = CONFIG_SECRET) => {
     readFile(join(repoRoot, "lib", "pow", "internal-headers.js"), "utf8"),
     readFile(join(repoRoot, "lib", "pow", "api-engine.js"), "utf8"),
     readFile(join(repoRoot, "lib", "pow", "business-gate.js"), "utf8"),
+    readFile(join(repoRoot, "lib", "pow", "siteverify-client.js"), "utf8"),
     readFile(join(repoRoot, "template.html"), "utf8"),
     readFile(join(repoRoot, "lib", "mhg", "graph.js"), "utf8"),
     readFile(join(repoRoot, "lib", "mhg", "hash.js"), "utf8"),
@@ -112,6 +113,7 @@ const buildCore1Module = async (secret = CONFIG_SECRET) => {
     writeFile(join(tmpDir, "lib", "pow", "internal-headers.js"), internalHeadersSource),
     writeFile(join(tmpDir, "lib", "pow", "api-engine.js"), apiEngineSource),
     writeFile(join(tmpDir, "lib", "pow", "business-gate.js"), businessGateInjected),
+    writeFile(join(tmpDir, "lib", "pow", "siteverify-client.js"), siteverifyClientSource),
     writeFile(join(tmpDir, "lib", "mhg", "graph.js"), mhgGraphSource),
     writeFile(join(tmpDir, "lib", "mhg", "hash.js"), mhgHashSource),
     writeFile(join(tmpDir, "lib", "mhg", "mix-aes.js"), mhgMixSource),
@@ -172,6 +174,9 @@ const buildConfigModule = async (secret = CONFIG_SECRET, configOverrides = {}) =
         RECAPTCHA_MIN_SCORE: 0.5,
         TURNSTILE_SITEKEY: "turn-site",
         TURNSTILE_SECRET: "turn-secret",
+        SITEVERIFY_URL: SITEVERIFY_AGGREGATOR_URL,
+        SITEVERIFY_AUTH_KID: "v1",
+        SITEVERIFY_AUTH_SECRET: "agg-secret",
         POW_BIND_PATH: true,
         POW_BIND_TLS: false,
         POW_BIND_COUNTRY: false,
@@ -272,6 +277,9 @@ const makeInnerPayload = (strategyAtomic, configOverrides = {}) => ({
     RECAPTCHA_MIN_SCORE: 0.5,
     TURNSTILE_SITEKEY: "turn-site",
     TURNSTILE_SECRET: "turn-secret",
+    SITEVERIFY_URL: SITEVERIFY_AGGREGATOR_URL,
+    SITEVERIFY_AUTH_KID: "v1",
+    SITEVERIFY_AUTH_SECRET: "agg-secret",
     POW_VERSION: 3,
     POW_API_PREFIX: "/__pow",
     POW_DIFFICULTY_BASE: 16,
@@ -396,7 +404,6 @@ const bootstrapConsume = async (core1Handler, configOverrides = {}) => {
     consumeToken: "",
     fromCookie: false,
     cookieName: "__Secure-pow_a",
-    turnstilePreflight: null,
   };
   const payload = makeInnerPayload(emptyAtomic, configOverrides);
 
@@ -498,7 +505,7 @@ const makeAtomicBusinessRequest = ({ consumeToken, captchaEnvelope }) =>
     }
   );
 
-test("dual-provider atomic preflight keeps split and subrequest budget (providers mode)", async () => {
+test("dual-provider atomic path keeps split and subrequest budget (providers mode)", async () => {
   const restoreGlobals = ensureGlobals();
   const core1Path = await buildCore1Module();
   const configPath = await buildConfigModule(CONFIG_SECRET, {
@@ -521,9 +528,8 @@ test("dual-provider atomic preflight keeps split and subrequest budget (provider
       providers: "turnstile,recaptcha",
     });
     const counters = {
-      turnstileVerifyInPowConfig: 0,
-      turnstileVerifyInCore1: 0,
-      recaptchaVerifyInCore1: 0,
+      aggregatorVerifyInPowConfig: 0,
+      aggregatorVerifyInCore1: 0,
       powConfigSubrequests: 0,
       core1Subrequests: 0,
     };
@@ -531,26 +537,20 @@ test("dual-provider atomic preflight keeps split and subrequest budget (provider
     globalThis.fetch = async (input, init) => {
       const req = input instanceof Request ? input : new Request(input, init);
       const reqUrl = String(req.url);
-      if (reqUrl === TURNSTILE_SITEVERIFY_URL) {
+      if (reqUrl === SITEVERIFY_AGGREGATOR_URL) {
         if (inCore1) {
-          counters.turnstileVerifyInCore1 += 1;
+          counters.aggregatorVerifyInCore1 += 1;
           counters.core1Subrequests += 1;
         } else {
-          counters.turnstileVerifyInPowConfig += 1;
+          counters.aggregatorVerifyInPowConfig += 1;
           counters.powConfigSubrequests += 1;
         }
-        return new Response(JSON.stringify({ success: true, cdata: seed.ticket.mac }), { status: 200 });
-      }
-      if (reqUrl === RECAPTCHA_SITEVERIFY_URL) {
-        counters.recaptchaVerifyInCore1 += 1;
-        counters.core1Subrequests += 1;
         return new Response(
           JSON.stringify({
-            success: true,
-            hostname: "example.com",
-            remoteip: "1.2.3.4",
-            action: "submit",
-            score: 0.9,
+            ok: true,
+            reason: "",
+            checks: {},
+            providers: {},
           }),
           { status: 200, headers: { "Content-Type": "application/json" } }
         );
@@ -570,9 +570,8 @@ test("dual-provider atomic preflight keeps split and subrequest budget (provider
 
     const result = await configHandler(makeAtomicBusinessRequest(seed), {}, {});
     assert.equal(result.status, 200);
-    assert.equal(counters.turnstileVerifyInPowConfig, 1);
-    assert.equal(counters.turnstileVerifyInCore1, 0);
-    assert.equal(counters.recaptchaVerifyInCore1, 1);
+    assert.equal(counters.aggregatorVerifyInPowConfig, 0);
+    assert.equal(counters.aggregatorVerifyInCore1, 1);
     assert.ok(counters.powConfigSubrequests <= 2);
     assert.ok(counters.core1Subrequests <= 2);
   } finally {
@@ -604,17 +603,13 @@ test("expired consume returns stale on atomic business path", async () => {
 
     globalThis.fetch = async (input, init) => {
       const req = input instanceof Request ? input : new Request(input, init);
-      if (String(req.url) === TURNSTILE_SITEVERIFY_URL) {
-        return new Response(JSON.stringify({ success: true, cdata: seed.ticket.mac }), { status: 200 });
-      }
-      if (String(req.url) === RECAPTCHA_SITEVERIFY_URL) {
+      if (String(req.url) === SITEVERIFY_AGGREGATOR_URL) {
         return new Response(
           JSON.stringify({
-            success: true,
-            hostname: "example.com",
-            remoteip: "1.2.3.4",
-            action: "submit",
-            score: 0.9,
+            ok: true,
+            reason: "",
+            checks: {},
+            providers: {},
           }),
           { status: 200 }
         );
@@ -638,7 +633,7 @@ test("expired consume returns stale on atomic business path", async () => {
   }
 });
 
-test("atomic rejects missing preflight evidence", async () => {
+test("atomic accepts valid consume without preflight evidence field", async () => {
   const restoreGlobals = ensureGlobals();
   const core1Path = await buildCore1Module();
   const core1Mod = await import(`${pathToFileURL(core1Path).href}?v=${Date.now()}`);
@@ -647,14 +642,27 @@ test("atomic rejects missing preflight evidence", async () => {
 
   try {
     const seed = await bootstrapConsume(core1Handler);
-    globalThis.fetch = async () => new Response("ok", { status: 200 });
+    globalThis.fetch = async (input, init) => {
+      const req = input instanceof Request ? input : new Request(input, init);
+      if (String(req.url) === SITEVERIFY_AGGREGATOR_URL) {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            reason: "",
+            checks: {},
+            providers: {},
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
+      return new Response("ok", { status: 200 });
+    };
     const payload = makeInnerPayload({
       captchaToken: seed.captchaEnvelope,
       ticketB64: "",
       consumeToken: seed.consumeToken,
       fromCookie: false,
       cookieName: "",
-      turnstilePreflight: null,
     });
 
     const result = await core1Handler(
@@ -670,14 +678,14 @@ test("atomic rejects missing preflight evidence", async () => {
       {}
     );
 
-    assert.equal(result.status, 403);
+    assert.equal(result.status, 200);
   } finally {
     globalThis.fetch = originalFetch;
     restoreGlobals();
   }
 });
 
-test("atomic rejects preflight tokenTag mismatch", async () => {
+test("atomic rejects when aggregator response is malformed", async () => {
   const restoreGlobals = ensureGlobals();
   const core1Path = await buildCore1Module();
   const core1Mod = await import(`${pathToFileURL(core1Path).href}?v=${Date.now()}`);
@@ -688,17 +696,11 @@ test("atomic rejects preflight tokenTag mismatch", async () => {
     const seed = await bootstrapConsume(core1Handler);
     globalThis.fetch = async (input, init) => {
       const req = input instanceof Request ? input : new Request(input, init);
-      if (String(req.url) === RECAPTCHA_SITEVERIFY_URL) {
-        return new Response(
-          JSON.stringify({
-            success: true,
-            hostname: "example.com",
-            remoteip: "1.2.3.4",
-            action: "submit",
-            score: 0.9,
-          }),
-          { status: 200 }
-        );
+      if (req.headers.get("authorization")?.startsWith("SV1 ")) {
+        return new Response("not-json", {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
       }
       return new Response("ok", { status: 200 });
     };
@@ -709,13 +711,6 @@ test("atomic rejects preflight tokenTag mismatch", async () => {
       consumeToken: seed.consumeToken,
       fromCookie: false,
       cookieName: "",
-      turnstilePreflight: {
-        checked: true,
-        ok: true,
-        reason: "",
-        ticketMac: seed.ticket.mac,
-        tokenTag: "AAAAAAAAAAAAAAAA",
-      },
     });
 
     const result = await core1Handler(

@@ -108,6 +108,7 @@ const buildPowModule = async (secret = CONFIG_SECRET) => {
     internalHeadersSource,
     apiEngineSource,
     businessGateSource,
+    siteverifyClientSource,
     templateSource,
     mhgGraphSource,
     mhgHashSource,
@@ -123,6 +124,7 @@ const buildPowModule = async (secret = CONFIG_SECRET) => {
     readFile(join(repoRoot, "lib", "pow", "internal-headers.js"), "utf8"),
     readOptionalFile(join(repoRoot, "lib", "pow", "api-engine.js")),
     readOptionalFile(join(repoRoot, "lib", "pow", "business-gate.js")),
+    readOptionalFile(join(repoRoot, "lib", "pow", "siteverify-client.js")),
     readFile(join(repoRoot, "template.html"), "utf8"),
     readFile(join(repoRoot, "lib", "mhg", "graph.js"), "utf8"),
     readFile(join(repoRoot, "lib", "mhg", "hash.js"), "utf8"),
@@ -158,6 +160,9 @@ const buildPowModule = async (secret = CONFIG_SECRET) => {
   if (apiEngineSource !== null) writes.push(writeFile(join(tmpDir, "lib", "pow", "api-engine.js"), apiEngineSource));
   if (businessGateInjected !== null) {
     writes.push(writeFile(join(tmpDir, "lib", "pow", "business-gate.js"), businessGateInjected));
+  }
+  if (siteverifyClientSource !== null) {
+    writes.push(writeFile(join(tmpDir, "lib", "pow", "siteverify-client.js"), siteverifyClientSource));
   }
   const secretLiteral = JSON.stringify(secret);
   const bridgeSource = `
@@ -332,6 +337,7 @@ const buildCore2Module = async (secret = CONFIG_SECRET) => {
     innerAuthSource,
     internalHeadersSource,
     apiEngineSource,
+    siteverifyClientSource,
     mhgGraphSource,
     mhgHashSource,
     mhgConstantsSource,
@@ -345,6 +351,7 @@ const buildCore2Module = async (secret = CONFIG_SECRET) => {
       readFile(join(repoRoot, "lib", "pow", "inner-auth.js"), "utf8"),
       readFile(join(repoRoot, "lib", "pow", "internal-headers.js"), "utf8"),
       readOptionalFile(join(repoRoot, "lib", "pow", "api-engine.js")),
+      readOptionalFile(join(repoRoot, "lib", "pow", "siteverify-client.js")),
       readFile(join(repoRoot, "lib", "mhg", "graph.js"), "utf8"),
       readFile(join(repoRoot, "lib", "mhg", "hash.js"), "utf8"),
       readFile(join(repoRoot, "lib", "mhg", "constants.js"), "utf8"),
@@ -371,6 +378,9 @@ const buildCore2Module = async (secret = CONFIG_SECRET) => {
   ];
   if (apiEngineSource !== null) {
     writes.push(writeFile(join(tmpDir, "lib", "pow", "api-engine.js"), apiEngineSource));
+  }
+  if (siteverifyClientSource !== null) {
+    writes.push(writeFile(join(tmpDir, "lib", "pow", "siteverify-client.js"), siteverifyClientSource));
   }
   await Promise.all(writes);
 
