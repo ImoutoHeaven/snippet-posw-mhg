@@ -24,6 +24,7 @@ const DEFAULTS = {
   POW_CHAL_ROUNDS: 10,
   POW_OPEN_BATCH: 4,
   POW_COMMIT_TTL_SEC: 120,
+  POW_MAX_GEN_TIME_SEC: 300,
   POW_TICKET_TTL_SEC: 600,
   PROOF_TTL_SEC: 600,
   PROOF_RENEW_ENABLE: false,
@@ -1090,6 +1091,12 @@ const normalizeConfig = (baseConfig) => {
       0,
       1000000000
     ),
+    POW_MAX_GEN_TIME_SEC: normalizeNumberClamp(
+      merged.POW_MAX_GEN_TIME_SEC,
+      DEFAULTS.POW_MAX_GEN_TIME_SEC,
+      1,
+      1000000000
+    ),
     POW_TICKET_TTL_SEC: normalizeNumberClamp(
       merged.POW_TICKET_TTL_SEC,
       DEFAULTS.POW_TICKET_TTL_SEC,
@@ -1284,9 +1291,11 @@ const parsePowTicket = (ticketB64) => {
   if (!bytes) return null;
   const raw = decoder.decode(bytes);
   const parts = raw.split(".");
-  if (parts.length !== 6) return null;
+  if (parts.length !== 7) return null;
   const cfgId = Number.parseInt(parts[4], 10);
+  const issuedAt = Number.parseInt(parts[5], 10);
   if (!Number.isFinite(cfgId)) return null;
+  if (!Number.isFinite(issuedAt) || issuedAt <= 0) return null;
   return { cfgId };
 };
 
@@ -1296,20 +1305,22 @@ const parsePowTicketFull = (ticketB64) => {
   if (!bytes) return null;
   const raw = decoder.decode(bytes);
   const parts = raw.split(".");
-  if (parts.length !== 6) return null;
+  if (parts.length !== 7) return null;
   const v = Number.parseInt(parts[0], 10);
   const e = Number.parseInt(parts[1], 10);
   const L = Number.parseInt(parts[2], 10);
   const r = parts[3] || "";
   const cfgId = Number.parseInt(parts[4], 10);
-  const mac = parts[5] || "";
+  const issuedAt = Number.parseInt(parts[5], 10);
+  const mac = parts[6] || "";
   if (!Number.isFinite(v) || v <= 0) return null;
   if (!Number.isFinite(e) || e <= 0) return null;
   if (!Number.isFinite(L) || L <= 0) return null;
   if (!Number.isFinite(cfgId) || cfgId < 0) return null;
+  if (!Number.isFinite(issuedAt) || issuedAt <= 0) return null;
   if (!isBase64Url(r, 1, B64_HASH_MAX_LEN)) return null;
   if (!isBase64Url(mac, 1, B64_HASH_MAX_LEN)) return null;
-  return { v, e, L, r, cfgId, mac, ticketB64 };
+  return { v, e, L, r, cfgId, issuedAt, mac, ticketB64 };
 };
 
 const parseConsumeToken = (value) => {
@@ -1437,7 +1448,9 @@ const makePowBindingString = (
     "|" +
     pageBytes +
     "|" +
-    mixRounds
+    mixRounds +
+    "|" +
+    ticket.issuedAt
   );
 };
 

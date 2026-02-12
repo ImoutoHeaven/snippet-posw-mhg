@@ -222,13 +222,17 @@ const buildConfigModule = async (secret = CONFIG_SECRET, configOverrides = {}) =
 const parseTicket = (ticketB64) => {
   const raw = fromBase64Url(ticketB64).toString("utf8");
   const parts = raw.split(".");
+  if (parts.length !== 7) return null;
+  const issuedAt = Number.parseInt(parts[5], 10);
+  if (!Number.isFinite(issuedAt) || issuedAt <= 0) return null;
   return {
     v: Number.parseInt(parts[0], 10),
     e: Number.parseInt(parts[1], 10),
     L: Number.parseInt(parts[2], 10),
     r: parts[3],
     cfgId: Number.parseInt(parts[4], 10),
-    mac: parts[5],
+    issuedAt,
+    mac: parts[6],
   };
 };
 
@@ -344,6 +348,7 @@ const buildMhgWitnessBundle = async ({ ticketB64, nonce }) => {
   const { makeGenesisPage, mixPage } = await import("../../lib/mhg/mix-aes.js");
   const { buildMerkle, buildProof } = await import("../../lib/mhg/merkle.js");
   const ticket = parseTicket(ticketB64);
+  if (!ticket) throw new Error("invalid ticket");
   const graphSeed = deriveMhgGraphSeed(ticketB64, nonce);
   const nonce16 = deriveMhgNonce16(nonce);
   const pageBytes = 64;
@@ -490,7 +495,9 @@ const bootstrapConsume = async (core1Handler, configOverrides = {}) => {
   }
 
   assert.equal(typeof state.consume, "string");
-  return { consumeToken: state.consume, captchaEnvelope, ticket: parseTicket(args.ticketB64) };
+  const ticket = parseTicket(args.ticketB64);
+  assert.ok(ticket);
+  return { consumeToken: state.consume, captchaEnvelope, ticket };
 };
 
 const makeAtomicBusinessRequest = ({ consumeToken, captchaEnvelope }) =>

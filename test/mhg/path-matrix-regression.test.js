@@ -259,11 +259,15 @@ const readOptionalFile = async (filePath) => {
 const parseTicket = (ticketB64) => {
   const raw = fromBase64Url(ticketB64).toString("utf8");
   const parts = raw.split(".");
+  if (parts.length !== 7) return null;
+  const issuedAt = Number.parseInt(parts[5], 10);
+  if (!Number.isFinite(issuedAt) || issuedAt <= 0) return null;
   return {
     e: Number.parseInt(parts[1], 10),
     L: Number.parseInt(parts[2], 10),
     cfgId: Number.parseInt(parts[4], 10),
-    mac: parts[5],
+    issuedAt,
+    mac: parts[6],
   };
 };
 
@@ -297,6 +301,44 @@ const makeConsumeToken = ({ ticketB64, exp, captchaTag, mask, secret = POW_SECRE
     crypto.createHmac("sha256", secret).update(`U|${ticketB64}|${exp}|${captchaTag}|${mask}`).digest()
   );
   return `v2.${ticketB64}.${exp}.${captchaTag}.${mask}.${mac}`;
+};
+
+const makeSignedTicketB64 = ({ payload, host, pathHash, issuedAt, exp, steps, nonce, secret = POW_SECRET }) => {
+  const ticket = {
+    v: payload.c.POW_VERSION,
+    e: exp,
+    L: steps,
+    r: nonce,
+    cfgId: payload.id,
+    issuedAt,
+    mac: "",
+  };
+  const pageBytes = Math.max(1, Math.floor(Number(payload.c.POW_PAGE_BYTES) || 0));
+  const mixRounds = Math.max(1, Math.floor(Number(payload.c.POW_MIX_ROUNDS) || 0));
+  const binding = `${ticket.v}|${ticket.e}|${ticket.L}|${ticket.r}|${ticket.cfgId}|${host}|${pathHash}|${payload.d.ipScope}|any|any|any|${pageBytes}|${mixRounds}|${ticket.issuedAt}`;
+  assert.ok(binding.endsWith(`|${ticket.issuedAt}`));
+  ticket.mac = base64Url(crypto.createHmac("sha256", secret).update(binding).digest());
+  const raw = `${ticket.v}.${ticket.e}.${ticket.L}.${ticket.r}.${ticket.cfgId}.${ticket.issuedAt}.${ticket.mac}`;
+  return base64Url(Buffer.from(raw, "utf8"));
+};
+
+const makeSignedCommitCookie = ({
+  ticketB64,
+  rootB64,
+  pathHash,
+  captchaTag,
+  nonce,
+  exp,
+  secret = POW_SECRET,
+}) => {
+  const mac = base64Url(
+    crypto
+      .createHmac("sha256", secret)
+      .update(`C2|${ticketB64}|${rootB64}|${pathHash}|${captchaTag}|${nonce}|${exp}`)
+      .digest()
+  );
+  const value = `v5.${ticketB64}.${rootB64}.${pathHash}.${captchaTag}.${nonce}.${exp}.${mac}`;
+  return `__Host-pow_commit=${encodeURIComponent(value)}`;
 };
 
 const extractChallengeArgs = (html) => {
@@ -593,7 +635,11 @@ const runOnePath = async (mod, spec, failures) => {
       pushFailure(failures, spec.pathId, "challenge_args", "present", "missing");
       return;
     }
-    activeTicketMac = parseTicket(args.ticketB64).mac;
+    const parsedTicket = parseTicket(args.ticketB64);
+    assert.ok(parsedTicket);
+    assert.ok(Number.isSafeInteger(parsedTicket.issuedAt));
+    assert.ok(parsedTicket.issuedAt > 0);
+    activeTicketMac = parsedTicket.mac;
 
     let capDelta = { aggregator: 0, origin: 0, total: 0 };
     if (spec.cap !== null) {
@@ -1192,4 +1238,271 @@ test("stale semantics cover ticket commit and consume expiry", async () => {
   assert.equal(out.commitStale.hint, "stale");
   assert.equal(out.consumeStale.status, 403);
   assert.equal(out.consumeStale.hint, "stale");
+});
+
+test("commit rejects stale issuedAt ticket even when mac and exp are valid", async () => {
+  const restoreGlobals = ensureGlobals();
+  try {
+    const powModulePath = await buildPowModule();
+    const mod = await import(`${pathToFileURL(powModulePath).href}?v=${Date.now()}-issued-at-stale`);
+    const payload = makeInnerPayload({ powcheck: true, atomic: false, turncheck: false, recaptchaEnabled: false });
+    const freshHeaders = () => makeInnerHeaders(payload);
+    const pageRes = await mod.default.fetch(
+      new Request("https://example.com/protected", {
+        method: "GET",
+        headers: { ...freshHeaders(), Accept: "text/html", "CF-Connecting-IP": "1.2.3.4" },
+      }),
+      {},
+      {}
+    );
+    const args = extractChallengeArgs(await pageRes.text());
+    assert.ok(args);
+
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const staleTicketB64 = makeSignedTicketB64({
+      payload,
+      host: "example.com",
+      pathHash: args.pathHash,
+      issuedAt: nowSeconds - 301,
+      exp: nowSeconds + 120,
+      steps: 6,
+      nonce: base64Url(crypto.randomBytes(12)),
+    });
+
+    const commitRes = await mod.default.fetch(
+      new Request("https://example.com/__pow/commit", {
+        method: "POST",
+        headers: { ...freshHeaders(), "Content-Type": "application/json", "CF-Connecting-IP": "1.2.3.4" },
+        body: JSON.stringify({
+          ticketB64: staleTicketB64,
+          rootB64: base64Url(crypto.randomBytes(32)),
+          pathHash: args.pathHash,
+          nonce: base64Url(crypto.randomBytes(16)),
+        }),
+      }),
+      {},
+      {}
+    );
+
+    assert.equal(commitRes.status, 403);
+    assert.equal(commitRes.headers.get("x-pow-h"), "stale");
+  } finally {
+    restoreGlobals();
+  }
+});
+
+test("commit treats POW_MAX_GEN_TIME_SEC=0 as clamp-to-1 instead of fallback", async () => {
+  const restoreGlobals = ensureGlobals();
+  try {
+    const powModulePath = await buildPowModule();
+    const mod = await import(`${pathToFileURL(powModulePath).href}?v=${Date.now()}-issued-at-zero-clamp`);
+    const payload = makeInnerPayload({ powcheck: true, atomic: false, turncheck: false, recaptchaEnabled: false });
+    payload.c.POW_MAX_GEN_TIME_SEC = 0;
+    const freshHeaders = () => makeInnerHeaders(payload);
+    const pageRes = await mod.default.fetch(
+      new Request("https://example.com/protected", {
+        method: "GET",
+        headers: { ...freshHeaders(), Accept: "text/html", "CF-Connecting-IP": "1.2.3.4" },
+      }),
+      {},
+      {}
+    );
+    const args = extractChallengeArgs(await pageRes.text());
+    assert.ok(args);
+
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const staleTicketB64 = makeSignedTicketB64({
+      payload,
+      host: "example.com",
+      pathHash: args.pathHash,
+      issuedAt: nowSeconds - 2,
+      exp: nowSeconds + 120,
+      steps: 6,
+      nonce: base64Url(crypto.randomBytes(12)),
+    });
+
+    const commitRes = await mod.default.fetch(
+      new Request("https://example.com/__pow/commit", {
+        method: "POST",
+        headers: { ...freshHeaders(), "Content-Type": "application/json", "CF-Connecting-IP": "1.2.3.4" },
+        body: JSON.stringify({
+          ticketB64: staleTicketB64,
+          rootB64: base64Url(crypto.randomBytes(32)),
+          pathHash: args.pathHash,
+          nonce: base64Url(crypto.randomBytes(16)),
+        }),
+      }),
+      {},
+      {}
+    );
+
+    assert.equal(commitRes.status, 403);
+    assert.equal(commitRes.headers.get("x-pow-h"), "stale");
+  } finally {
+    restoreGlobals();
+  }
+});
+
+test("challenge rejects absolute issuedAt lifecycle overflow even when ticket and commit are fresh", async () => {
+  const restoreGlobals = ensureGlobals();
+  try {
+    const powModulePath = await buildPowModule();
+    const mod = await import(`${pathToFileURL(powModulePath).href}?v=${Date.now()}-challenge-absolute-stale`);
+    const payload = makeInnerPayload({ powcheck: true, atomic: false, turncheck: false, recaptchaEnabled: false });
+    const freshHeaders = () => makeInnerHeaders(payload);
+    const pageRes = await mod.default.fetch(
+      new Request("https://example.com/protected", {
+        method: "GET",
+        headers: { ...freshHeaders(), Accept: "text/html", "CF-Connecting-IP": "1.2.3.4" },
+      }),
+      {},
+      {}
+    );
+    const args = extractChallengeArgs(await pageRes.text());
+    assert.ok(args);
+
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const staleTicketB64 = makeSignedTicketB64({
+      payload,
+      host: "example.com",
+      pathHash: args.pathHash,
+      issuedAt: nowSeconds - 421,
+      exp: nowSeconds + 120,
+      steps: 6,
+      nonce: base64Url(crypto.randomBytes(12)),
+    });
+    const commitCookie = makeSignedCommitCookie({
+      ticketB64: staleTicketB64,
+      rootB64: base64Url(crypto.randomBytes(32)),
+      pathHash: args.pathHash,
+      captchaTag: "any",
+      nonce: base64Url(crypto.randomBytes(16)),
+      exp: nowSeconds + 60,
+    });
+
+    const challengeRes = await mod.default.fetch(
+      new Request("https://example.com/__pow/challenge", {
+        method: "POST",
+        headers: { ...freshHeaders(), "Content-Type": "application/json", Cookie: commitCookie },
+        body: JSON.stringify({}),
+      }),
+      {},
+      {}
+    );
+
+    assert.equal(challengeRes.status, 403);
+    assert.equal(challengeRes.headers.get("x-pow-h"), "stale");
+  } finally {
+    restoreGlobals();
+  }
+});
+
+test("open rejects absolute issuedAt lifecycle overflow even when ticket and commit are fresh", async () => {
+  const restoreGlobals = ensureGlobals();
+  try {
+    const powModulePath = await buildPowModule();
+    const mod = await import(`${pathToFileURL(powModulePath).href}?v=${Date.now()}-open-absolute-stale`);
+    const payload = makeInnerPayload({ powcheck: true, atomic: false, turncheck: false, recaptchaEnabled: false });
+    const freshHeaders = () => makeInnerHeaders(payload);
+    const pageRes = await mod.default.fetch(
+      new Request("https://example.com/protected", {
+        method: "GET",
+        headers: { ...freshHeaders(), Accept: "text/html", "CF-Connecting-IP": "1.2.3.4" },
+      }),
+      {},
+      {}
+    );
+    const args = extractChallengeArgs(await pageRes.text());
+    assert.ok(args);
+
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const staleTicketB64 = makeSignedTicketB64({
+      payload,
+      host: "example.com",
+      pathHash: args.pathHash,
+      issuedAt: nowSeconds - 421,
+      exp: nowSeconds + 120,
+      steps: 6,
+      nonce: base64Url(crypto.randomBytes(12)),
+    });
+    const commitCookie = makeSignedCommitCookie({
+      ticketB64: staleTicketB64,
+      rootB64: base64Url(crypto.randomBytes(32)),
+      pathHash: args.pathHash,
+      captchaTag: "any",
+      nonce: base64Url(crypto.randomBytes(16)),
+      exp: nowSeconds + 60,
+    });
+
+    const openRes = await mod.default.fetch(
+      new Request("https://example.com/__pow/open", {
+        method: "POST",
+        headers: { ...freshHeaders(), "Content-Type": "application/json", Cookie: commitCookie },
+        body: JSON.stringify({}),
+      }),
+      {},
+      {}
+    );
+
+    assert.equal(openRes.status, 403);
+    assert.equal(openRes.headers.get("x-pow-h"), "stale");
+  } finally {
+    restoreGlobals();
+  }
+});
+
+test("challenge allows request exactly at absolute issuedAt lifecycle deadline", async () => {
+  const restoreGlobals = ensureGlobals();
+  try {
+    const powModulePath = await buildPowModule();
+    const mod = await import(`${pathToFileURL(powModulePath).href}?v=${Date.now()}-challenge-absolute-deadline`);
+    const payload = makeInnerPayload({ powcheck: true, atomic: false, turncheck: false, recaptchaEnabled: false });
+    payload.c.POW_MAX_GEN_TIME_SEC = 5;
+    payload.c.POW_COMMIT_TTL_SEC = 7;
+    const freshHeaders = () => makeInnerHeaders(payload);
+    const pageRes = await mod.default.fetch(
+      new Request("https://example.com/protected", {
+        method: "GET",
+        headers: { ...freshHeaders(), Accept: "text/html", "CF-Connecting-IP": "1.2.3.4" },
+      }),
+      {},
+      {}
+    );
+    const args = extractChallengeArgs(await pageRes.text());
+    assert.ok(args);
+
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const issuedAt = nowSeconds - 12;
+    const ticketB64 = makeSignedTicketB64({
+      payload,
+      host: "example.com",
+      pathHash: args.pathHash,
+      issuedAt,
+      exp: nowSeconds + 60,
+      steps: 6,
+      nonce: base64Url(crypto.randomBytes(12)),
+    });
+    const commitCookie = makeSignedCommitCookie({
+      ticketB64,
+      rootB64: base64Url(crypto.randomBytes(32)),
+      pathHash: args.pathHash,
+      captchaTag: "any",
+      nonce: base64Url(crypto.randomBytes(16)),
+      exp: nowSeconds + 30,
+    });
+
+    const challengeRes = await mod.default.fetch(
+      new Request("https://example.com/__pow/challenge", {
+        method: "POST",
+        headers: { ...freshHeaders(), "Content-Type": "application/json", Cookie: commitCookie },
+        body: JSON.stringify({}),
+      }),
+      {},
+      {}
+    );
+
+    assert.equal(challengeRes.status, 200);
+  } finally {
+    restoreGlobals();
+  }
 });

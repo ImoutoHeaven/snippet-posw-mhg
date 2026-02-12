@@ -118,6 +118,7 @@ Each `CONFIG` entry looks like:
 | `POW_CHAL_ROUNDS` | `number` | `10` | Challenge rounds (controls how many indices are requested). |
 | `POW_OPEN_BATCH` | `number` | `4` | Indices per `/open` batch (clamped to `1..256`). |
 | `POW_COMMIT_TTL_SEC` | `number` | `120` | TTL for `__Host-pow_commit` (commit cookie). |
+| `POW_MAX_GEN_TIME_SEC` | `number` | `300` | Maximum allowed seconds for page generation stage (used by the `issuedAt` gate). |
 | `POW_TICKET_TTL_SEC` | `number` | `600` | TTL for challenge tickets. |
 | `PROOF_TTL_SEC` | `number` | `600` | TTL for `__Host-proof`. |
 | `PROOF_RENEW_ENABLE` | `boolean` | `false` | Enable sliding renewal for `__Host-proof`. |

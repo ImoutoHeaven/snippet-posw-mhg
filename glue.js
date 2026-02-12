@@ -1128,8 +1128,8 @@ const getTicketMac = (ticketB64) => {
   const raw = decodeB64Url(String(ticketB64 || ""));
   if (!raw) return null;
   const parts = raw.split(".");
-  if (parts.length !== 6) return null;
-  return parts[5] || null;
+  if (parts.length !== 7) return null;
+  return parts[6] || null;
 };
 
 let turnstilePromise;

@@ -415,7 +415,7 @@ const makePowBindingString = (
   mixRounds,
 ) => {
   const host = typeof hostname === "string" ? hostname.toLowerCase() : "";
-  return `${ticket.v}|${ticket.e}|${ticket.L}|${ticket.r}|${ticket.cfgId}|${host}|${pathHash}|${ipScope}|${country}|${asn}|${tlsFingerprint}|${pageBytes}|${mixRounds}`;
+  return `${ticket.v}|${ticket.e}|${ticket.L}|${ticket.r}|${ticket.cfgId}|${host}|${pathHash}|${ipScope}|${country}|${asn}|${tlsFingerprint}|${pageBytes}|${mixRounds}|${ticket.issuedAt}`;
 };
 
 const resolveBindingValues = (payload, pathHash) => ({
@@ -433,6 +433,7 @@ const makeTicketB64 = ({ powSecret, payload, pathHash, host = "example.com" }) =
     L: 8,
     r: base64Url(crypto.randomBytes(16)),
     cfgId: payload.id,
+    issuedAt: Math.floor(Date.now() / 1000),
     mac: "",
   };
   const binding = resolveBindingValues(payload, pathHash);
@@ -449,10 +450,11 @@ const makeTicketB64 = ({ powSecret, payload, pathHash, host = "example.com" }) =
     pageBytes,
     mixRounds,
   );
+  assert.ok(bindingString.endsWith(`|${ticket.issuedAt}`));
   ticket.mac = base64Url(crypto.createHmac("sha256", powSecret).update(bindingString).digest());
   return base64Url(
     Buffer.from(
-      `${ticket.v}.${ticket.e}.${ticket.L}.${ticket.r}.${ticket.cfgId}.${ticket.mac}`,
+      `${ticket.v}.${ticket.e}.${ticket.L}.${ticket.r}.${ticket.cfgId}.${ticket.issuedAt}.${ticket.mac}`,
       "utf8",
     ),
   );

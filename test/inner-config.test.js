@@ -107,6 +107,7 @@ const makePowBindingString = (
     tlsFingerprint,
     String(pageBytes),
     String(mixRounds),
+    String(ticket.issuedAt),
   ].join("|");
 
 const assertExpireWindow = (expireHeader) => {
@@ -1315,7 +1316,7 @@ test("pow-config omits turnstilePreflight when consume integrity precheck fails"
       return new Response("ok", { status: 200 });
     };
 
-    const ticketB64 = base64Url(Buffer.from("1.1700000000.32.r.1.mac", "utf8"));
+    const ticketB64 = base64Url(Buffer.from("1.1700000000.32.r.1.1700000000.mac", "utf8"));
     const envelope = JSON.stringify({
       turnstile: "atomic-turn-token-1234567890",
       recaptcha_v3: "atomic-recaptcha-token-1234567890",
@@ -1385,6 +1386,7 @@ test("pow-config omits turnstilePreflight for atomic dual-provider ticket flow",
       L: 32,
       r: base64Url(Buffer.from("ticket-random", "utf8")),
       cfgId: 0,
+      issuedAt: now,
       mac: "",
     };
     const pathHash = base64Url(crypto.createHash("sha256").update("/protected").digest());
@@ -1399,9 +1401,13 @@ test("pow-config omits turnstilePreflight for atomic dual-provider ticket flow",
       16384,
       2
     );
+    assert.ok(binding.endsWith(`|${ticket.issuedAt}`));
     ticket.mac = hmacSha256Base64Url("pow-secret", binding);
     const ticketB64 = base64Url(
-      Buffer.from(`${ticket.v}.${ticket.e}.${ticket.L}.${ticket.r}.${ticket.cfgId}.${ticket.mac}`, "utf8")
+      Buffer.from(
+        `${ticket.v}.${ticket.e}.${ticket.L}.${ticket.r}.${ticket.cfgId}.${ticket.issuedAt}.${ticket.mac}`,
+        "utf8"
+      )
     );
 
     const turnToken = "atomic-turn-token-1234567890";

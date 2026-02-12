@@ -34,13 +34,17 @@ const tamperBase64UrlBytes = (value) => {
 const parseTicket = (ticketB64) => {
   const raw = fromBase64Url(ticketB64).toString("utf8");
   const parts = raw.split(".");
+  if (parts.length !== 7) return null;
+  const issuedAt = Number.parseInt(parts[5], 10);
+  if (!Number.isFinite(issuedAt) || issuedAt <= 0) return null;
   return {
     v: Number.parseInt(parts[0], 10),
     e: Number.parseInt(parts[1], 10),
     L: Number.parseInt(parts[2], 10),
     r: parts[3],
     cfgId: Number.parseInt(parts[4], 10),
-    mac: parts[5],
+    issuedAt,
+    mac: parts[6],
   };
 };
 
@@ -435,6 +439,7 @@ const makeTicketB64 = ({ powSecret, payload, pathHash, host = "example.com" }) =
     L: 8,
     r: base64Url(crypto.randomBytes(16)),
     cfgId: payload.id,
+    issuedAt: Math.floor(Date.now() / 1000),
     mac: "",
   };
   const bindPath = payload.c.POW_BIND_PATH !== false ? pathHash : "any";
@@ -444,11 +449,12 @@ const makeTicketB64 = ({ powSecret, payload, pathHash, host = "example.com" }) =
   const bindTls = payload.c.POW_BIND_TLS === true ? payload.d.tlsFingerprint : "any";
   const pageBytes = Math.max(1, Math.floor(Number(payload.c.POW_PAGE_BYTES) || 0));
   const mixRounds = Math.max(1, Math.floor(Number(payload.c.POW_MIX_ROUNDS) || 0));
-  const binding = `${ticket.v}|${ticket.e}|${ticket.L}|${ticket.r}|${ticket.cfgId}|${host.toLowerCase()}|${bindPath}|${bindIp}|${bindCountry}|${bindAsn}|${bindTls}|${pageBytes}|${mixRounds}`;
+  const binding = `${ticket.v}|${ticket.e}|${ticket.L}|${ticket.r}|${ticket.cfgId}|${host.toLowerCase()}|${bindPath}|${bindIp}|${bindCountry}|${bindAsn}|${bindTls}|${pageBytes}|${mixRounds}|${ticket.issuedAt}`;
+  assert.ok(binding.endsWith(`|${ticket.issuedAt}`));
   ticket.mac = base64Url(crypto.createHmac("sha256", powSecret).update(binding).digest());
   return base64Url(
     Buffer.from(
-      `${ticket.v}.${ticket.e}.${ticket.L}.${ticket.r}.${ticket.cfgId}.${ticket.mac}`,
+      `${ticket.v}.${ticket.e}.${ticket.L}.${ticket.r}.${ticket.cfgId}.${ticket.issuedAt}.${ticket.mac}`,
       "utf8",
     ),
   );
@@ -565,6 +571,7 @@ const runCcrBootstrap = async (handler) => {
   const args = extractChallengeArgs(html);
   assert.ok(args);
   const ticket = parseTicket(args.ticketB64);
+  assert.ok(ticket);
   const solver = await createMhgSolver({
     ticketB64: args.ticketB64,
     steps: ticket.L,
@@ -633,6 +640,7 @@ const runCcrBootstrapSplit = async (handler) => {
     pathHash,
   });
   const ticket = parseTicket(ticketB64);
+  assert.ok(ticket);
   const solver = await createMhgSolver({
     ticketB64,
     steps: ticket.L,

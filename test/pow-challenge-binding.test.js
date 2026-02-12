@@ -329,7 +329,7 @@ const makePowBindingString = (
   mixRounds,
 ) => {
   const host = typeof hostname === "string" ? hostname.toLowerCase() : "";
-  return `${ticket.v}|${ticket.e}|${ticket.L}|${ticket.r}|${ticket.cfgId}|${host}|${pathHash}|${ipScope}|${country}|${asn}|${tlsFingerprint}|${pageBytes}|${mixRounds}`;
+  return `${ticket.v}|${ticket.e}|${ticket.L}|${ticket.r}|${ticket.cfgId}|${host}|${pathHash}|${ipScope}|${country}|${asn}|${tlsFingerprint}|${pageBytes}|${mixRounds}|${ticket.issuedAt}`;
 };
 
 const resolveBindingValues = (payloadObj, pathHash) => ({
@@ -347,6 +347,7 @@ const makeTicketFromPayload = ({ payloadObj, pathHash, host = "example.com" }) =
     L: 20,
     r: base64Url(crypto.randomBytes(16)),
     cfgId: payloadObj.id,
+    issuedAt: Math.floor(Date.now() / 1000),
     mac: "",
   };
   const binding = resolveBindingValues(payloadObj, pathHash);
@@ -366,7 +367,7 @@ const makeTicketFromPayload = ({ payloadObj, pathHash, host = "example.com" }) =
   ticket.mac = base64Url(crypto.createHmac("sha256", payloadObj.c.POW_TOKEN).update(bindingString).digest());
   const ticketB64 = base64Url(
     Buffer.from(
-      `${ticket.v}.${ticket.e}.${ticket.L}.${ticket.r}.${ticket.cfgId}.${ticket.mac}`,
+      `${ticket.v}.${ticket.e}.${ticket.L}.${ticket.r}.${ticket.cfgId}.${ticket.issuedAt}.${ticket.mac}`,
       "utf8",
     ),
   );
@@ -452,6 +453,19 @@ test("challenge rejects binding mismatch after commit via split core harness", a
     const html = await pageRes.text();
     const args = extractChallengeArgs(html);
     assert.ok(args, "challenge html includes args");
+    const ticketRaw = Buffer.from(
+      String(args.ticketB64).replace(/-/g, "+").replace(/_/g, "/"),
+      "base64",
+    ).toString("utf8");
+    const ticketParts = ticketRaw.split(".");
+    assert.equal(ticketParts.length, 7);
+    const issuedAt = Number.parseInt(ticketParts[5], 10);
+    assert.ok(Number.isFinite(issuedAt) && issuedAt > 0);
+    const bindingRaw = Buffer.from(
+      String(args.bindingB64).replace(/-/g, "+").replace(/_/g, "/"),
+      "base64",
+    ).toString("utf8");
+    assert.match(bindingRaw, new RegExp(`\\|${issuedAt}$`, "u"));
 
     const rootB64 = base64Url(crypto.randomBytes(32));
     const nonce = base64Url(crypto.randomBytes(12));

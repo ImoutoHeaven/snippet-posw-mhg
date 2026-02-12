@@ -78,16 +78,33 @@ const decodeTicket = (ticketB64) => {
   const raw = Buffer.from(String(ticketB64 || "").replace(/-/g, "+").replace(/_/g, "/"), "base64")
     .toString("utf8");
   const parts = raw.split(".");
-  if (parts.length !== 6) return null;
+  if (parts.length !== 7) return null;
+  const issuedAt = Number.parseInt(parts[5], 10);
+  if (!Number.isFinite(issuedAt) || issuedAt <= 0) return null;
   return {
     v: Number.parseInt(parts[0], 10),
     e: Number.parseInt(parts[1], 10),
     L: Number.parseInt(parts[2], 10),
     r: parts[3] || "",
     cfgId: Number.parseInt(parts[4], 10),
-    mac: parts[5] || "",
+    issuedAt,
+    mac: parts[6] || "",
   };
 };
+
+test("ticket helper enforces 7-part schema with issuedAt", () => {
+  const sixPart = base64Url(Buffer.from("3.1700000000.16.rand.7.sig", "utf8"));
+  assert.equal(decodeTicket(sixPart), null);
+
+  const issuedAt = Math.floor(Date.now() / 1000);
+  const sevenPart = base64Url(
+    Buffer.from(`3.1700000000.16.rand.7.${issuedAt}.sig`, "utf8")
+  );
+  const parsed = decodeTicket(sevenPart);
+  assert.ok(parsed, "7-part ticket parses");
+  assert.equal(parsed.issuedAt, issuedAt);
+  assert.equal(parsed.mac, "sig");
+});
 
 const extractChallengeArgs = (html) => {
   const match = html.match(
@@ -2094,7 +2111,7 @@ test("/commit returns stale hint when ticket cfgId mismatches inner context", as
     assert.ok(ticket, "ticket decodes");
     const tamperedTicketB64 = base64Url(
       Buffer.from(
-        `${ticket.v}.${ticket.e}.${ticket.L}.${ticket.r}.${ticket.cfgId + 1}.${ticket.mac}`,
+        `${ticket.v}.${ticket.e}.${ticket.L}.${ticket.r}.${ticket.cfgId + 1}.${ticket.issuedAt}.${ticket.mac}`,
         "utf8"
       )
     );

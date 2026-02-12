@@ -204,10 +204,14 @@ const makeSplitInnerHeaders = (payloadObj, secret = CONFIG_SECRET, expireOffsetS
 const parseTicket = (ticketB64) => {
   const raw = fromBase64Url(ticketB64).toString("utf8");
   const parts = raw.split(".");
+  if (parts.length !== 7) return null;
+  const issuedAt = Number.parseInt(parts[5], 10);
+  if (!Number.isFinite(issuedAt) || issuedAt <= 0) return null;
   return {
     L: Number.parseInt(parts[2], 10),
     cfgId: Number.parseInt(parts[4], 10),
-    mac: parts[5],
+    issuedAt,
+    mac: parts[6],
   };
 };
 
@@ -301,6 +305,7 @@ const buildMhgWitnessBundle = async ({ ticketB64, nonce }) => {
   const { makeGenesisPage, mixPage } = await import("../../lib/mhg/mix-aes.js");
   const { buildMerkle, buildProof } = await import("../../lib/mhg/merkle.js");
   const ticket = parseTicket(ticketB64);
+  if (!ticket) throw new Error("invalid ticket");
   const graphSeed = deriveMhgGraphSeed(ticketB64, nonce);
   const nonce16 = deriveMhgNonce16(nonce);
   const pageBytes = 64;
