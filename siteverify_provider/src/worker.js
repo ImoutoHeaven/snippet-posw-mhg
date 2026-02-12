@@ -20,6 +20,14 @@ const jsonResponse = (payload) =>
     },
   });
 
+const baseContract = (overrides = {}) => ({
+  ok: false,
+  reason: "provider_failed",
+  checks: {},
+  providers: {},
+  ...overrides,
+});
+
 const canonical = ({ method, path, kid, exp, nonce, bodySha256 }) =>
   ["SV1", method, path, kid, String(exp), nonce, bodySha256].join("\n");
 
@@ -504,6 +512,7 @@ const runProviders = async (request, parsed) => {
   return {
     ok: allOk,
     reason: allOk ? "ok" : "provider_failed",
+    checks: {},
     providers,
   };
 };
@@ -522,7 +531,7 @@ export default {
 
     const { tooLarge, bodyBytes } = await readBodyWithLimit(request);
     if (tooLarge) {
-      return jsonResponse({ ok: false, reason: "bad_request" });
+      return jsonResponse(baseContract({ reason: "bad_request" }));
     }
 
     const bodyHashValid = await isBodyHashValid(authContext, bodyBytes);
@@ -534,15 +543,15 @@ export default {
     try {
       parsedBody = JSON.parse(decoder.decode(bodyBytes));
     } catch {
-      return jsonResponse({ ok: false, reason: "bad_request" });
+      return jsonResponse(baseContract({ reason: "bad_request" }));
     }
 
     const providerRequest = parseProviderRequest(parsedBody);
     if (!providerRequest) {
-      return jsonResponse({ ok: false, reason: "bad_request" });
+      return jsonResponse(baseContract({ reason: "bad_request" }));
     }
 
     const result = await runProviders(request, providerRequest);
-    return jsonResponse(result);
+    return jsonResponse(baseContract(result));
   },
 };

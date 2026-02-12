@@ -227,3 +227,43 @@ test("client rejects non-200 response", async () => {
     restoreGlobals();
   }
 });
+
+test("client accepts provider_failed contract with checks and providers", async () => {
+  const restoreGlobals = ensureGlobals();
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = async () =>
+    new Response(
+      JSON.stringify({
+        ok: false,
+        reason: "provider_failed",
+        checks: {},
+        providers: {
+          turnstile: {
+            ok: false,
+            httpStatus: 200,
+            normalized: { success: false, cdata: "" },
+            rawResponse: { success: false },
+          },
+        },
+      }),
+      {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      },
+    );
+
+  try {
+    const result = await verifyViaSiteverifyAggregator({
+      config: baseConfig,
+      payload: basePayload,
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, "provider_failed");
+    assert.deepEqual(result.checks, {});
+    assert.ok(result.providers && typeof result.providers === "object");
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreGlobals();
+  }
+});

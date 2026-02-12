@@ -173,7 +173,12 @@ test("body > 256KB returns bad_request payload", async () => {
   const res = await worker.fetch(req);
 
   assert.equal(res.status, 200);
-  assert.deepEqual(await res.json(), { ok: false, reason: "bad_request" });
+  assert.deepEqual(await res.json(), {
+    ok: false,
+    reason: "bad_request",
+    checks: {},
+    providers: {},
+  });
 });
 
 test("oversized stream is rejected before reading further chunks", async () => {
@@ -202,7 +207,12 @@ test("oversized stream is rejected before reading further chunks", async () => {
   const res = await worker.fetch(req);
 
   assert.equal(res.status, 200);
-  assert.deepEqual(await res.json(), { ok: false, reason: "bad_request" });
+  assert.deepEqual(await res.json(), {
+    ok: false,
+    reason: "bad_request",
+    checks: {},
+    providers: {},
+  });
 });
 
 test("invalid json under size limit returns bad_request payload", async () => {
@@ -213,7 +223,12 @@ test("invalid json under size limit returns bad_request payload", async () => {
   const res = await worker.fetch(req);
 
   assert.equal(res.status, 200);
-  assert.deepEqual(await res.json(), { ok: false, reason: "bad_request" });
+  assert.deepEqual(await res.json(), {
+    ok: false,
+    reason: "bad_request",
+    checks: {},
+    providers: {},
+  });
 });
 
 test("runs turnstile and recaptcha in parallel and returns provider results", async () => {
