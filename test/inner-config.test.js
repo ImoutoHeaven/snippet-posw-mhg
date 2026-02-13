@@ -1253,6 +1253,58 @@ test("pow-config accepts header-only consume token", async () => {
   }
 });
 
+test("pow-config prefers header atomic source over query when mixed inputs are present", async () => {
+  const restoreGlobals = ensureGlobals();
+  const modulePath = await buildConfigModule("config-secret", {
+    configOverrides: {
+      STRIP_ATOMIC_QUERY: true,
+      STRIP_ATOMIC_HEADERS: true,
+    },
+  });
+  const mod = await import(`${pathToFileURL(modulePath).href}?v=${Date.now()}`);
+  const handler = mod.default.fetch;
+  let forwarded = null;
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async (request) => {
+      forwarded = request;
+      return new Response("ok", { status: 200 });
+    };
+
+    const req = new Request(
+      "https://example.com/protected?__ts=q-turn&__tt=q-ticket&__ct=q-consume&keep=1",
+      {
+        headers: {
+          "CF-Connecting-IP": "1.2.3.4",
+          "x-consume": "h-consume",
+        },
+      }
+    );
+    const res = await handler(req);
+    assert.equal(res.status, 200);
+    assert.ok(forwarded, "fetch called with modified request");
+
+    assert.equal(forwarded.headers.get("x-consume"), null);
+    const forwardedUrl = new URL(forwarded.url);
+    assert.equal(forwardedUrl.searchParams.get("__ts"), null);
+    assert.equal(forwardedUrl.searchParams.get("__tt"), null);
+    assert.equal(forwardedUrl.searchParams.get("__ct"), null);
+    assert.equal(forwardedUrl.searchParams.get("keep"), "1");
+
+    const { payload } = readInnerPayload(forwarded.headers);
+    const decoded = base64UrlDecode(payload);
+    assert.ok(decoded, "payload decodes");
+    const parsed = JSON.parse(decoded);
+    assert.equal(parsed.s.atomic.captchaToken, "");
+    assert.equal(parsed.s.atomic.ticketB64, "");
+    assert.equal(parsed.s.atomic.consumeToken, "h-consume");
+    assert.equal(parsed.s.atomic.fromCookie, false);
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreGlobals();
+  }
+});
+
 test("pow-config accepts cookie mode c with empty captcha token", async () => {
   const restoreGlobals = ensureGlobals();
   const modulePath = await buildConfigModule("config-secret");

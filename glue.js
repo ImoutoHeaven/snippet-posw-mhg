@@ -1595,33 +1595,35 @@ export default async function runPow(
       );
       if (atomicEnabled) {
         const consume = state && state.consume;
-        if (!consume) throw new Error("Consume Missing");
-        const query = { [Q_CONSUME]: consume };
-        const headers = { [H_CONSUME]: consume };
-        if (embedded) {
-          postAtomicMessage({ mode: "pow", consume, headers, query });
-          log(t("access_granted_close"));
-          setStatus(true);
-          document.title = t("title_done");
-          return;
-        }
-        const cookieValue = `1|c||${consume}`;
-        const cookiePath = cookiePathForTarget(target);
-        if (
-          canUseCookie(C_NAME, cookieValue) &&
-          setAtomicCookie(C_NAME, cookieValue, 5, cookiePath)
-        ) {
+        if (consume) {
+          const query = { [Q_CONSUME]: consume };
+          const headers = { [H_CONSUME]: consume };
+          if (embedded) {
+            postAtomicMessage({ mode: "pow", consume, headers, query });
+            log(t("access_granted_close"));
+            setStatus(true);
+            document.title = t("title_done");
+            return;
+          }
+          const cookieValue = `1|c||${consume}`;
+          const cookiePath = cookiePathForTarget(target);
+          if (
+            canUseCookie(C_NAME, cookieValue) &&
+            setAtomicCookie(C_NAME, cookieValue, 5, cookiePath)
+          ) {
+            log(t("access_granted_redirecting", { redirect: yellowMark(t("redirecting")) }));
+            setStatus(true);
+            document.title = t("title_redirecting");
+            window.location.replace(target);
+            return;
+          }
           log(t("access_granted_redirecting", { redirect: yellowMark(t("redirecting")) }));
           setStatus(true);
           document.title = t("title_redirecting");
-          window.location.replace(target);
+          window.location.replace(addQuery(target, query));
           return;
         }
-        log(t("access_granted_redirecting", { redirect: yellowMark(t("redirecting")) }));
-        setStatus(true);
-        document.title = t("title_redirecting");
-        window.location.replace(addQuery(target, query));
-        return;
+        if (!state || state.done !== true) throw new Error("Consume Missing");
       }
     } else {
       const captchaToken = await runCaptcha(ticketB64, captchaCfg);
