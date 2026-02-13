@@ -31,16 +31,6 @@ const I18N = {
     turnstile_rejected: "Turnstile Rejected",
     turnstile_failed: "Turnstile Failed",
     turnstile_expired: "Turnstile Expired",
-    recaptcha_load_failed: "reCAPTCHA Load Failed",
-    loading_recaptcha: "Loading reCAPTCHA...",
-    waiting_recaptcha: "Waiting for reCAPTCHA...",
-    recaptcha_retrying: "reCAPTCHA failed. Retrying...",
-    submitting_recaptcha: "Submitting reCAPTCHA...",
-    submitting_recaptcha_done: "Submitting reCAPTCHA... {done}",
-    recaptcha_done: "reCAPTCHA... {done}",
-    recaptcha_rejected_retry: "reCAPTCHA rejected. Please try again.",
-    recaptcha_rejected: "reCAPTCHA Rejected",
-    recaptcha_failed: "reCAPTCHA Failed",
     loading_solver: "Loading solver...",
     worker_missing: "Worker Missing",
     bad_binding: "Bad Binding",
@@ -90,16 +80,6 @@ const I18N = {
     turnstile_rejected: "Turnstile 被拒绝",
     turnstile_failed: "Turnstile 失败",
     turnstile_expired: "Turnstile 已过期",
-    recaptcha_load_failed: "reCAPTCHA 加载失败",
-    loading_recaptcha: "加载 reCAPTCHA...",
-    waiting_recaptcha: "等待 reCAPTCHA...",
-    recaptcha_retrying: "reCAPTCHA 失败，正在重试...",
-    submitting_recaptcha: "提交 reCAPTCHA...",
-    submitting_recaptcha_done: "提交 reCAPTCHA... {done}",
-    recaptcha_done: "reCAPTCHA... {done}",
-    recaptcha_rejected_retry: "reCAPTCHA 被拒绝，请重试。",
-    recaptcha_rejected: "reCAPTCHA 被拒绝",
-    recaptcha_failed: "reCAPTCHA 失败",
     loading_solver: "加载求解器...",
     worker_missing: "Worker 不可用",
     bad_binding: "绑定无效",
@@ -149,16 +129,6 @@ const I18N = {
     turnstile_rejected: "Turnstile が拒否されました",
     turnstile_failed: "Turnstile 失敗",
     turnstile_expired: "Turnstile の有効期限切れ",
-    recaptcha_load_failed: "reCAPTCHA の読み込みに失敗しました",
-    loading_recaptcha: "reCAPTCHA を読み込み中...",
-    waiting_recaptcha: "reCAPTCHA を待機中...",
-    recaptcha_retrying: "reCAPTCHA に失敗しました。再試行します...",
-    submitting_recaptcha: "reCAPTCHA を送信中...",
-    submitting_recaptcha_done: "reCAPTCHA を送信中... {done}",
-    recaptcha_done: "reCAPTCHA... {done}",
-    recaptcha_rejected_retry: "reCAPTCHA が拒否されました。再試行してください。",
-    recaptcha_rejected: "reCAPTCHA が拒否されました",
-    recaptcha_failed: "reCAPTCHA 失敗",
     loading_solver: "ソルバーを読み込み中...",
     worker_missing: "Worker が見つかりません",
     bad_binding: "無効なバインド",
@@ -241,8 +211,6 @@ const t = (key, vars) => translate(activeLocale, key, vars);
 const wrapSpan = (klass, text) => `<span class="${klass}">${text}</span>`;
 const doneMark = () => wrapSpan("green", t("done"));
 const yellowMark = (text) => wrapSpan("yellow", text);
-const RECAPTCHA_DISCLOSURE_HTML =
-  '<small class="recaptcha-disclosure">This site is protected by reCAPTCHA and the Google <a href="https://policies.google.com/privacy">Privacy Policy</a> and <a href="https://policies.google.com/terms">Terms of Service</a> apply.</small>';
 
 const ERROR_KEY_BY_MESSAGE = {
   "Request Failed": "request_failed",
@@ -252,9 +220,6 @@ const ERROR_KEY_BY_MESSAGE = {
   "Turnstile Failed": "turnstile_failed",
   "Turnstile Expired": "turnstile_expired",
   "Turnstile Rejected": "turnstile_rejected",
-  "reCAPTCHA Load Failed": "recaptcha_load_failed",
-  "reCAPTCHA Failed": "recaptcha_failed",
-  "reCAPTCHA Rejected": "recaptcha_rejected",
   "Worker Missing": "worker_missing",
   "Bad Binding": "bad_binding",
   "Challenge Failed": "challenge_failed",
@@ -287,8 +252,8 @@ const sha256Bytes = async (value) => {
   const buf = await crypto.subtle.digest("SHA-256", bytes);
   return new Uint8Array(buf);
 };
-const captchaTagV1 = async (turnToken, recaptchaToken) => {
-  const material = `ctag|v1|t=${turnToken}|r=${recaptchaToken}`;
+const captchaTagV1 = async (turnToken) => {
+  const material = `ctag|v1|t=${turnToken}`;
   return base64UrlEncodeNoPad((await sha256Bytes(material)).slice(0, 12));
 };
 
@@ -303,15 +268,9 @@ const parseCanonicalCaptchaEnvelope = (captchaToken) => {
     return null;
   }
   if (!envelope || typeof envelope !== "object" || Array.isArray(envelope)) return null;
-  const keys = Object.keys(envelope);
-  for (const key of keys) {
-    if (key !== "turnstile" && key !== "recaptcha_v3") return null;
-    if (typeof envelope[key] !== "string" || !envelope[key]) return null;
-  }
-  return {
-    turnstile: typeof envelope.turnstile === "string" ? envelope.turnstile : "",
-    recaptcha_v3: typeof envelope.recaptcha_v3 === "string" ? envelope.recaptcha_v3 : "",
-  };
+  if (typeof envelope.turnstile !== "string" || !envelope.turnstile) return null;
+  if (Object.keys(envelope).some((key) => key !== "turnstile")) return null;
+  return { turnstile: envelope.turnstile };
 };
 
 const parseAtomicCfg = (raw) => {
@@ -595,9 +554,6 @@ const initUi = () => {
     "#log{font-family:var(--mono);font-size:13px;color:var(--sub);text-align:left;height:120px;overflow:hidden;position:relative;mask-image:linear-gradient(to bottom,transparent,black 30%);-webkit-mask-image:linear-gradient(to bottom,transparent,black 30%);display:flex;flex-direction:column;justify-content:flex-end;background:transparent;border:none;border-radius:0;padding:0;}",
     "#ts{margin-top:16px;display:flex;justify-content:center;max-height:0;opacity:0;overflow:hidden;transition:max-height 0.4s cubic-bezier(0.16,1,0.3,1),opacity 0.3s ease,margin-top 0.4s cubic-bezier(0.16,1,0.3,1);position:relative;z-index:2;}#ts.show{max-height:400px;opacity:1;margin-top:16px;}#ts.hide{max-height:0;opacity:0;margin-top:0;}",
     ".log-line{padding:3px 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:0 0 auto;}.log-line .yellow{color:var(--yellow);}.log-line .green{color:var(--green);}",
-    ".log-line .recaptcha-disclosure{display:block;white-space:normal;line-height:1.35;overflow-wrap:anywhere;}",
-    ".log-line .recaptcha-disclosure a{color:#93c5fd;text-decoration:underline;}",
-    ".grecaptcha-badge{visibility:hidden !important;}",
     "@keyframes fade-in{from{opacity:0;transform:scale(0.98)}to{opacity:1;transform:scale(1)}}",
     "@keyframes title-shine{0%{background-position:200% 0;}100%{background-position:-200% 0;}}"
   ].join("");
@@ -1096,13 +1052,6 @@ const log = (msg) => {
   return lines.length - 1;
 };
 
-let recaptchaDisclosureLogged = false;
-const logRecaptchaDisclosure = () => {
-  if (recaptchaDisclosureLogged) return;
-  recaptchaDisclosureLogged = true;
-  log(RECAPTCHA_DISCLOSURE_HTML);
-};
-
 const update = (idx, msg) => {
   if (idx < 0 || idx >= lines.length) return;
   lines[idx] = msg;
@@ -1149,60 +1098,6 @@ const loadTurnstile = () => {
     (document.head || document.documentElement).appendChild(script);
   });
   return turnstilePromise;
-};
-
-let recaptchaPromise;
-let recaptchaRenderKey = "";
-const loadRecaptcha = (sitekey) => {
-  const key = String(sitekey || "");
-  if (!key) return Promise.reject(new Error("reCAPTCHA Load Failed"));
-  if (window.grecaptcha) return Promise.resolve(window.grecaptcha);
-  if (recaptchaPromise && recaptchaRenderKey === key) return recaptchaPromise;
-  recaptchaRenderKey = key;
-  recaptchaPromise = new Promise((resolve, reject) => {
-    const script = document.createElement("script");
-    script.src =
-      "https://recaptcha.net/recaptcha/api.js?render=" + encodeURIComponent(recaptchaRenderKey);
-    script.async = true;
-    script.defer = true;
-    script.onload = () => resolve(window.grecaptcha);
-    script.onerror = () => {
-      recaptchaPromise = null;
-      recaptchaRenderKey = "";
-      reject(new Error("reCAPTCHA Load Failed"));
-    };
-    (document.head || document.documentElement).appendChild(script);
-  });
-  return recaptchaPromise;
-};
-
-const executeRecaptcha = async (sitekey, action) => {
-  const grecaptcha = await loadRecaptcha(sitekey);
-  if (!grecaptcha || typeof grecaptcha.ready !== "function") {
-    recaptchaPromise = null;
-    recaptchaRenderKey = "";
-    throw new Error("reCAPTCHA Load Failed");
-  }
-  return await new Promise((resolve, reject) => {
-    try {
-      grecaptcha.ready(() => {
-        try {
-          const execute = grecaptcha.execute;
-          if (typeof execute !== "function") {
-            reject(new Error("reCAPTCHA Load Failed"));
-            return;
-          }
-          Promise.resolve(execute.call(grecaptcha, sitekey, { action }))
-            .then((token) => resolve(token))
-            .catch(() => reject(new Error("reCAPTCHA Failed")));
-        } catch {
-          reject(new Error("reCAPTCHA Failed"));
-        }
-      });
-    } catch {
-      reject(new Error("reCAPTCHA Failed"));
-    }
-  });
 };
 
 const runTurnstile = async (ticketB64, sitekey, submitToken) => {
@@ -1309,46 +1204,10 @@ const runTurnstile = async (ticketB64, sitekey, submitToken) => {
   return null;
 };
 
-const runRecaptchaV3 = async (sitekey, action, submitToken) => {
-  log(t("loading_recaptcha"));
-  const maxAttempts = 5;
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    log(t("waiting_recaptcha"));
-    let token = "";
-    try {
-      token = String(await executeRecaptcha(sitekey, action));
-    } catch (error) {
-      if (attempt >= maxAttempts) throw error;
-      log(t("recaptcha_retrying"));
-      continue;
-    }
-    if (!token) {
-      if (attempt >= maxAttempts) throw new Error("reCAPTCHA Failed");
-      log(t("recaptcha_retrying"));
-      continue;
-    }
-    const submitLine = submitToken ? log(t("submitting_recaptcha")) : -1;
-    try {
-      if (submitToken) await submitToken(token);
-      if (submitLine !== -1) {
-        update(submitLine, t("submitting_recaptcha_done", { done: doneMark() }));
-      }
-      log(t("recaptcha_done", { done: doneMark() }));
-      return token;
-    } catch (error) {
-      throw error;
-    }
-  }
-  return "";
-};
-
 const buildCaptchaEnvelope = (tokens) => {
   const out = {};
   if (tokens && typeof tokens.turnstile === "string" && tokens.turnstile) {
     out.turnstile = tokens.turnstile;
-  }
-  if (tokens && typeof tokens.recaptcha_v3 === "string" && tokens.recaptcha_v3) {
-    out.recaptcha_v3 = tokens.recaptcha_v3;
   }
   return JSON.stringify(out);
 };
@@ -1360,47 +1219,17 @@ const runCaptcha = async (ticketB64, captchaCfg, submitToken) => {
       typeof captchaCfg.turnstile.sitekey === "string" &&
       captchaCfg.turnstile.sitekey
   );
-  const hasRecaptcha = Boolean(
-    captchaCfg &&
-      captchaCfg.recaptcha_v3 &&
-      typeof captchaCfg.recaptcha_v3.sitekey === "string" &&
-      captchaCfg.recaptcha_v3.sitekey
-  );
-  if (!hasTurn && !hasRecaptcha) {
+  if (!hasTurn) {
     throw new Error("No Challenge");
   }
-
-  if (hasTurn && !hasRecaptcha) {
-    const turnToken = await runTurnstile(
-      ticketB64,
-      captchaCfg.turnstile.sitekey,
-      submitToken
-        ? async (token) => submitToken(buildCaptchaEnvelope({ turnstile: token }))
-        : undefined
-    );
-    return buildCaptchaEnvelope({ turnstile: turnToken });
-  }
-
-  if (!hasTurn && hasRecaptcha) {
-    const recap = captchaCfg.recaptcha_v3;
-    const recapToken = await runRecaptchaV3(
-      recap.sitekey,
-      recap.action || "submit",
-      submitToken
-        ? async (token) => submitToken(buildCaptchaEnvelope({ recaptcha_v3: token }))
-        : undefined
-    );
-    return buildCaptchaEnvelope({ recaptcha_v3: recapToken });
-  }
-
-  const recapCfg = captchaCfg.recaptcha_v3;
-  const [turnToken, recapToken] = await Promise.all([
-    runTurnstile(ticketB64, captchaCfg.turnstile.sitekey),
-    runRecaptchaV3(recapCfg.sitekey, recapCfg.action || "submit"),
-  ]);
-  const envelope = buildCaptchaEnvelope({ turnstile: turnToken, recaptcha_v3: recapToken });
-  if (submitToken) await submitToken(envelope);
-  return envelope;
+  const turnToken = await runTurnstile(
+    ticketB64,
+    captchaCfg.turnstile.sitekey,
+    submitToken
+      ? async (token) => submitToken(buildCaptchaEnvelope({ turnstile: token }))
+      : undefined
+  );
+  return buildCaptchaEnvelope({ turnstile: turnToken });
 };
 
 const runPowFlow = async (
@@ -1431,7 +1260,7 @@ const runPowFlow = async (
   if (captchaToken) {
     const parsedCaptcha = parseCanonicalCaptchaEnvelope(captchaToken);
     if (!parsedCaptcha) throw new Error("Bad Binding");
-    const captchaTag = await captchaTagV1(parsedCaptcha.turnstile, parsedCaptcha.recaptcha_v3);
+    const captchaTag = await captchaTagV1(parsedCaptcha.turnstile);
     powBinding = `${authBinding}|${captchaTag}`;
   }
 
@@ -1702,16 +1531,7 @@ export default async function runPow(
         typeof captchaCfg.turnstile.sitekey === "string" &&
         captchaCfg.turnstile.sitekey
     );
-    const needRecaptcha = Boolean(
-      captchaCfg &&
-        captchaCfg.recaptcha_v3 &&
-        typeof captchaCfg.recaptcha_v3.sitekey === "string" &&
-        captchaCfg.recaptcha_v3.sitekey
-    );
-    if (needRecaptcha) {
-      logRecaptchaDisclosure();
-    }
-    const needCaptcha = needTurn || needRecaptcha;
+    const needCaptcha = needTurn;
     const cfg = parseAtomicCfg(atomicCfg);
     const atomicEnabled = cfg.atomic;
     const Q_CAPTCHA = cfg.q.ts;

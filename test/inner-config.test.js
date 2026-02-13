@@ -77,11 +77,6 @@ const encodeAtomicCookie = (value) => encodeURIComponent(value);
 const hmacSha256Base64Url = (secret, data) =>
   base64Url(crypto.createHmac("sha256", secret).update(data).digest());
 
-const captchaTagV1 = (turnToken = "", recaptchaToken = "") => {
-  const material = `ctag|v1|t=${String(turnToken || "")}|r=${String(recaptchaToken || "")}`;
-  return base64Url(crypto.createHash("sha256").update(material).digest().subarray(0, 12));
-};
-
 const makePowBindingString = (
   ticket,
   hostname,
@@ -348,6 +343,18 @@ const makeInnerHeaders = ({
   headers.set("X-Pow-Inner-Expire", String(exp));
   return headers;
 };
+
+test("runtime contracts have no recaptcha protocol references", async () => {
+  const repoRoot = fileURLToPath(new URL("..", import.meta.url));
+  const runtimeSources = await Promise.all([
+    readFile(join(repoRoot, "lib", "pow", "api-engine.js"), "utf8"),
+    readFile(join(repoRoot, "lib", "pow", "business-gate.js"), "utf8"),
+    readFile(join(repoRoot, "glue.js"), "utf8"),
+  ]);
+  for (const source of runtimeSources) {
+    assert.doesNotMatch(source, /recaptcha|RECAPTCHA_|recaptcha_v3/u);
+  }
+});
 
 test("core-1 rejects missing or invalid inner payload", async () => {
   const restoreGlobals = ensureGlobals();
@@ -790,13 +797,14 @@ test("pow-config normalizes non-string turnstile keys", async () => {
   }
 });
 
-test("pow-config preserves recaptcha keys for recaptchaEnabled", async () => {
+test("pow-config forwards aggregator consume toggle", async () => {
   const restoreGlobals = ensureGlobals();
   const modulePath = await buildConfigModule("config-secret", {
     configOverrides: {
-      recaptchaEnabled: true,
-      RECAPTCHA_PAIRS: [{ sitekey: "rk1", secret: "rs1" }],
-      RECAPTCHA_MIN_SCORE: 0.7,
+      turncheck: true,
+      TURNSTILE_SITEKEY: "turn-site-key",
+      TURNSTILE_SECRET: "turn-secret",
+      AGGREGATOR_POW_ATOMIC_CONSUME: true,
     },
   });
   const mod = await import(`${pathToFileURL(modulePath).href}?v=${Date.now()}`);
@@ -822,89 +830,7 @@ test("pow-config preserves recaptcha keys for recaptchaEnabled", async () => {
     const decoded = base64UrlDecode(payload);
     assert.ok(decoded, "payload decodes");
     const parsed = JSON.parse(decoded);
-    assert.equal(parsed.c.recaptchaEnabled, true);
-    assert.deepEqual(parsed.c.RECAPTCHA_PAIRS, [{ sitekey: "rk1", secret: "rs1" }]);
-    assert.equal(parsed.c.RECAPTCHA_ACTION, "submit");
-    assert.equal(parsed.c.RECAPTCHA_MIN_SCORE, 0.7);
-  } finally {
-    globalThis.fetch = originalFetch;
-    restoreGlobals();
-  }
-});
-
-test("pow-config preserves recaptcha action override", async () => {
-  const restoreGlobals = ensureGlobals();
-  const modulePath = await buildConfigModule("config-secret", {
-    configOverrides: {
-      recaptchaEnabled: true,
-      RECAPTCHA_PAIRS: [{ sitekey: "rk1", secret: "rs1" }],
-      RECAPTCHA_ACTION: "login_submit",
-    },
-  });
-  const mod = await import(`${pathToFileURL(modulePath).href}?v=${Date.now()}`);
-  const handler = mod.default.fetch;
-  let forwarded = null;
-  const originalFetch = globalThis.fetch;
-  try {
-    globalThis.fetch = async (request) => {
-      forwarded = request;
-      return new Response("ok", { status: 200 });
-    };
-
-    const req = new Request("https://example.com/protected", {
-      headers: {
-        "CF-Connecting-IP": "1.2.3.4",
-      },
-    });
-    const res = await handler(req);
-    assert.equal(res.status, 200);
-    assert.ok(forwarded, "fetch called with modified request");
-
-    const { payload } = readInnerPayload(forwarded.headers);
-    const decoded = base64UrlDecode(payload);
-    assert.ok(decoded, "payload decodes");
-    const parsed = JSON.parse(decoded);
-    assert.equal(parsed.c.RECAPTCHA_ACTION, "login_submit");
-  } finally {
-    globalThis.fetch = originalFetch;
-    restoreGlobals();
-  }
-});
-
-test("pow-config normalizes invalid recaptcha pair payload", async () => {
-  const restoreGlobals = ensureGlobals();
-  const modulePath = await buildConfigModule("config-secret", {
-    configOverrides: {
-      recaptchaEnabled: true,
-      RECAPTCHA_PAIRS: [{ sitekey: "rk1" }, { secret: "rs2" }, { sitekey: "", secret: "rs3" }],
-      RECAPTCHA_MIN_SCORE: "invalid",
-    },
-  });
-  const mod = await import(`${pathToFileURL(modulePath).href}?v=${Date.now()}`);
-  const handler = mod.default.fetch;
-  let forwarded = null;
-  const originalFetch = globalThis.fetch;
-  try {
-    globalThis.fetch = async (request) => {
-      forwarded = request;
-      return new Response("ok", { status: 200 });
-    };
-
-    const req = new Request("https://example.com/protected", {
-      headers: {
-        "CF-Connecting-IP": "1.2.3.4",
-      },
-    });
-    const res = await handler(req);
-    assert.equal(res.status, 200);
-    assert.ok(forwarded, "fetch called with modified request");
-
-    const { payload } = readInnerPayload(forwarded.headers);
-    const decoded = base64UrlDecode(payload);
-    assert.ok(decoded, "payload decodes");
-    const parsed = JSON.parse(decoded);
-    assert.deepEqual(parsed.c.RECAPTCHA_PAIRS, []);
-    assert.equal(parsed.c.RECAPTCHA_MIN_SCORE, 0.5);
+    assert.equal(parsed.c.AGGREGATOR_POW_ATOMIC_CONSUME, true);
   } finally {
     globalThis.fetch = originalFetch;
     restoreGlobals();
@@ -1063,7 +989,7 @@ test("pow-config rejects invalid atomic format with 400 and empty body", async (
   }
 });
 
-test("pow-config accepts large combined captchaToken envelope under limits", async () => {
+test("pow-config accepts large turnstile captchaToken envelope under limits", async () => {
   const restoreGlobals = ensureGlobals();
   const modulePath = await buildConfigModule("config-secret");
   const mod = await import(`${pathToFileURL(modulePath).href}?v=${Date.now()}`);
@@ -1076,10 +1002,7 @@ test("pow-config accepts large combined captchaToken envelope under limits", asy
       return new Response("ok", { status: 200 });
     };
 
-    const envelope = JSON.stringify({
-      turnstile: "t".repeat(4000),
-      recaptcha_v3: "r".repeat(4000),
-    });
+    const envelope = JSON.stringify({ turnstile: "t".repeat(7984) });
     assert.ok(envelope.length < 8192, "envelope stays under captcha token max");
     const ticket = "a".repeat(2048);
     const consume = "c".repeat(256);
@@ -1292,9 +1215,6 @@ test("pow-config omits turnstilePreflight when consume integrity precheck fails"
     configOverrides: {
       powcheck: true,
       turncheck: true,
-      recaptchaEnabled: true,
-      RECAPTCHA_PAIRS: [{ sitekey: "rk1", secret: "rs1" }],
-      RECAPTCHA_MIN_SCORE: 0.5,
       ATOMIC_CONSUME: true,
       TURNSTILE_SITEKEY: "turn-site-key",
       TURNSTILE_SECRET: "turn-secret",
@@ -1319,7 +1239,6 @@ test("pow-config omits turnstilePreflight when consume integrity precheck fails"
     const ticketB64 = base64Url(Buffer.from("1.1700000000.32.r.1.1700000000.mac", "utf8"));
     const envelope = JSON.stringify({
       turnstile: "atomic-turn-token-1234567890",
-      recaptcha_v3: "atomic-recaptcha-token-1234567890",
     });
     const req = new Request(
       `https://example.com/protected?__ts=${encodeURIComponent(envelope)}&__tt=${ticketB64}&__ct=not-a-valid-v2-consume`,
@@ -1351,13 +1270,10 @@ test("pow-config omits turnstilePreflight for atomic dual-provider ticket flow",
     configOverrides: {
       powcheck: false,
       turncheck: true,
-      recaptchaEnabled: true,
       POW_BIND_PATH: true,
       POW_BIND_COUNTRY: false,
       POW_BIND_ASN: false,
       POW_BIND_TLS: false,
-      RECAPTCHA_PAIRS: [{ sitekey: "rk1", secret: "rs1" }],
-      RECAPTCHA_MIN_SCORE: 0.5,
       ATOMIC_CONSUME: true,
       TURNSTILE_SITEKEY: "turn-site-key",
       TURNSTILE_SECRET: "turn-secret",
@@ -1413,7 +1329,6 @@ test("pow-config omits turnstilePreflight for atomic dual-provider ticket flow",
     const turnToken = "atomic-turn-token-1234567890";
     const envelope = JSON.stringify({
       turnstile: turnToken,
-      recaptcha_v3: "atomic-recaptcha-token-1234567890",
     });
 
     const req = new Request(
@@ -1446,10 +1361,7 @@ test("pow-config omits turnstilePreflight when bind strategy is invalid", async 
     configOverrides: {
       powcheck: false,
       turncheck: true,
-      recaptchaEnabled: true,
       POW_BIND_PATH: true,
-      RECAPTCHA_PAIRS: [{ sitekey: "rk1", secret: "rs1" }],
-      RECAPTCHA_MIN_SCORE: 0.5,
       ATOMIC_CONSUME: true,
       TURNSTILE_SITEKEY: "turn-site-key",
       TURNSTILE_SECRET: "turn-secret",
@@ -1475,7 +1387,6 @@ test("pow-config omits turnstilePreflight when bind strategy is invalid", async 
 
     const envelope = JSON.stringify({
       turnstile: "atomic-turn-token-1234567890",
-      recaptcha_v3: "atomic-recaptcha-token-1234567890",
     });
     const req = new Request(
       `https://example.com/protected?__ts=${encodeURIComponent(envelope)}&__tt=${"a".repeat(128)}`,

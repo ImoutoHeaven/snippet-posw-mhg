@@ -68,10 +68,10 @@ test("translate falls back to key when missing", () => {
   assert.equal(glue.translate("ja", "missing_key"), "missing_key");
 });
 
-test("translate includes recaptcha copy in supported locales", () => {
-  assert.equal(glue.translate("en", "loading_recaptcha"), "Loading reCAPTCHA...");
-  assert.equal(glue.translate("zh", "loading_recaptcha"), "加载 reCAPTCHA...");
-  assert.equal(glue.translate("ja", "loading_recaptcha"), "reCAPTCHA を読み込み中...");
+test("glue i18n does not include recaptcha-only strings", () => {
+  assert.equal(glue.translate("en", "loading_recaptcha"), "loading_recaptcha");
+  assert.equal(glue.translate("zh", "loading_recaptcha"), "loading_recaptcha");
+  assert.equal(glue.translate("ja", "loading_recaptcha"), "loading_recaptcha");
 });
 
 test("title uses shine class while verifying", () => {

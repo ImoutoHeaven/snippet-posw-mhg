@@ -1,10 +1,17 @@
 const AUTH_WINDOW_SEC = 10;
 const MAX_BODY_BYTES = 256 * 1024;
+const D1_BINDING = "POW_NONCE_DB";
 const SHARED_SECRETS = Object.freeze({
   v1: "replace-me",
 });
 const TURNSTILE_SITEVERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
-const RECAPTCHA_SITEVERIFY_URL = "https://www.google.com/recaptcha/api/siteverify";
+const INIT_SQL = `
+CREATE TABLE IF NOT EXISTS pow_nonce_ledger (
+  consume_key TEXT PRIMARY KEY,
+  expire_at INTEGER NOT NULL,
+  created_at INTEGER NOT NULL
+);
+`;
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -228,11 +235,6 @@ const isBodyHashValid = async (authContext, bodyBytes) => {
   return secureEqual(authContext.bodyHashHeader, computedBodyHash);
 };
 
-const sha256Bytes = async (value) => {
-  const digest = await crypto.subtle.digest("SHA-256", encoder.encode(value));
-  return new Uint8Array(digest);
-};
-
 const getClientIP = (request, fallback = "") => {
   const directHeaders = ["cf-connecting-ip", "x-real-ip", "x-client-ip"];
   for (const header of directHeaders) {
@@ -262,28 +264,30 @@ const parseJsonObject = (value) => {
   return value;
 };
 
+const parseStrictPositiveInteger = (value) => {
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) && value > 0 ? value : null;
+  }
+  if (typeof value !== "string" || !/^\d+$/u.test(value)) {
+    return null;
+  }
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+};
+
 const parseProviderRequest = (body) => {
   const root = parseJsonObject(body);
   if (!root) return null;
 
   const providers = parseJsonObject(root.providers) ?? {};
   const tokens = parseJsonObject(root.token) ?? {};
-  const checks = parseJsonObject(root.checks) ?? {};
-
-  const recaptchaAction =
-    typeof checks.recaptchaAction === "string" ? checks.recaptchaAction.trim() : "";
-  const recaptchaMinScore = Number.isFinite(checks.recaptchaMinScore)
-    ? checks.recaptchaMinScore
-    : null;
+  const powConsume = parseJsonObject(root.powConsume);
 
   const parsed = {
     ticketMac: typeof root.ticketMac === "string" ? root.ticketMac : "",
     remoteip: typeof root.remoteip === "string" ? root.remoteip : "",
-    recaptchaAction,
-    recaptchaMinScore,
-    recaptchaChecksValid: recaptchaAction.length > 0 && Number.isFinite(recaptchaMinScore),
     turnstile: null,
-    recaptcha_v3: null,
+    powConsume: null,
   };
 
   const turnstileProvider = parseJsonObject(providers.turnstile);
@@ -294,24 +298,19 @@ const parseProviderRequest = (body) => {
     };
   }
 
-  const recaptchaProvider = parseJsonObject(providers.recaptcha_v3);
-  if (recaptchaProvider) {
-    const pairs = Array.isArray(recaptchaProvider.pairs) ? recaptchaProvider.pairs : [];
-    parsed.recaptcha_v3 = {
-      token: typeof tokens.recaptcha_v3 === "string" ? tokens.recaptcha_v3 : "",
-      pairs,
+  if (powConsume) {
+    const consumeKey = typeof powConsume.consumeKey === "string" ? powConsume.consumeKey.trim() : "";
+    const expireAt = parseStrictPositiveInteger(powConsume.expireAt);
+    if (!consumeKey || expireAt === null) {
+      return null;
+    }
+    parsed.powConsume = {
+      consumeKey,
+      expireAt,
     };
   }
 
   return parsed;
-};
-
-const pickRecaptchaPair = async (ticketMac, pairs) => {
-  if (!Array.isArray(pairs) || pairs.length === 0) return null;
-  const digest = await sha256Bytes(`kid|${typeof ticketMac === "string" ? ticketMac : ""}`);
-  const number = ((digest[0] << 24) | (digest[1] << 16) | (digest[2] << 8) | digest[3]) >>> 0;
-  const idx = number % pairs.length;
-  return { idx, pair: pairs[idx] };
 };
 
 const verifyTurnstile = async ({ provider, remoteip, ticketMac }) => {
@@ -371,95 +370,30 @@ const verifyTurnstile = async ({ provider, remoteip, ticketMac }) => {
   }
 };
 
-const verifyRecaptcha = async ({ provider, ticketMac, action, minScore, remoteip, checksValid }) => {
-  if (!checksValid) {
-    return {
-      provider: "recaptcha_v3",
-      ok: false,
-      httpStatus: 400,
-      normalized: null,
-      rawResponse: "invalid recaptcha checks",
-      pickedPairIndex: -1,
-    };
+const maybeInitConsumeLedger = async (env, db) => {
+  // Schema init is explicitly opt-in; only literal true enables it.
+  if (!db || env?.INIT_TABLES !== true) {
+    return;
+  }
+  await db.prepare(INIT_SQL).run();
+};
+
+const consumePowKey = async (db, consumeKey, expireAt, nowSec) => {
+  if (expireAt <= nowSec) {
+    return { ok: false, reason: "stale" };
   }
 
-  if (!provider || !provider.token) {
-    return {
-      provider: "recaptcha_v3",
-      ok: false,
-      httpStatus: 400,
-      normalized: null,
-      rawResponse: "missing recaptcha provider input",
-      pickedPairIndex: -1,
-    };
+  const result = await db
+    .prepare(
+      "INSERT INTO pow_nonce_ledger (consume_key, expire_at, created_at) VALUES (?1, ?2, ?3) ON CONFLICT(consume_key) DO UPDATE SET expire_at = excluded.expire_at, created_at = excluded.created_at WHERE pow_nonce_ledger.expire_at <= ?4",
+    )
+    .bind(consumeKey, expireAt, nowSec, nowSec)
+    .run();
+  const changes = Number(result?.meta?.changes ?? result?.changes ?? 0);
+  if (changes === 1) {
+    return { ok: true, reason: "ok" };
   }
-
-  const picked = await pickRecaptchaPair(ticketMac, provider.pairs);
-  if (!picked || !picked.pair || typeof picked.pair.secret !== "string" || !picked.pair.secret) {
-    return {
-      provider: "recaptcha_v3",
-      ok: false,
-      httpStatus: 400,
-      normalized: null,
-      rawResponse: "missing recaptcha pair",
-      pickedPairIndex: -1,
-    };
-  }
-
-  const form = new URLSearchParams();
-  form.set("secret", picked.pair.secret);
-  form.set("response", provider.token);
-  if (remoteip) form.set("remoteip", remoteip);
-
-  try {
-    const verifyRes = await fetch(RECAPTCHA_SITEVERIFY_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: form,
-    });
-
-    let rawResponse;
-    try {
-      rawResponse = await verifyRes.json();
-    } catch {
-      rawResponse = "invalid_json_response";
-    }
-
-    const success = rawResponse && typeof rawResponse === "object" && rawResponse.success === true;
-    const responseAction =
-      rawResponse && typeof rawResponse === "object" && typeof rawResponse.action === "string"
-        ? rawResponse.action
-        : "";
-    const score =
-      rawResponse && typeof rawResponse === "object" && Number.isFinite(rawResponse.score)
-        ? rawResponse.score
-        : null;
-
-    const actionOk = !action || responseAction === action;
-    const scoreOk = Number.isFinite(score) && score >= minScore;
-
-    return {
-      provider: "recaptcha_v3",
-      ok: success && actionOk && scoreOk,
-      httpStatus: verifyRes.status,
-      normalized: {
-        success,
-        action: responseAction,
-        score,
-      },
-      rawResponse,
-      pickedPairIndex: picked.idx,
-    };
-  } catch (error) {
-    return {
-      provider: "recaptcha_v3",
-      ok: false,
-      httpStatus: 502,
-      normalized: null,
-      rawResponse: error instanceof Error ? error.message : String(error),
-      pickedPairIndex: picked.idx,
-    };
-  }
+  return { ok: false, reason: "duplicate" };
 };
 
 const runProviders = async (request, parsed) => {
@@ -476,22 +410,10 @@ const runProviders = async (request, parsed) => {
     );
   }
 
-  if (parsed.recaptcha_v3) {
-    jobs.push(
-      verifyRecaptcha({
-        provider: parsed.recaptcha_v3,
-        ticketMac: parsed.ticketMac,
-        action: parsed.recaptchaAction,
-        minScore: parsed.recaptchaMinScore,
-        remoteip,
-        checksValid: parsed.recaptchaChecksValid,
-      }),
-    );
-  }
-
   const providerResults = await Promise.all(jobs);
   const providers = {};
-  let allOk = providerResults.length > 0;
+  const hasConsumeOnlySuccess = parsed.powConsume !== null && providerResults.length === 0;
+  let allOk = providerResults.length > 0 || hasConsumeOnlySuccess;
 
   for (const result of providerResults) {
     const entry = {
@@ -500,10 +422,6 @@ const runProviders = async (request, parsed) => {
       normalized: result.normalized,
       rawResponse: result.rawResponse,
     };
-
-    if (result.provider === "recaptcha_v3") {
-      entry.pickedPairIndex = result.pickedPairIndex;
-    }
 
     providers[result.provider] = entry;
     if (!result.ok) allOk = false;
@@ -518,7 +436,7 @@ const runProviders = async (request, parsed) => {
 };
 
 export default {
-  async fetch(request) {
+  async fetch(request, env = {}) {
     const authContext = parseAuthContext(request);
     if (!authContext) {
       return new Response(null, { status: 404 });
@@ -549,6 +467,28 @@ export default {
     const providerRequest = parseProviderRequest(parsedBody);
     if (!providerRequest) {
       return jsonResponse(baseContract({ reason: "bad_request" }));
+    }
+
+    if (providerRequest.powConsume) {
+      const db = env?.[D1_BINDING];
+      if (!db) {
+        return jsonResponse(baseContract({ reason: "provider_failed" }));
+      }
+      try {
+        await maybeInitConsumeLedger(env, db);
+        const nowSec = Math.floor(Date.now() / 1000);
+        const consumeResult = await consumePowKey(
+          db,
+          providerRequest.powConsume.consumeKey,
+          providerRequest.powConsume.expireAt,
+          nowSec,
+        );
+        if (!consumeResult.ok) {
+          return jsonResponse(baseContract({ reason: consumeResult.reason }));
+        }
+      } catch {
+        return jsonResponse(baseContract({ reason: "provider_failed" }));
+      }
     }
 
     const result = await runProviders(request, providerRequest);

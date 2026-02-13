@@ -5,7 +5,6 @@ const CONFIG = [];
 const DEFAULTS = {
   powcheck: false,
   turncheck: false,
-  recaptchaEnabled: false,
   bindPathMode: "none",
   bindPathQueryName: "path",
   bindPathHeaderName: "",
@@ -32,6 +31,7 @@ const DEFAULTS = {
   PROOF_RENEW_WINDOW_SEC: 90,
   PROOF_RENEW_MIN_SEC: 30,
   ATOMIC_CONSUME: false,
+  AGGREGATOR_POW_ATOMIC_CONSUME: false,
   ATOMIC_TURN_QUERY: "__ts",
   ATOMIC_TICKET_QUERY: "__tt",
   ATOMIC_CONSUME_QUERY: "__ct",
@@ -59,9 +59,6 @@ const DEFAULTS = {
     "https://cdn.jsdelivr.net/gh/ImoutoHeaven/snippet-posw@6a34eb1/esm/esm.js",
   POW_GLUE_URL:
     "https://cdn.jsdelivr.net/gh/ImoutoHeaven/snippet-posw@6a34eb1/glue.js",
-  RECAPTCHA_PAIRS: [],
-  RECAPTCHA_ACTION: "submit",
-  RECAPTCHA_MIN_SCORE: 0.5,
   SITEVERIFY_URL: "",
   SITEVERIFY_AUTH_KID: "v1",
   SITEVERIFY_AUTH_SECRET: "",
@@ -213,18 +210,6 @@ const normalizeBoolean = (value, fallback) =>
 
 const normalizeString = (value, fallback) =>
   typeof value === "string" ? value : fallback;
-
-const normalizeRecaptchaPairs = (value) => {
-  if (!Array.isArray(value)) return [];
-  const out = [];
-  for (const pair of value) {
-    const sitekey = normalizeString(pair && pair.sitekey, "").trim();
-    const secret = normalizeString(pair && pair.secret, "").trim();
-    if (!sitekey || !secret) continue;
-    out.push({ sitekey, secret });
-  }
-  return out;
-};
 
 const clampIntRange = (value, min, max) =>
   Math.min(max, Math.max(min, Math.floor(value)));
@@ -1024,7 +1009,10 @@ const normalizeConfig = (baseConfig) => {
     ...merged,
     powcheck: normalizeBoolean(merged.powcheck, DEFAULTS.powcheck),
     turncheck: normalizeBoolean(merged.turncheck, DEFAULTS.turncheck),
-    recaptchaEnabled: normalizeBoolean(merged.recaptchaEnabled, DEFAULTS.recaptchaEnabled),
+    AGGREGATOR_POW_ATOMIC_CONSUME: normalizeBoolean(
+      merged.AGGREGATOR_POW_ATOMIC_CONSUME,
+      DEFAULTS.AGGREGATOR_POW_ATOMIC_CONSUME
+    ),
     bindPathMode: normalizeString(merged.bindPathMode, DEFAULTS.bindPathMode),
     bindPathQueryName: normalizeString(merged.bindPathQueryName, DEFAULTS.bindPathQueryName),
     bindPathHeaderName: normalizeString(merged.bindPathHeaderName, DEFAULTS.bindPathHeaderName),
@@ -1203,17 +1191,6 @@ const normalizeConfig = (baseConfig) => {
     SITEVERIFY_AUTH_SECRET: normalizeString(
       merged.SITEVERIFY_AUTH_SECRET,
       DEFAULTS.SITEVERIFY_AUTH_SECRET
-    ),
-    RECAPTCHA_PAIRS: normalizeRecaptchaPairs(merged.RECAPTCHA_PAIRS),
-    RECAPTCHA_ACTION: (() => {
-      const action = normalizeString(merged.RECAPTCHA_ACTION, DEFAULTS.RECAPTCHA_ACTION).trim();
-      return action || DEFAULTS.RECAPTCHA_ACTION;
-    })(),
-    RECAPTCHA_MIN_SCORE: normalizeNumberClamp(
-      merged.RECAPTCHA_MIN_SCORE,
-      DEFAULTS.RECAPTCHA_MIN_SCORE,
-      0,
-      1
     ),
     POW_TOKEN: typeof merged.POW_TOKEN === "string" ? merged.POW_TOKEN : undefined,
   };

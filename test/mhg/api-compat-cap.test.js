@@ -173,18 +173,15 @@ export default {
   return tmpPath;
 };
 
-const makeInnerPayload = ({ powcheck, atomic, recaptchaEnabled, providers = "" }) => ({
+const makeInnerPayload = ({ powcheck, atomic, turncheck = true }) => ({
   v: 1,
   id: 11,
   c: {
     POW_TOKEN: "pow-secret",
     powcheck,
-    turncheck: false,
-    recaptchaEnabled,
-    providers,
-    RECAPTCHA_ACTION: "submit",
-    RECAPTCHA_MIN_SCORE: 0.5,
-    RECAPTCHA_PAIRS: [{ sitekey: "site", secret: "recaptcha-secret" }],
+    turncheck,
+    TURNSTILE_SITEKEY: "turn-site",
+    TURNSTILE_SECRET: "turn-secret",
     SITEVERIFY_URL: "https://sv.example/siteverify",
     SITEVERIFY_AUTH_KID: "v1",
     SITEVERIFY_AUTH_SECRET: "shared-secret",
@@ -257,37 +254,6 @@ const makeInnerHeaders = (payloadObj, secret = CONFIG_SECRET, expireOffsetSec = 
     "X-Pow-Inner-Mac": mac,
     "X-Pow-Inner-Expire": String(exp),
   };
-};
-
-const makeCapRequest = async (handler, payload, captchaToken) => {
-  const challengePage = await handler(
-    new Request("https://example.com/protected", {
-      method: "GET",
-      headers: {
-        ...makeInnerHeaders(payload),
-        Accept: "text/html",
-        "CF-Connecting-IP": "1.2.3.4",
-      },
-    }),
-    {},
-    {}
-  );
-  assert.equal(challengePage.status, 200);
-  const args = extractChallengeArgs(await challengePage.text());
-  assert.ok(args);
-  return new Request("https://example.com/__pow/cap", {
-    method: "POST",
-    headers: {
-      ...makeInnerHeaders(payload),
-      "Content-Type": "application/json",
-      "CF-Connecting-IP": "1.2.3.4",
-    },
-    body: JSON.stringify({
-      ticketB64: args.ticketB64,
-      pathHash: args.pathHash,
-      captchaToken,
-    }),
-  });
 };
 
 const readOptionalFile = async (filePath) => {
@@ -482,29 +448,86 @@ test("/cap keeps cap-only/combined/malformed semantics", async () => {
   };
 
   try {
+    const pathHash = sha256Base64Url("/protected");
+
     const capOnlyPayload = makeInnerPayload({
       powcheck: false,
       atomic: false,
-      recaptchaEnabled: false,
-      providers: "recaptcha",
+      turncheck: true,
     });
-    const capOnlyReq = await makeCapRequest(mod.default.fetch, capOnlyPayload, {
-      recaptcha_v3: "r".repeat(64),
+    const capOnlyTicketB64 = makeTicketB64({
+      powSecret: "pow-secret",
+      payload: capOnlyPayload,
+      pathHash,
     });
-    const capOnlyRes = await mod.default.fetch(capOnlyReq, {}, {});
+    const capOnlyRes = await mod.default.fetch(
+      new Request("https://example.com/__pow/cap", {
+        method: "POST",
+        headers: {
+          ...makeInnerHeaders(capOnlyPayload),
+          "Content-Type": "application/json",
+          "CF-Connecting-IP": "1.2.3.4",
+        },
+        body: JSON.stringify({
+          ticketB64: capOnlyTicketB64,
+          pathHash,
+          captchaToken: { turnstile: "t".repeat(64) },
+        }),
+      }),
+      {},
+      {},
+    );
     assert.equal(capOnlyRes.status, 200);
     assert.match(String(capOnlyRes.headers.get("set-cookie") || ""), /__Host-proof=/u);
 
-    const combinedPayload = makeInnerPayload({ powcheck: true, atomic: false, recaptchaEnabled: true });
-    const combinedReq = await makeCapRequest(mod.default.fetch, combinedPayload, {
-      recaptcha_v3: "r".repeat(64),
+    const combinedPayload = makeInnerPayload({ powcheck: true, atomic: false, turncheck: true });
+    const combinedTicketB64 = makeTicketB64({
+      powSecret: "pow-secret",
+      payload: combinedPayload,
+      pathHash,
     });
-    const combinedRes = await mod.default.fetch(combinedReq, {}, {});
+    const combinedRes = await mod.default.fetch(
+      new Request("https://example.com/__pow/cap", {
+        method: "POST",
+        headers: {
+          ...makeInnerHeaders(combinedPayload),
+          "Content-Type": "application/json",
+          "CF-Connecting-IP": "1.2.3.4",
+        },
+        body: JSON.stringify({
+          ticketB64: combinedTicketB64,
+          pathHash,
+          captchaToken: { turnstile: "t".repeat(64) },
+        }),
+      }),
+      {},
+      {},
+    );
     assert.equal(combinedRes.status, 404);
 
-    const malformedPayload = makeInnerPayload({ powcheck: false, atomic: false, recaptchaEnabled: true });
-    const malformedReq = await makeCapRequest(mod.default.fetch, malformedPayload, { recaptcha_v3: 1 });
-    const malformedRes = await mod.default.fetch(malformedReq, {}, {});
+    const malformedPayload = makeInnerPayload({ powcheck: false, atomic: false, turncheck: true });
+    const malformedTicketB64 = makeTicketB64({
+      powSecret: "pow-secret",
+      payload: malformedPayload,
+      pathHash,
+    });
+    const malformedRes = await mod.default.fetch(
+      new Request("https://example.com/__pow/cap", {
+        method: "POST",
+        headers: {
+          ...makeInnerHeaders(malformedPayload),
+          "Content-Type": "application/json",
+          "CF-Connecting-IP": "1.2.3.4",
+        },
+        body: JSON.stringify({
+          ticketB64: malformedTicketB64,
+          pathHash,
+          captchaToken: {},
+        }),
+      }),
+      {},
+      {},
+    );
     assert.equal(malformedRes.status, 400);
   } finally {
     globalThis.fetch = originalFetch;
@@ -544,8 +567,7 @@ test("split core-2 /cap keeps cap-only/combined/malformed semantics", async () =
     const capOnlyPayload = makeInnerPayload({
       powcheck: false,
       atomic: false,
-      recaptchaEnabled: false,
-      providers: "recaptcha",
+      turncheck: true,
     });
     const capOnlyTicketB64 = makeTicketB64({
       powSecret: "pow-secret",
@@ -563,7 +585,7 @@ test("split core-2 /cap keeps cap-only/combined/malformed semantics", async () =
         body: JSON.stringify({
           ticketB64: capOnlyTicketB64,
           pathHash,
-          captchaToken: { recaptcha_v3: "r".repeat(64) },
+          captchaToken: { turnstile: "t".repeat(64) },
         }),
       }),
       {},
@@ -572,7 +594,7 @@ test("split core-2 /cap keeps cap-only/combined/malformed semantics", async () =
     assert.equal(capOnlyRes.status, 200);
     assert.match(String(capOnlyRes.headers.get("set-cookie") || ""), /__Host-proof=/u);
 
-    const combinedPayload = makeInnerPayload({ powcheck: true, atomic: false, recaptchaEnabled: true });
+    const combinedPayload = makeInnerPayload({ powcheck: true, atomic: false, turncheck: true });
     const combinedTicketB64 = makeTicketB64({
       powSecret: "pow-secret",
       payload: combinedPayload,
@@ -589,7 +611,7 @@ test("split core-2 /cap keeps cap-only/combined/malformed semantics", async () =
         body: JSON.stringify({
           ticketB64: combinedTicketB64,
           pathHash,
-          captchaToken: { recaptcha_v3: "r".repeat(64) },
+          captchaToken: { turnstile: "t".repeat(64) },
         }),
       }),
       {},
@@ -597,7 +619,7 @@ test("split core-2 /cap keeps cap-only/combined/malformed semantics", async () =
     );
     assert.equal(combinedRes.status, 404);
 
-    const malformedPayload = makeInnerPayload({ powcheck: false, atomic: false, recaptchaEnabled: true });
+    const malformedPayload = makeInnerPayload({ powcheck: false, atomic: false, turncheck: true });
     const malformedTicketB64 = makeTicketB64({
       powSecret: "pow-secret",
       payload: malformedPayload,
@@ -614,7 +636,7 @@ test("split core-2 /cap keeps cap-only/combined/malformed semantics", async () =
         body: JSON.stringify({
           ticketB64: malformedTicketB64,
           pathHash,
-          captchaToken: { recaptcha_v3: 1 },
+          captchaToken: {},
         }),
       }),
       {},

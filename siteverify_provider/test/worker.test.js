@@ -6,7 +6,6 @@ const KID = "v1";
 const SHARED_SECRET = "replace-me";
 const MAX_BODY_BYTES = 256 * 1024;
 const TURNSTILE_SITEVERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
-const RECAPTCHA_SITEVERIFY_URL = "https://www.google.com/recaptcha/api/siteverify";
 const testEncoder = new TextEncoder();
 
 const toHex = (bytes) =>
@@ -76,23 +75,12 @@ const createDeferred = () => {
 const buildProviderPayload = () => ({
   token: {
     turnstile: "turn-token",
-    recaptcha_v3: "recaptcha-token",
   },
   remoteip: "203.0.113.10",
-  checks: {
-    recaptchaAction: "submit",
-    recaptchaMinScore: 0.5,
-  },
   ticketMac: "ticket-mac",
   providers: {
     turnstile: {
       secret: "turn-secret",
-    },
-    recaptcha_v3: {
-      pairs: [
-        { secret: "recaptcha-secret-0", sitekey: "recaptcha-sitekey-0" },
-        { secret: "recaptcha-secret-1", sitekey: "recaptcha-sitekey-1" },
-      ],
     },
   },
 });
@@ -104,6 +92,110 @@ const jsonFetchResponse = (payload, status = 200) =>
       "content-type": "application/json",
     },
   });
+
+const createPowNonceDb = () => {
+  const rows = new Map();
+  let initRuns = 0;
+  let lastInsertBindValues = null;
+
+  const db = {
+    prepare(sql) {
+      return {
+        bind(...values) {
+          return {
+            async first() {
+              if (!/SELECT expire_at FROM pow_nonce_ledger/u.test(sql)) {
+                throw new Error(`unexpected first() SQL: ${sql}`);
+              }
+              const row = rows.get(values[0]);
+              return row ? { expire_at: row.expire_at } : null;
+            },
+            async run() {
+              if (/CREATE TABLE IF NOT EXISTS pow_nonce_ledger/u.test(sql)) {
+                initRuns += 1;
+                return { success: true };
+              }
+              if (/INSERT INTO pow_nonce_ledger/u.test(sql)) {
+                const consumeKey = values[0];
+                const expireAt = Number(values[1]);
+                const createdAt = Number(values[2]);
+                const nowSec = Number(values[3]);
+                const existing = rows.get(consumeKey);
+                if (existing && Number(existing.expire_at) > nowSec) {
+                  lastInsertBindValues = [...values];
+                  return { success: true, meta: { changes: 0 } };
+                }
+                lastInsertBindValues = [...values];
+                rows.set(consumeKey, {
+                  expire_at: expireAt,
+                  created_at: createdAt,
+                });
+                return { success: true, meta: { changes: 1 } };
+              }
+              throw new Error(`unexpected run() SQL: ${sql}`);
+            },
+          };
+        },
+        async run() {
+          if (/CREATE TABLE IF NOT EXISTS pow_nonce_ledger/u.test(sql)) {
+            initRuns += 1;
+            return { success: true };
+          }
+          throw new Error(`unexpected run() SQL: ${sql}`);
+        },
+      };
+    },
+  };
+
+  return {
+    db,
+    rows,
+    getInitRuns: () => initRuns,
+    getLastInsertBindValues: () => lastInsertBindValues,
+  };
+};
+
+const createAtomicConsumeOnlyDb = () => {
+  const rows = new Map();
+
+  return {
+    prepare(sql) {
+      return {
+        bind(...values) {
+          return {
+            async first() {
+              throw new Error(`unexpected first() SQL in atomic mode: ${sql}`);
+            },
+            async run() {
+              if (!/INSERT INTO pow_nonce_ledger/u.test(sql)) {
+                throw new Error(`unexpected run() SQL in atomic mode: ${sql}`);
+              }
+              const consumeKey = values[0];
+              const expireAt = Number(values[1]);
+              const createdAt = Number(values[2]);
+              const nowSec = Number(values[3]);
+              const existing = rows.get(consumeKey);
+              if (existing && Number(existing.expire_at) > nowSec) {
+                return { success: true, meta: { changes: 0 } };
+              }
+              rows.set(consumeKey, {
+                expire_at: expireAt,
+                created_at: createdAt,
+              });
+              return { success: true, meta: { changes: 1 } };
+            },
+          };
+        },
+        async run() {
+          if (/CREATE TABLE IF NOT EXISTS pow_nonce_ledger/u.test(sql)) {
+            return { success: true };
+          }
+          throw new Error(`unexpected run() SQL in atomic mode: ${sql}`);
+        },
+      };
+    },
+  };
+};
 
 test("worker returns 404 for missing authorization", async () => {
   const res = await worker.fetch(
@@ -231,12 +323,12 @@ test("invalid json under size limit returns bad_request payload", async () => {
   });
 });
 
-test("runs turnstile and recaptcha in parallel and returns provider results", async () => {
+test("runs turnstile verification and returns provider results", async () => {
   const payload = buildProviderPayload();
-  const req = await buildAuthorizedRequest({ body: JSON.stringify(payload) });
+  const body = JSON.stringify(payload);
+  const req = await buildAuthorizedRequest({ body });
 
   const turnstileDeferred = createDeferred();
-  const recaptchaDeferred = createDeferred();
   const fetchCalls = [];
   const originalFetch = globalThis.fetch;
 
@@ -244,7 +336,6 @@ test("runs turnstile and recaptcha in parallel and returns provider results", as
     const reqUrl = String(url);
     fetchCalls.push(reqUrl);
     if (reqUrl === TURNSTILE_SITEVERIFY_URL) return turnstileDeferred.promise;
-    if (reqUrl === RECAPTCHA_SITEVERIFY_URL) return recaptchaDeferred.promise;
     throw new Error(`unexpected url: ${reqUrl}`);
   };
 
@@ -257,22 +348,10 @@ test("runs turnstile and recaptcha in parallel and returns provider results", as
       fetchCalls.filter((entry) => entry === TURNSTILE_SITEVERIFY_URL).length,
       1,
     );
-    assert.equal(
-      fetchCalls.filter((entry) => entry === RECAPTCHA_SITEVERIFY_URL).length,
-      1,
-    );
-
     turnstileDeferred.resolve(
       jsonFetchResponse({
         success: true,
         cdata: payload.ticketMac,
-      }),
-    );
-    recaptchaDeferred.resolve(
-      jsonFetchResponse({
-        success: true,
-        action: payload.checks.recaptchaAction,
-        score: payload.checks.recaptchaMinScore + 0.1,
       }),
     );
 
@@ -280,7 +359,6 @@ test("runs turnstile and recaptcha in parallel and returns provider results", as
     assert.equal(res.status, 200);
     const body = await res.json();
     assert.equal(body.providers.turnstile.rawResponse.success, true);
-    assert.equal(body.providers.recaptcha_v3.rawResponse.success, true);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -295,13 +373,6 @@ test("provider network failure maps provider httpStatus=502", async () => {
     const reqUrl = String(url);
     if (reqUrl === TURNSTILE_SITEVERIFY_URL) {
       throw new Error("turnstile network down");
-    }
-    if (reqUrl === RECAPTCHA_SITEVERIFY_URL) {
-      return jsonFetchResponse({
-        success: true,
-        action: payload.checks.recaptchaAction,
-        score: payload.checks.recaptchaMinScore + 0.1,
-      });
     }
     throw new Error(`unexpected url: ${reqUrl}`);
   };
@@ -318,9 +389,14 @@ test("provider network failure maps provider httpStatus=502", async () => {
   }
 });
 
-test("recaptcha returns pickedPairIndex", async () => {
+test("pow consume key is single-use until expireAt", async () => {
   const payload = buildProviderPayload();
-  const req = await buildAuthorizedRequest({ body: JSON.stringify(payload) });
+  payload.powConsume = {
+    consumeKey: "consume-key-single-use",
+    expireAt: Math.floor(Date.now() / 1000) + 60,
+  };
+  const body = JSON.stringify(payload);
+  const dbMock = createPowNonceDb();
 
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (url) => {
@@ -331,97 +407,227 @@ test("recaptcha returns pickedPairIndex", async () => {
         cdata: payload.ticketMac,
       });
     }
-    if (reqUrl === RECAPTCHA_SITEVERIFY_URL) {
-      return jsonFetchResponse({
-        success: true,
-        action: payload.checks.recaptchaAction,
-        score: payload.checks.recaptchaMinScore + 0.1,
-      });
-    }
     throw new Error(`unexpected url: ${reqUrl}`);
   };
 
   try {
-    const res = await worker.fetch(req);
-    assert.equal(res.status, 200);
-    const body = await res.json();
+    const firstReq = await buildAuthorizedRequest({ body });
+    const first = await worker.fetch(firstReq, { POW_NONCE_DB: dbMock.db });
+    assert.equal(first.status, 200);
+    assert.equal((await first.json()).ok, true);
 
-    assert.equal(body.providers.recaptcha_v3.pickedPairIndex, 1);
+    const secondReq = await buildAuthorizedRequest({ body, nonce: "nonce-2" });
+    const second = await worker.fetch(secondReq, { POW_NONCE_DB: dbMock.db });
+    assert.equal(second.status, 200);
+    const secondBody = await second.json();
+    assert.equal(secondBody.ok, false);
+    assert.equal(secondBody.reason, "duplicate");
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test("recaptcha missing checks fails closed", async () => {
-  const payload = buildProviderPayload();
-  delete payload.providers.turnstile;
-  delete payload.token.turnstile;
-  delete payload.checks;
+test("consume-only request succeeds once then returns duplicate", async () => {
+  const payload = {
+    powConsume: {
+      consumeKey: "consume-only-key",
+      expireAt: Math.floor(Date.now() / 1000) + 60,
+    },
+  };
+  const body = JSON.stringify(payload);
+  const dbMock = createPowNonceDb();
 
-  const req = await buildAuthorizedRequest({ body: JSON.stringify(payload) });
+  const firstReq = await buildAuthorizedRequest({ body, nonce: "nonce-consume-only-1" });
+  const first = await worker.fetch(firstReq, { POW_NONCE_DB: dbMock.db });
+  assert.equal(first.status, 200);
+  const firstBody = await first.json();
+  assert.equal(firstBody.ok, true);
+  assert.equal(firstBody.reason, "ok");
+  assert.deepEqual(firstBody.providers, {});
+
+  const secondReq = await buildAuthorizedRequest({ body, nonce: "nonce-consume-only-2" });
+  const second = await worker.fetch(secondReq, { POW_NONCE_DB: dbMock.db });
+  assert.equal(second.status, 200);
+  const secondBody = await second.json();
+  assert.equal(secondBody.ok, false);
+  assert.equal(secondBody.reason, "duplicate");
+});
+
+test("concurrent duplicate consumes allow exactly one ok result", async () => {
+  const payload = buildProviderPayload();
+  payload.powConsume = {
+    consumeKey: "consume-key-concurrent",
+    expireAt: Math.floor(Date.now() / 1000) + 60,
+  };
+  const body = JSON.stringify(payload);
+  const db = createAtomicConsumeOnlyDb();
 
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (url) => {
     const reqUrl = String(url);
-    if (reqUrl === RECAPTCHA_SITEVERIFY_URL) {
+    if (reqUrl === TURNSTILE_SITEVERIFY_URL) {
       return jsonFetchResponse({
         success: true,
-        action: "unexpected",
-        score: 0.01,
+        cdata: payload.ticketMac,
       });
     }
     throw new Error(`unexpected url: ${reqUrl}`);
   };
 
   try {
-    const res = await worker.fetch(req);
-    assert.equal(res.status, 200);
-    const body = await res.json();
+    const req1 = await buildAuthorizedRequest({ body, nonce: "nonce-concurrency-1" });
+    const req2 = await buildAuthorizedRequest({ body, nonce: "nonce-concurrency-2" });
+    const [res1, res2] = await Promise.all([
+      worker.fetch(req1, { POW_NONCE_DB: db }),
+      worker.fetch(req2, { POW_NONCE_DB: db }),
+    ]);
 
-    assert.equal(body.ok, false);
-    assert.equal(body.reason, "provider_failed");
-    assert.equal(body.providers.recaptcha_v3.ok, false);
-    assert.equal(body.providers.recaptcha_v3.httpStatus, 400);
-    assert.equal(typeof body.providers.recaptcha_v3.rawResponse, "string");
+    const result1 = await res1.json();
+    const result2 = await res2.json();
+    const reasons = [result1.reason, result2.reason].sort();
+    assert.deepEqual(reasons, ["duplicate", "ok"]);
+    assert.equal([result1.ok, result2.ok].filter(Boolean).length, 1);
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test("recaptcha invalid checks fails closed", async () => {
+test("expired existing consume key can be reused", async () => {
+  const nowSec = Math.floor(Date.now() / 1000);
   const payload = buildProviderPayload();
-  delete payload.providers.turnstile;
-  delete payload.token.turnstile;
-  payload.checks = {
-    recaptchaAction: 123,
-    recaptchaMinScore: "bad",
+  payload.powConsume = {
+    consumeKey: "consume-key-reuse-after-expiry",
+    expireAt: nowSec + 60,
   };
-
   const req = await buildAuthorizedRequest({ body: JSON.stringify(payload) });
+  const dbMock = createPowNonceDb();
+  dbMock.rows.set(payload.powConsume.consumeKey, {
+    expire_at: nowSec - 1,
+    created_at: nowSec - 120,
+  });
 
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (url) => {
     const reqUrl = String(url);
-    if (reqUrl === RECAPTCHA_SITEVERIFY_URL) {
+    if (reqUrl === TURNSTILE_SITEVERIFY_URL) {
       return jsonFetchResponse({
         success: true,
-        action: "unexpected",
-        score: 0.99,
+        cdata: payload.ticketMac,
       });
     }
     throw new Error(`unexpected url: ${reqUrl}`);
   };
 
   try {
-    const res = await worker.fetch(req);
+    const res = await worker.fetch(req, { POW_NONCE_DB: dbMock.db });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+
+    assert.equal(body.ok, true);
+    assert.equal(body.reason, "ok");
+    assert.equal(dbMock.rows.get(payload.powConsume.consumeKey)?.expire_at, payload.powConsume.expireAt);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("stale pow consume key returns stale without calling providers", async () => {
+  const payload = buildProviderPayload();
+  payload.powConsume = {
+    consumeKey: "consume-key-stale",
+    expireAt: Math.floor(Date.now() / 1000) - 1,
+    powNonce: "do-not-persist",
+  };
+  const req = await buildAuthorizedRequest({ body: JSON.stringify(payload) });
+  const dbMock = createPowNonceDb();
+
+  const originalFetch = globalThis.fetch;
+  let fetchCalls = 0;
+  globalThis.fetch = (url) => {
+    fetchCalls += 1;
+    throw new Error(`unexpected url: ${String(url)}`);
+  };
+
+  try {
+    const res = await worker.fetch(req, { POW_NONCE_DB: dbMock.db });
     assert.equal(res.status, 200);
     const body = await res.json();
 
     assert.equal(body.ok, false);
-    assert.equal(body.reason, "provider_failed");
-    assert.equal(body.providers.recaptcha_v3.ok, false);
-    assert.equal(body.providers.recaptcha_v3.httpStatus, 400);
-    assert.equal(typeof body.providers.recaptcha_v3.rawResponse, "string");
+    assert.equal(body.reason, "stale");
+    assert.equal(fetchCalls, 0);
+    assert.equal(dbMock.rows.size, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("malformed powConsume.expireAt returns bad_request", async () => {
+  const future = Math.floor(Date.now() / 1000) + 60;
+  const payload = buildProviderPayload();
+  payload.powConsume = {
+    consumeKey: "consume-key-malformed-expire",
+    expireAt: `${future}abc`,
+  };
+  const req = await buildAuthorizedRequest({ body: JSON.stringify(payload) });
+  const dbMock = createPowNonceDb();
+
+  const originalFetch = globalThis.fetch;
+  let fetchCalls = 0;
+  globalThis.fetch = (url) => {
+    fetchCalls += 1;
+    throw new Error(`unexpected url: ${String(url)}`);
+  };
+
+  try {
+    const res = await worker.fetch(req, { POW_NONCE_DB: dbMock.db });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+
+    assert.equal(body.ok, false);
+    assert.equal(body.reason, "bad_request");
+    assert.equal(fetchCalls, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("INIT_TABLES initializes consume ledger and does not persist powNonce", async () => {
+  const payload = buildProviderPayload();
+  payload.powConsume = {
+    consumeKey: "consume-key-init",
+    expireAt: Math.floor(Date.now() / 1000) + 60,
+    powNonce: "pow-nonce-should-not-be-stored",
+  };
+  const req = await buildAuthorizedRequest({ body: JSON.stringify(payload) });
+  const dbMock = createPowNonceDb();
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (url) => {
+    const reqUrl = String(url);
+    if (reqUrl === TURNSTILE_SITEVERIFY_URL) {
+      return jsonFetchResponse({
+        success: true,
+        cdata: payload.ticketMac,
+      });
+    }
+    throw new Error(`unexpected url: ${reqUrl}`);
+  };
+
+  try {
+    const res = await worker.fetch(req, {
+      POW_NONCE_DB: dbMock.db,
+      INIT_TABLES: true,
+    });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+
+    assert.equal(body.ok, true);
+    assert.equal(dbMock.getInitRuns() > 0, true);
+    const bindValues = dbMock.getLastInsertBindValues();
+    assert.equal(bindValues?.length, 4);
+    assert.equal(bindValues?.[0], payload.powConsume.consumeKey);
+    assert.equal(bindValues?.[1], payload.powConsume.expireAt);
   } finally {
     globalThis.fetch = originalFetch;
   }

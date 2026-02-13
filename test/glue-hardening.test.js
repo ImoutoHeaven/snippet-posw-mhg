@@ -113,7 +113,7 @@ const makeRunPowArgs = (overrides = {}) => {
   const params = {
     bindingB64: base64Url("binding"),
     steps: 1,
-    ticketB64: base64Url("a.b.c.d.e.f"),
+    ticketB64: base64Url("a.b.c.d.e.f.g"),
     pathHash: "pathhash",
     hashcashBits: 1,
     segmentLen: 1,
@@ -197,92 +197,9 @@ test("glue hardening", { concurrency: 1 }, async (t) => {
     assert.equal(scriptCount, 2);
   });
 
-  await t.test("recaptcha execute failure allows retry", async () => {
-    const executed = [];
-    let scriptCount = 0;
-    let scriptSrc = "";
-    const glue = await importGlue({
-      onScriptAppend: (el) => {
-        if (el && el.tagName === "script") {
-          scriptCount += 1;
-          scriptSrc = String(el.src || "");
-          queueMicrotask(() => {
-            globalThis.window.grecaptcha = {
-              ready(cb) {
-                cb();
-              },
-              execute: async (_sitekey, { action }) => {
-                executed.push(action);
-                if (executed.length === 1) throw new Error("boom");
-                return "recaptcha-token-2";
-              },
-            };
-            if (typeof el.onload === "function") el.onload();
-          });
-        }
-      },
-    });
-    const calls = [];
-    globalThis.fetch = async (url, init) => {
-      calls.push({ url: String(url), body: init && init.body ? JSON.parse(init.body) : null });
-      return { ok: true, status: 200, json: async () => ({}) };
-    };
-    const args = makeRunPowArgs({
-      steps: 0,
-      captchaCfgB64: encodeCaptchaCfg({
-        recaptcha_v3: { sitekey: "rk-1", action: "p_deadbeef00" },
-      }),
-    });
-    await glue.default(...args);
-    assert.equal(scriptCount, 1);
-    assert.equal(scriptSrc, "https://recaptcha.net/recaptcha/api.js?render=rk-1");
-    assert.equal(executed.length, 2);
-    assert.equal(calls.length, 1);
-    assert.equal(calls[0].url, "/__pow/cap");
-    assert.deepEqual(JSON.parse(calls[0].body.captchaToken), { recaptcha_v3: "recaptcha-token-2" });
-  });
-
-  await t.test("recaptcha waits for execute to appear after ready", async () => {
-    const calls = [];
-    const glue = await importGlue({
-      onScriptAppend: (el) => {
-        if (el && el.tagName === "script") {
-          queueMicrotask(() => {
-            globalThis.window.grecaptcha = {
-              ready(cb) {
-                queueMicrotask(() => {
-                  globalThis.window.grecaptcha.execute = async () => "recaptcha-token-late";
-                  cb();
-                });
-              },
-            };
-            if (typeof el.onload === "function") el.onload();
-          });
-        }
-      },
-    });
-    globalThis.fetch = async (url, init) => {
-      calls.push({ url: String(url), body: init && init.body ? JSON.parse(init.body) : null });
-      return { ok: true, status: 200, json: async () => ({}) };
-    };
-    const args = makeRunPowArgs({
-      steps: 0,
-      captchaCfgB64: encodeCaptchaCfg({
-        recaptcha_v3: { sitekey: "rk-late", action: "p_late" },
-      }),
-    });
-    await glue.default(...args);
-    assert.equal(calls.length, 1);
-    assert.equal(calls[0].url, "/__pow/cap");
-    assert.deepEqual(JSON.parse(calls[0].body.captchaToken), {
-      recaptcha_v3: "recaptcha-token-late",
-    });
-  });
-
-  await t.test("runCaptcha runs turn+recaptcha concurrently and keeps envelope shape", async () => {
+  await t.test("runCaptcha builds turnstile-only envelope", async () => {
     const fetchCalls = [];
     let solveTurnstile;
-    let recaptchaStarted = false;
     const glue = await importGlue();
     globalThis.window.turnstile = {
       render: (_el, opts) => {
@@ -292,16 +209,6 @@ test("glue hardening", { concurrency: 1 }, async (t) => {
       reset() {},
       remove() {},
     };
-    globalThis.window.grecaptcha = {
-      ready(cb) {
-        cb();
-      },
-      execute: async (_sitekey, { action }) => {
-        recaptchaStarted = true;
-        assert.equal(action, "p_abc123");
-        return "recaptcha-token";
-      },
-    };
     globalThis.fetch = async (url, init) => {
       fetchCalls.push({ url: String(url), body: init && init.body ? JSON.parse(init.body) : null });
       return { ok: true, status: 200, json: async () => ({}) };
@@ -310,12 +217,11 @@ test("glue hardening", { concurrency: 1 }, async (t) => {
       steps: 0,
       captchaCfgB64: encodeCaptchaCfg({
         turnstile: { sitekey: "ts-1" },
-        recaptcha_v3: { sitekey: "rk-1", action: "p_abc123" },
+        extraCaptcha: { sitekey: "rk-1", action: "p_abc123" },
       }),
     });
     const runPromise = glue.default(...args);
     await new Promise((resolve) => queueMicrotask(resolve));
-    assert.equal(recaptchaStarted, true);
     assert.equal(fetchCalls.length, 0);
     assert.equal(typeof solveTurnstile, "function");
     solveTurnstile("turn-token");
@@ -324,8 +230,32 @@ test("glue hardening", { concurrency: 1 }, async (t) => {
     assert.equal(fetchCalls[0].url, "/__pow/cap");
     assert.deepEqual(JSON.parse(fetchCalls[0].body.captchaToken), {
       turnstile: "turn-token",
-      recaptcha_v3: "recaptcha-token",
     });
+  });
+
+  await t.test("malformed captcha envelope is rejected before pow binding", async () => {
+    let fetchCalls = 0;
+    const glue = await importGlue();
+    globalThis.window.turnstile = {
+      render: (_el, opts) => {
+        queueMicrotask(() => opts.callback({ bad: true }));
+        return 1;
+      },
+      reset() {},
+      remove() {},
+    };
+    globalThis.fetch = async () => {
+      fetchCalls += 1;
+      return { ok: true, status: 200, json: async () => ({}) };
+    };
+    const args = makeRunPowArgs({
+      steps: 1,
+      captchaCfgB64: encodeCaptchaCfg({ turnstile: { sitekey: "ts-1" } }),
+    });
+    await glue.default(...args);
+    assert.equal(fetchCalls, 0);
+    const logEl = globalThis.document.getElementById("log");
+    assert.match(logEl.innerHTML, /Bad Binding/);
   });
 
   await t.test("403 stale hint triggers reload path", async () => {
@@ -599,37 +529,6 @@ test("glue hardening", { concurrency: 1 }, async (t) => {
     const args = makeRunPowArgs({
       steps: 0,
       captchaCfgB64: encodeCaptchaCfg({ turnstile: { sitekey: "ts-1" } }),
-    });
-    await glue.default(...args);
-    assert.equal(calls.length, 1);
-    assert.equal(calls[0].url, "/__pow/cap");
-    assert.equal(globalThis.document.getElementById("t").textContent, "Failed");
-  });
-
-  await t.test("recaptcha submit 403 does not loop submit callback", async () => {
-    const calls = [];
-    const headers = new Map([["x-pow-h", "cheat"]]);
-    const glue = await importGlue();
-    globalThis.window.grecaptcha = {
-      ready(cb) {
-        cb();
-      },
-      execute: async () => "recaptcha-token",
-    };
-    globalThis.fetch = async (url, init) => {
-      calls.push({ url: String(url), body: init && init.body ? JSON.parse(init.body) : null });
-      return {
-        ok: false,
-        status: 403,
-        headers: { get: (name) => headers.get(String(name).toLowerCase()) || null },
-        json: async () => ({}),
-      };
-    };
-    const args = makeRunPowArgs({
-      steps: 0,
-      captchaCfgB64: encodeCaptchaCfg({
-        recaptcha_v3: { sitekey: "rk-1", action: "p_deadbeef00" },
-      }),
     });
     await glue.default(...args);
     assert.equal(calls.length, 1);

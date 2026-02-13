@@ -11,7 +11,6 @@ const POW_SECRET = "pow-secret";
 const SITEVERIFY_URL = "https://sv.example/siteverify";
 
 const TURN_TOKEN = "turnstile-token-value-1234567890";
-const RECAPTCHA_TOKEN = "recaptcha-token-value-1234567890";
 
 const base64Url = (buffer) =>
   Buffer.from(buffer)
@@ -195,13 +194,9 @@ const buildConfigModule = async (secret = CONFIG_SECRET, overrides = {}) => {
         POW_TOKEN: POW_SECRET,
         powcheck: true,
         turncheck: true,
-        recaptchaEnabled: true,
         SITEVERIFY_URL: SITEVERIFY_URL,
         SITEVERIFY_AUTH_KID: "v1",
         SITEVERIFY_AUTH_SECRET: "siteverify-secret",
-        RECAPTCHA_PAIRS: [{ sitekey: "rk-1", secret: "rs-1" }],
-        RECAPTCHA_ACTION: "submit",
-        RECAPTCHA_MIN_SCORE: 0.5,
         TURNSTILE_SITEKEY: "turn-site",
         TURNSTILE_SECRET: "turn-secret",
         POW_BIND_PATH: true,
@@ -349,33 +344,33 @@ const extractChallengeArgs = (html) => {
 
 const resolveCaptchaRequirements = (spec) => {
   let needTurn = spec.turncheck === true;
-  let needRecaptcha = spec.recaptchaEnabled === true;
-  if (!needTurn && !needRecaptcha) {
+  if (!needTurn) {
     const providers = String(spec.providers || "")
       .split(/[\s,]+/u)
       .map((value) => value.trim().toLowerCase())
       .filter(Boolean);
     needTurn = providers.includes("turnstile");
-    needRecaptcha = providers.includes("recaptcha") || providers.includes("recaptcha_v3");
   }
-  return { needTurn, needRecaptcha };
+  return { needTurn };
 };
 
-const makeInnerPayload = ({ powcheck, atomic, turncheck, recaptchaEnabled, providers = "", atomicState = null }) => ({
+const makeInnerPayload = ({
+  powcheck,
+  atomic,
+  turncheck,
+  providers = "",
+  atomicState = null,
+  aggregatorPowAtomicConsume = false,
+}) => ({
   v: 1,
   id: 99,
   c: {
     POW_TOKEN: POW_SECRET,
     powcheck,
     turncheck,
-    recaptchaEnabled,
-    providers,
     SITEVERIFY_URL: SITEVERIFY_URL,
     SITEVERIFY_AUTH_KID: "v1",
     SITEVERIFY_AUTH_SECRET: "siteverify-secret",
-    RECAPTCHA_PAIRS: [{ sitekey: "rk-1", secret: "rs-1" }],
-    RECAPTCHA_ACTION: "submit",
-    RECAPTCHA_MIN_SCORE: 0.5,
     TURNSTILE_SITEKEY: "turn-site",
     TURNSTILE_SECRET: "turn-secret",
     POW_VERSION: 3,
@@ -408,6 +403,7 @@ const makeInnerPayload = ({ powcheck, atomic, turncheck, recaptchaEnabled, provi
     ATOMIC_TICKET_HEADER: "x-ticket",
     ATOMIC_CONSUME_HEADER: "x-consume",
     ATOMIC_COOKIE_NAME: "__Secure-pow_a",
+    AGGREGATOR_POW_ATOMIC_CONSUME: aggregatorPowAtomicConsume,
     POW_ESM_URL: "https://cdn.example/esm.js",
     POW_GLUE_URL: "https://cdn.example/glue.js",
   },
@@ -505,22 +501,30 @@ const buildMhgWitnessBundle = async ({ ticketB64, nonce, pageBytes = 16384, mixR
 };
 
 const PATH_CHECKLIST = [
-  { pathId: 0, pow: false, turncheck: false, recaptchaEnabled: false, atomic: false, cap: null, key: "no_protection" },
-  { pathId: 1, pow: false, turncheck: false, recaptchaEnabled: false, providers: "recaptcha", atomic: false, cap: 200, key: "cap_recaptcha" },
-  { pathId: 2, pow: false, turncheck: false, recaptchaEnabled: false, providers: "turnstile", atomic: false, cap: 200, key: "cap_turnstile" },
-  { pathId: 3, pow: false, turncheck: false, recaptchaEnabled: false, providers: "turnstile,recaptcha", atomic: false, cap: 200, key: "cap_dual" },
-  { pathId: 4, pow: false, turncheck: false, recaptchaEnabled: false, atomic: false, cap: null, key: "degraded_no_protection" },
-  { pathId: 5, pow: false, turncheck: false, recaptchaEnabled: false, providers: "recaptcha", atomic: true, cap: 404, key: "atomic_business_recaptcha" },
-  { pathId: 6, pow: false, turncheck: false, recaptchaEnabled: false, providers: "turnstile", atomic: true, cap: 404, key: "atomic_business_turnstile" },
-  { pathId: 7, pow: false, turncheck: false, recaptchaEnabled: false, providers: "turnstile,recaptcha", atomic: true, cap: 404, key: "atomic_business_dual_split" },
-  { pathId: 8, pow: true, turncheck: false, recaptchaEnabled: false, atomic: false, cap: 404, key: "pow_only" },
-  { pathId: 9, pow: true, turncheck: false, recaptchaEnabled: true, atomic: false, cap: 404, key: "pow_final_recaptcha" },
-  { pathId: 10, pow: true, turncheck: true, recaptchaEnabled: false, atomic: false, cap: 404, key: "pow_final_turnstile" },
-  { pathId: 11, pow: true, turncheck: false, recaptchaEnabled: false, providers: "turnstile,recaptcha", atomic: false, cap: 404, key: "pow_final_dual" },
-  { pathId: 12, pow: true, turncheck: false, recaptchaEnabled: false, atomic: false, cap: 404, key: "pow_only_degraded" },
-  { pathId: 13, pow: true, turncheck: false, recaptchaEnabled: true, atomic: true, cap: 404, key: "pow_atomic_business_recaptcha" },
-  { pathId: 14, pow: true, turncheck: true, recaptchaEnabled: false, atomic: true, cap: 404, key: "pow_atomic_business_turnstile" },
-  { pathId: 15, pow: true, turncheck: false, recaptchaEnabled: false, providers: "turnstile,recaptcha", atomic: true, cap: 404, key: "pow_atomic_business_dual_split" },
+  { pathId: 0, pow: false, turncheck: false, atomic: false, cap: null, key: "no_protection" },
+  { pathId: 1, pow: false, turncheck: true, atomic: false, cap: 200, key: "cap_turnstile" },
+  { pathId: 2, pow: false, turncheck: false, atomic: true, cap: null, key: "degraded_no_protection" },
+  { pathId: 3, pow: false, turncheck: true, atomic: true, cap: 404, key: "atomic_business_turnstile" },
+  { pathId: 4, pow: true, turncheck: false, atomic: false, cap: 404, key: "pow_only" },
+  { pathId: 5, pow: true, turncheck: true, atomic: false, cap: 404, key: "pow_final_turnstile" },
+  {
+    pathId: 6,
+    pow: true,
+    turncheck: false,
+    atomic: true,
+    cap: 404,
+    key: "pow_atomic_business",
+    aggregatorPowAtomicConsume: true,
+  },
+  {
+    pathId: 7,
+    pow: true,
+    turncheck: true,
+    atomic: true,
+    cap: 404,
+    key: "pow_atomic_business_turnstile",
+    aggregatorPowAtomicConsume: true,
+  },
 ];
 
 const pushFailure = (failures, pathId, reason, expected, actual) => {
@@ -536,21 +540,13 @@ const assertDeltaBudget = (failures, pathId, reason, delta) => {
 const assertVerifyPlacement = (failures, pathId, key, observed) => {
   const expected = {
     no_protection: { capVerify: 0, finalVerify: 0, businessVerify: 0 },
-    cap_recaptcha: { capVerify: 1, finalVerify: 0, businessVerify: 0 },
     cap_turnstile: { capVerify: 1, finalVerify: 0, businessVerify: 0 },
-    cap_dual: { capVerify: 1, finalVerify: 0, businessVerify: 0 },
     degraded_no_protection: { capVerify: 0, finalVerify: 0, businessVerify: 0 },
-    atomic_business_recaptcha: { capVerify: 0, finalVerify: 0, businessVerify: 1 },
     atomic_business_turnstile: { capVerify: 0, finalVerify: 0, businessVerify: 1 },
-    atomic_business_dual_split: { capVerify: 0, finalVerify: 0, businessVerify: 1 },
     pow_only: { capVerify: 0, finalVerify: 0, businessVerify: 0 },
-    pow_final_recaptcha: { capVerify: 0, finalVerify: 1, businessVerify: 0 },
     pow_final_turnstile: { capVerify: 0, finalVerify: 1, businessVerify: 0 },
-    pow_final_dual: { capVerify: 0, finalVerify: 1, businessVerify: 0 },
-    pow_only_degraded: { capVerify: 0, finalVerify: 0, businessVerify: 0 },
-    pow_atomic_business_recaptcha: { capVerify: 0, finalVerify: 0, businessVerify: 1 },
+    pow_atomic_business: { capVerify: 0, finalVerify: 0, businessVerify: 1 },
     pow_atomic_business_turnstile: { capVerify: 0, finalVerify: 0, businessVerify: 1 },
-    pow_atomic_business_dual_split: { capVerify: 0, finalVerify: 0, businessVerify: 1 },
   }[key];
 
   for (const field of Object.keys(expected)) {
@@ -561,8 +557,8 @@ const assertVerifyPlacement = (failures, pathId, key, observed) => {
 };
 
 const runOnePath = async (mod, spec, failures) => {
-  const tokenEnvelope = JSON.stringify({ turnstile: TURN_TOKEN, recaptcha_v3: RECAPTCHA_TOKEN });
-  const { needTurn, needRecaptcha } = resolveCaptchaRequirements(spec);
+  const tokenEnvelope = JSON.stringify({ turnstile: TURN_TOKEN });
+  const { needTurn } = resolveCaptchaRequirements(spec);
   const counters = { aggregator: 0, origin: 0 };
   let activeTicketMac = "";
 
@@ -584,23 +580,13 @@ const runOnePath = async (mod, spec, failures) => {
           JSON.stringify({
             ok: true,
             reason: "ok",
-            checks: {
-              recaptchaAction: "submit",
-              recaptchaMinScore: 0.5,
-            },
+            checks: {},
             providers: {
               turnstile: {
                 ok: true,
                 httpStatus: 200,
                 normalized: { success: true, cdata: activeTicketMac },
                 rawResponse: { success: true, cdata: activeTicketMac },
-              },
-              recaptcha_v3: {
-                ok: true,
-                httpStatus: 200,
-                normalized: { success: true, action: "submit", score: 0.9 },
-                rawResponse: { success: true, action: "submit", score: 0.9 },
-                pickedPairIndex: 0,
               },
             },
           }),
@@ -615,8 +601,8 @@ const runOnePath = async (mod, spec, failures) => {
       powcheck: spec.pow,
       atomic: spec.atomic,
       turncheck: spec.turncheck,
-      recaptchaEnabled: spec.recaptchaEnabled,
       providers: spec.providers || "",
+      aggregatorPowAtomicConsume: spec.aggregatorPowAtomicConsume === true,
     });
     const freshHeaders = () => makeInnerHeaders(payload);
     const pageRes = await mod.default.fetch(
@@ -629,7 +615,7 @@ const runOnePath = async (mod, spec, failures) => {
     );
     const args = extractChallengeArgs(await pageRes.text());
     if (!args) {
-      if (!spec.pow && !needTurn && !needRecaptcha && spec.cap === null) {
+      if (!spec.pow && !needTurn && spec.cap === null) {
         return;
       }
       pushFailure(failures, spec.pathId, "challenge_args", "present", "missing");
@@ -699,7 +685,7 @@ const runOnePath = async (mod, spec, failures) => {
             rootB64: witness.rootB64,
             pathHash: args.pathHash,
             nonce,
-            captchaToken: needTurn || needRecaptcha ? tokenEnvelope : undefined,
+            captchaToken: needTurn ? tokenEnvelope : undefined,
           }),
         }),
         {},
@@ -749,7 +735,7 @@ const runOnePath = async (mod, spec, failures) => {
               sid: state.sid,
               cursor: state.cursor,
               token: state.token,
-              captchaToken: needTurn || needRecaptcha ? tokenEnvelope : undefined,
+              captchaToken: needTurn ? tokenEnvelope : undefined,
               opens,
             }),
           }),
@@ -774,19 +760,23 @@ const runOnePath = async (mod, spec, failures) => {
       }
 
       if (spec.atomic) {
-        if (!finalBody || typeof finalBody.consume !== "string") {
+        const consumeToken =
+          finalBody && typeof finalBody.consume === "string"
+            ? finalBody.consume
+            : null;
+        if (!consumeToken) {
           pushFailure(failures, spec.pathId, "consume_token", "present", finalBody?.consume ?? null);
         } else {
           const businessPayload = makeInnerPayload({
             powcheck: spec.pow,
             atomic: spec.atomic,
             turncheck: spec.turncheck,
-            recaptchaEnabled: spec.recaptchaEnabled,
             providers: spec.providers || "",
+            aggregatorPowAtomicConsume: spec.aggregatorPowAtomicConsume === true,
             atomicState: {
-              captchaToken: tokenEnvelope,
+              captchaToken: needTurn ? tokenEnvelope : "",
               ticketB64: "",
-              consumeToken: finalBody.consume,
+              consumeToken,
               fromCookie: false,
               cookieName: "",
             },
@@ -813,13 +803,13 @@ const runOnePath = async (mod, spec, failures) => {
           }
         }
       }
-    } else if (spec.atomic && (needTurn || needRecaptcha)) {
+    } else if (spec.atomic && needTurn) {
       const businessPayload = makeInnerPayload({
         powcheck: spec.pow,
         atomic: spec.atomic,
         turncheck: spec.turncheck,
-        recaptchaEnabled: spec.recaptchaEnabled,
         providers: spec.providers || "",
+        aggregatorPowAtomicConsume: spec.aggregatorPowAtomicConsume === true,
         atomicState: {
           captchaToken: tokenEnvelope,
           ticketB64: args.ticketB64,
@@ -869,10 +859,9 @@ const runSplitLinkedCase = async ({ pathId }) => {
   const restoreGlobals = ensureGlobals();
   const powModulePath = await buildPowModule();
   const cfgModulePath = await buildConfigModule(CONFIG_SECRET, {
-    turncheck: false,
-    recaptchaEnabled: false,
-    providers: "turnstile,recaptcha",
+    turncheck: true,
     ATOMIC_CONSUME: true,
+    AGGREGATOR_POW_ATOMIC_CONSUME: true,
   });
   const powMod = await import(`${pathToFileURL(powModulePath).href}?v=${Date.now()}-${pathId}-pow`);
   const cfgMod = await import(`${pathToFileURL(cfgModulePath).href}?v=${Date.now()}-${pathId}-cfg`);
@@ -881,7 +870,6 @@ const runSplitLinkedCase = async ({ pathId }) => {
 
   const captchaEnvelope = JSON.stringify({
     turnstile: "atomic-turn-token-1234567890",
-    recaptcha_v3: "atomic-recaptcha-token-1234567890",
   });
   const emptyAtomic = {
     captchaToken: "",
@@ -894,7 +882,6 @@ const runSplitLinkedCase = async ({ pathId }) => {
     powcheck: true,
     atomic: true,
     turncheck: true,
-    recaptchaEnabled: true,
     providers: "",
     atomicState: emptyAtomic,
   });
@@ -1013,22 +1000,13 @@ const runSplitLinkedCase = async ({ pathId }) => {
           JSON.stringify({
             ok: true,
             reason: "ok",
-            checks: {
-              recaptchaAction: "submit",
-              recaptchaMinScore: 0.5,
-            },
+            checks: {},
             providers: {
               turnstile: {
                 ok: true,
                 httpStatus: 200,
                 normalized: { success: true, cdata: seedTicketMac },
                 rawResponse: { success: true, cdata: seedTicketMac },
-              },
-              recaptcha_v3: {
-                ok: true,
-                httpStatus: 200,
-                normalized: { success: true, action: "submit", score: 0.9 },
-                rawResponse: { success: true, action: "submit", score: 0.9 },
               },
             },
           }),
@@ -1075,7 +1053,7 @@ const runSplitLinkedCase = async ({ pathId }) => {
   }
 };
 
-const runMatrix16 = async () => {
+const runMatrix8 = async () => {
   const restoreGlobals = ensureGlobals();
   const modulePath = await buildPowModule();
   const mod = await import(`${pathToFileURL(modulePath).href}?v=${Date.now()}`);
@@ -1083,7 +1061,7 @@ const runMatrix16 = async () => {
   try {
     for (const spec of PATH_CHECKLIST) {
       await runOnePath(mod, spec, failures);
-      if (spec.pathId === 7 || spec.pathId === 15) {
+      if (spec.pathId === 7) {
         const split = await runSplitLinkedCase({ pathId: spec.pathId });
         if (split.status !== 200) {
           pushFailure(failures, spec.pathId, "split_business_status", 200, {
@@ -1122,7 +1100,7 @@ const runStaleSemantics = async () => {
   const powModulePath = await buildPowModule();
   const mod = await import(`${pathToFileURL(powModulePath).href}?v=${Date.now()}`);
 
-  const payload = makeInnerPayload({ powcheck: true, atomic: false, turncheck: false, recaptchaEnabled: false });
+  const payload = makeInnerPayload({ powcheck: true, atomic: false, turncheck: false });
   const freshHeaders = () => makeInnerHeaders(payload);
 
   const pageRes = await mod.default.fetch(
@@ -1207,7 +1185,7 @@ const runStaleSemantics = async () => {
     const consumeStaleRes = await configMod.default.fetch(
       new Request(
         `https://example.com/protected?__ts=${encodeURIComponent(
-          JSON.stringify({ turnstile: TURN_TOKEN, recaptcha_v3: RECAPTCHA_TOKEN })
+          JSON.stringify({ turnstile: TURN_TOKEN })
         )}&__ct=${encodeURIComponent(expiredConsume)}`,
         { method: "GET", headers: { "CF-Connecting-IP": "1.2.3.4" } }
       ),
@@ -1225,8 +1203,170 @@ const runStaleSemantics = async () => {
   }
 };
 
-test("all 16 path combinations preserve api/subrequest semantics", async () => {
-  const report = await runMatrix16();
+test("pow-only atomic mode requires consume token when aggregator consume is enabled", async () => {
+  const restoreGlobals = ensureGlobals();
+  const powModulePath = await buildPowModule();
+  const mod = await import(`${pathToFileURL(powModulePath).href}?v=${Date.now()}-pow-only-atomic-consume`);
+
+  const basePayload = makeInnerPayload({
+    powcheck: true,
+    atomic: true,
+    turncheck: false,
+  });
+  basePayload.c.AGGREGATOR_POW_ATOMIC_CONSUME = true;
+  const freshHeaders = (payload) => makeInnerHeaders(payload);
+
+  const originalFetch = globalThis.fetch;
+  let originCalls = 0;
+  let aggregatorCalls = 0;
+  try {
+    globalThis.fetch = async (input, init) => {
+      const req = input instanceof Request ? input : new Request(input, init);
+      if (String(req.url) === SITEVERIFY_URL) {
+        aggregatorCalls += 1;
+        return new Response(JSON.stringify({ ok: true, reason: "ok", checks: {}, providers: {} }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      originCalls += 1;
+      return new Response("ok", { status: 200 });
+    };
+
+    const pageRes = await mod.default.fetch(
+      new Request("https://example.com/protected", {
+        method: "GET",
+        headers: { ...freshHeaders(basePayload), Accept: "text/html", "CF-Connecting-IP": "1.2.3.4" },
+      }),
+      {},
+      {}
+    );
+    assert.equal(pageRes.status, 200);
+    const args = extractChallengeArgs(await pageRes.text());
+    assert.ok(args);
+
+    const consumeToken = makeConsumeToken({
+      ticketB64: args.ticketB64,
+      exp: Math.floor(Date.now() / 1000) + 120,
+      captchaTag: "any",
+      mask: 1,
+    });
+
+    const missingConsumePayload = makeInnerPayload({
+      powcheck: true,
+      atomic: true,
+      turncheck: false,
+      atomicState: {
+        captchaToken: "",
+        ticketB64: "",
+        consumeToken: "",
+        fromCookie: false,
+        cookieName: "",
+      },
+    });
+    missingConsumePayload.c.AGGREGATOR_POW_ATOMIC_CONSUME = true;
+
+    const missingConsumeRes = await mod.default.fetch(
+      new Request("https://example.com/protected", {
+        method: "GET",
+        headers: {
+          ...freshHeaders(missingConsumePayload),
+          Accept: "application/json",
+          "CF-Connecting-IP": "1.2.3.4",
+        },
+      }),
+      {},
+      {}
+    );
+    assert.equal(missingConsumeRes.status, 403);
+    assert.equal(originCalls, 0);
+
+    const consumePayload = makeInnerPayload({
+      powcheck: true,
+      atomic: true,
+      turncheck: false,
+      atomicState: {
+        captchaToken: "",
+        ticketB64: "",
+        consumeToken,
+        fromCookie: false,
+        cookieName: "",
+      },
+    });
+    consumePayload.c.AGGREGATOR_POW_ATOMIC_CONSUME = true;
+
+    const consumeRes = await mod.default.fetch(
+      new Request("https://example.com/protected", {
+        method: "GET",
+        headers: {
+          ...freshHeaders(consumePayload),
+          Accept: "application/json",
+          "CF-Connecting-IP": "1.2.3.4",
+        },
+      }),
+      {},
+      {}
+    );
+    assert.equal(consumeRes.status, 200);
+    assert.equal(originCalls, 1);
+    assert.equal(aggregatorCalls, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreGlobals();
+  }
+});
+
+test("pow-only atomic mode falls back to pow_required when aggregator consume is disabled", async () => {
+  const restoreGlobals = ensureGlobals();
+  const powModulePath = await buildPowModule();
+  const mod = await import(`${pathToFileURL(powModulePath).href}?v=${Date.now()}-pow-only-atomic-no-agg`);
+
+  const payload = makeInnerPayload({
+    powcheck: true,
+    atomic: true,
+    turncheck: false,
+  });
+  payload.c.AGGREGATOR_POW_ATOMIC_CONSUME = false;
+  const headers = makeInnerHeaders(payload);
+
+  const originalFetch = globalThis.fetch;
+  let originCalls = 0;
+  let aggregatorCalls = 0;
+  try {
+    globalThis.fetch = async (input, init) => {
+      const req = input instanceof Request ? input : new Request(input, init);
+      if (String(req.url) === SITEVERIFY_URL) {
+        aggregatorCalls += 1;
+        return new Response(JSON.stringify({ ok: true, reason: "ok", checks: {}, providers: {} }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      originCalls += 1;
+      return new Response("ok", { status: 200 });
+    };
+
+    const res = await mod.default.fetch(
+      new Request("https://example.com/protected", {
+        method: "GET",
+        headers: { ...headers, Accept: "application/json", "CF-Connecting-IP": "1.2.3.4" },
+      }),
+      {},
+      {}
+    );
+
+    assert.equal(res.status, 403);
+    assert.deepEqual(await res.json(), { code: "pow_required" });
+    assert.equal(aggregatorCalls, 0);
+    assert.equal(originCalls, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreGlobals();
+  }
+});
+
+test("all 8 path combinations preserve api/subrequest semantics", async () => {
+  const report = await runMatrix8();
   assert.equal(report.failures.length, 0, JSON.stringify(report.failures, null, 2));
 });
 
@@ -1245,7 +1385,7 @@ test("commit rejects stale issuedAt ticket even when mac and exp are valid", asy
   try {
     const powModulePath = await buildPowModule();
     const mod = await import(`${pathToFileURL(powModulePath).href}?v=${Date.now()}-issued-at-stale`);
-    const payload = makeInnerPayload({ powcheck: true, atomic: false, turncheck: false, recaptchaEnabled: false });
+    const payload = makeInnerPayload({ powcheck: true, atomic: false, turncheck: false });
     const freshHeaders = () => makeInnerHeaders(payload);
     const pageRes = await mod.default.fetch(
       new Request("https://example.com/protected", {
@@ -1296,7 +1436,7 @@ test("commit treats POW_MAX_GEN_TIME_SEC=0 as clamp-to-1 instead of fallback", a
   try {
     const powModulePath = await buildPowModule();
     const mod = await import(`${pathToFileURL(powModulePath).href}?v=${Date.now()}-issued-at-zero-clamp`);
-    const payload = makeInnerPayload({ powcheck: true, atomic: false, turncheck: false, recaptchaEnabled: false });
+    const payload = makeInnerPayload({ powcheck: true, atomic: false, turncheck: false });
     payload.c.POW_MAX_GEN_TIME_SEC = 0;
     const freshHeaders = () => makeInnerHeaders(payload);
     const pageRes = await mod.default.fetch(
@@ -1348,7 +1488,7 @@ test("challenge rejects absolute issuedAt lifecycle overflow even when ticket an
   try {
     const powModulePath = await buildPowModule();
     const mod = await import(`${pathToFileURL(powModulePath).href}?v=${Date.now()}-challenge-absolute-stale`);
-    const payload = makeInnerPayload({ powcheck: true, atomic: false, turncheck: false, recaptchaEnabled: false });
+    const payload = makeInnerPayload({ powcheck: true, atomic: false, turncheck: false });
     const freshHeaders = () => makeInnerHeaders(payload);
     const pageRes = await mod.default.fetch(
       new Request("https://example.com/protected", {
@@ -1402,7 +1542,7 @@ test("open rejects absolute issuedAt lifecycle overflow even when ticket and com
   try {
     const powModulePath = await buildPowModule();
     const mod = await import(`${pathToFileURL(powModulePath).href}?v=${Date.now()}-open-absolute-stale`);
-    const payload = makeInnerPayload({ powcheck: true, atomic: false, turncheck: false, recaptchaEnabled: false });
+    const payload = makeInnerPayload({ powcheck: true, atomic: false, turncheck: false });
     const freshHeaders = () => makeInnerHeaders(payload);
     const pageRes = await mod.default.fetch(
       new Request("https://example.com/protected", {
@@ -1456,7 +1596,7 @@ test("challenge allows request exactly at absolute issuedAt lifecycle deadline",
   try {
     const powModulePath = await buildPowModule();
     const mod = await import(`${pathToFileURL(powModulePath).href}?v=${Date.now()}-challenge-absolute-deadline`);
-    const payload = makeInnerPayload({ powcheck: true, atomic: false, turncheck: false, recaptchaEnabled: false });
+    const payload = makeInnerPayload({ powcheck: true, atomic: false, turncheck: false });
     payload.c.POW_MAX_GEN_TIME_SEC = 5;
     payload.c.POW_COMMIT_TTL_SEC = 7;
     const freshHeaders = () => makeInnerHeaders(payload);

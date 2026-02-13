@@ -29,6 +29,29 @@ test("README config keys stay in sync with runtime normalizeConfig keys", async 
   assert.deepEqual(docKeys, runtimeKeys);
 });
 
+test("README is turnstile-only and documents the 8-path matrix", async () => {
+  const readme = await readFile("README.md", "utf8");
+
+  assert.doesNotMatch(readme, /reCAPTCHA|recaptcha_v3|recaptchaEnabled|RECAPTCHA_/u);
+  assert.match(readme, /8-path/u);
+  assert.match(readme, /AGGREGATOR_POW_ATOMIC_CONSUME/u);
+});
+
+test("normalizeConfig enforces turnstile-only key surface and atomic consume toggle", () => {
+  const cfg = __testNormalizeConfig({
+    AGGREGATOR_POW_ATOMIC_CONSUME: "true",
+  });
+
+  assert.equal("recaptchaEnabled" in cfg, false);
+  assert.equal("RECAPTCHA_PAIRS" in cfg, false);
+  assert.equal("RECAPTCHA_ACTION" in cfg, false);
+  assert.equal("RECAPTCHA_MIN_SCORE" in cfg, false);
+  assert.equal(cfg.AGGREGATOR_POW_ATOMIC_CONSUME, false);
+
+  const cfgTrue = __testNormalizeConfig({ AGGREGATOR_POW_ATOMIC_CONSUME: true });
+  assert.equal(cfgTrue.AGGREGATOR_POW_ATOMIC_CONSUME, true);
+});
+
 test("README removes stale fields and documents whitepaper knobs", async () => {
   const readme = await readFile("README.md", "utf8");
 

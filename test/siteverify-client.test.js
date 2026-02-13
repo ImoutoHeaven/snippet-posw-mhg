@@ -267,3 +267,98 @@ test("client accepts provider_failed contract with checks and providers", async 
     restoreGlobals();
   }
 });
+
+test("client emits powConsume contract when aggregator consume is enabled", async () => {
+  const restoreGlobals = ensureGlobals();
+  const originalFetch = globalThis.fetch;
+
+  let capturedBody = "";
+  globalThis.fetch = async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    capturedBody = await request.text();
+    return new Response(
+      JSON.stringify({
+        ok: true,
+        reason: "ok",
+        checks: {},
+        providers: {},
+      }),
+      {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      },
+    );
+  };
+
+  try {
+    const cfgId = 42;
+    const ticketMac = "ticket-mac-for-consume";
+    const expireAt = 1900000000;
+    const result = await verifyViaSiteverifyAggregator({
+      config: {
+        ...baseConfig,
+        AGGREGATOR_POW_ATOMIC_CONSUME: true,
+      },
+      payload: basePayload,
+      powConsume: {
+        cfgId,
+        ticketMac,
+        expireAt,
+      },
+    });
+
+    assert.equal(result.ok, true);
+    const outbound = JSON.parse(capturedBody);
+    assert.equal(typeof outbound.powConsume.consumeKey, "string");
+    assert.equal(outbound.powConsume.consumeKey, sha256Hex(`${cfgId}|${ticketMac}`));
+    assert.equal(outbound.powConsume.expireAt, expireAt);
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreGlobals();
+  }
+});
+
+test("client omits powConsume when aggregator consume is disabled", async () => {
+  const restoreGlobals = ensureGlobals();
+  const originalFetch = globalThis.fetch;
+
+  let capturedBody = "";
+  globalThis.fetch = async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    capturedBody = await request.text();
+    return new Response(
+      JSON.stringify({
+        ok: true,
+        reason: "ok",
+        checks: {},
+        providers: {},
+      }),
+      {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      },
+    );
+  };
+
+  try {
+    const result = await verifyViaSiteverifyAggregator({
+      config: {
+        ...baseConfig,
+        AGGREGATOR_POW_ATOMIC_CONSUME: false,
+      },
+      payload: basePayload,
+      powConsume: {
+        cfgId: 42,
+        ticketMac: "ticket-mac-for-consume",
+        expireAt: 1900000000,
+      },
+    });
+
+    assert.equal(result.ok, true);
+    const outbound = JSON.parse(capturedBody);
+    assert.equal("powConsume" in outbound, false);
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreGlobals();
+  }
+});

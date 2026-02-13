@@ -1,65 +1,64 @@
 # snippet-posw
 
-Stateless PoW / captcha gate (Turnstile + reCAPTCHA v3) for Cloudflare **Snippets / Workers**.
+Stateless PoW and Turnstile gate for Cloudflare Snippets and Workers.
 
 This project provides a self-contained L7 front gate that:
 
 - Exposes a PoW API under `/{POW_API_PREFIX}/*` (default: `/__pow/*`).
-- Supports **PoW-only**, **captcha-only** (Turnstile or reCAPTCHA v3), or **combined** mode.
-- Issues a single proof cookie (`__Host-proof`) on success.
-- Stays **stateless** on the server side (no KV/DO/DB): all checks are derived/verified with HMAC and short-lived cookies.
+- Supports PoW-only, turnstile-only, or combined mode.
+- Issues a single proof cookie (`__Host-proof`) when non-atomic flow succeeds.
+- Keeps server state stateless in snippet runtime; optional one-time consume is delegated to the siteverify worker when enabled.
 
 ## Files
 
 - `pow-config.js`: policy frontload layer (rule match + bypass/bindPath/atomic derivation + signed inner snapshot).
-- `pow-core-1.js`: business-path gate execution layer (proof/challenge/atomic/captcha decisions), consumes `inner.s`, and forwards with transit.
-- `pow-core-2.js`: PoW API + verification engine (`/__pow/*` + validated business passthrough), requires valid transit plus signed inner metadata before processing/forwarding.
-- `glue.js`: browser-side UI + orchestration (loaded by the challenge page).
+- `pow-core-1.js`: business-path gate execution layer (proof/challenge/atomic decisions), consumes `inner.s`, and forwards with transit.
+- `pow-core-2.js`: PoW API + verification engine (`/__pow/*` + validated business passthrough), requires valid transit plus signed inner metadata.
+- `glue.js`: browser-side UI + orchestration loaded by challenge pages.
 - `esm/esm.js`: browser-side PoW solver (`computePoswCommit`).
-- `template.html`: minimal challenge page template injected into the build.
-- `build.mjs`: build script (esbuild + HTML minify) → `dist/pow_config_snippet.js` + `dist/pow_core1_snippet.js` + `dist/pow_core2_snippet.js`.
-- `dist/pow_config_snippet.js`: config snippet output.
-- `dist/pow_core1_snippet.js`: core-1 snippet output.
-- `dist/pow_core2_snippet.js`: core-2 snippet output.
+- `siteverify_provider/src/worker.js`: siteverify aggregator worker with optional D1 consume ledger.
+- `dist/pow_config_snippet.js`: config snippet build output.
+- `dist/pow_core1_snippet.js`: core-1 snippet build output.
+- `dist/pow_core2_snippet.js`: core-2 snippet build output.
 
 ## Configuration
 
-Edit `CONFIG` in `pow-config.js` to match your host/path rules and enable **PoW** and/or **captcha providers**:
+Edit `CONFIG` in `pow-config.js` to match your host/path rules:
 
 ```js
 const CONFIG = [
-  { host: "example.com", path: "/**", config: { POW_TOKEN: "replace-me", powcheck: true } },
+  {
+    host: "example.com",
+    path: "/**",
+    config: {
+      POW_TOKEN: "replace-me",
+      powcheck: true,
+      turncheck: true,
+      ATOMIC_CONSUME: true,
+      AGGREGATOR_POW_ATOMIC_CONSUME: true,
+    },
+  },
 ];
 ```
 
 Notes:
 
-- `POW_TOKEN` is required when `powcheck`, `turncheck`, or `recaptchaEnabled` is `true`.
-- `host` is required on every entry; legacy `pattern` is not supported.
+- `POW_TOKEN` is required when `powcheck` or `turncheck` is `true`.
+- `host` is required on every entry; only `host`/`path` entries are supported.
 - Set `CONFIG_SECRET` to the same non-placeholder value in `pow-config.js`, `pow-core-1.js`, and `pow-core-2.js`.
-- When `turncheck: true`, you must also set:
-  - `TURNSTILE_SITEKEY`
-  - `TURNSTILE_SECRET`
-- When `recaptchaEnabled: true`, you must also set:
-  - `RECAPTCHA_PAIRS` (array of `{ sitekey, secret }`)
-  - `RECAPTCHA_MIN_SCORE` (v3 score threshold, default `0.5`)
-  - Optional: `RECAPTCHA_ACTION` (expected v3 action label, default `"submit"`)
+- When `turncheck: true`, set `TURNSTILE_SITEKEY` and `TURNSTILE_SECRET`.
+- `AGGREGATOR_POW_ATOMIC_CONSUME` is the only switch that enables aggregator-managed PoW one-time consume semantics.
 - Rule matching is first-match-wins; put more specific rules first.
-- `pow-core-1.js` and `pow-core-2.js` do not embed `DEFAULTS/CONFIG/COMPILED`; configuration is entirely supplied by `pow-config`.
-- Inner payload is `{ v, id, c, d, s }` with `v=1`; `s` is mandatory and carries frontloaded strategy (`nav/bypass/bind/atomic`). Missing `s` fails closed (`500`).
-- The inner header supports sharding via `X-Pow-Inner-Count` + `X-Pow-Inner-0..N-1`.
-- The inner header includes `X-Pow-Inner-Expire`; the MAC is computed over `payload + "." + exp`.
-- `POW_API_PREFIX` and `POW_COMMIT_COOKIE` are treated as global constants; `pow-config` supplies fixed defaults and per-entry overrides are ignored.
-- `pow-core-1.js` and `pow-core-2.js` are fail-closed: missing/invalid inner or transit headers, missing/out-of-window expire header, kind mismatch, or failed signature returns `500`.
+- `pow-core-1.js` and `pow-core-2.js` are fail-closed on missing/invalid inner or transit metadata.
 
 ## Architecture split
 
-- `pow-config` is the only policy decision point: it computes strategy and strips transient inputs before proxying.
-- `pow-core-1` is business-path execution: it validates signed inner payload, enforces gate decisions, then issues short-lived transit for core-2.
-- `pow-core-2` is execution + API: it requires both valid transit (`X-Pow-Transit*`) and valid signed inner (`X-Pow-Inner*`) metadata for both `api` and `biz` requests before PoW API/origin handling.
-- Transit contract is fail-closed (`X-Pow-Transit`, `X-Pow-Transit-Mac`, `X-Pow-Transit-Expire`) and all internal headers are stripped before origin forwarding.
-- Missing or invalid transit/inner metadata hard-denies with `500` by design, preventing split-hop bypass when proxy/header chains are misconfigured.
+- `pow-config` is the only policy decision point.
+- `pow-core-1` is business-path execution and transit issuer.
+- `pow-core-2` is PoW API and verification endpoint.
 - No-compat policy is strict: no compat, no migrate, no dead code branches.
+
+Deployment chain is strict: `pow-config -> pow-core-1 -> pow-core-2`.
 
 ## Config Reference
 
@@ -74,393 +73,146 @@ Each `CONFIG` entry looks like:
 | Field | Type | Description |
 |---|---|---|
 | `host` | `string` | Host glob. `*` matches a single label segment (does not cross `.`). |
-| `path` | `string` | Optional path glob. Supports `*` (no `/`) and `**` (may include `/`); a trailing `/**` also matches the base path (e.g. `/foo/**` matches `/foo` and `/foo/...`). Omit to match all paths on the host. |
+| `path` | `string` | Optional path glob. Supports `*` (no `/`) and `**` (may include `/`); trailing `/**` also matches the base path. |
 
 ### `config` keys (all supported)
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `powcheck` | `boolean` | `false` | Enable PoW gate (requires `__Host-proof` with `m & 1`). |
-| `turncheck` | `boolean` | `false` | Enable Turnstile gate (requires `__Host-proof` with `m & 2`). |
-| `recaptchaEnabled` | `boolean` | `false` | Enable reCAPTCHA v3 gate (requires `__Host-proof` with `m & 4`). |
-| `POW_TOKEN` | `string` | — | HMAC secret for ticket binding + cookie MACs. Required when any of `powcheck`/`turncheck`/`recaptchaEnabled` is `true`. |
-| `TURNSTILE_SITEKEY` | `string` | — | Turnstile site key (client-side). Required when `turncheck: true`. |
-| `TURNSTILE_SECRET` | `string` | — | Turnstile secret key (used for `siteverify`, includes `remoteip`). Required when `turncheck: true`. |
-| `SITEVERIFY_URL` | `string` | `""` | Siteverify aggregator endpoint URL (forwarded by runtime config surface). |
-| `SITEVERIFY_AUTH_KID` | `string` | `"v1"` | Siteverify aggregator auth key id (forwarded by runtime config surface). |
-| `SITEVERIFY_AUTH_SECRET` | `string` | `""` | Siteverify aggregator auth secret (forwarded by runtime config surface). |
-| `RECAPTCHA_PAIRS` | `Array<{sitekey:string,secret:string}>` | `[]` | reCAPTCHA v3 key pairs. Server picks one deterministically from `ticket.mac` (`kid = sha256("kid|ticket.mac") mod pairs.length`). |
-| `RECAPTCHA_MIN_SCORE` | `number` | `0.5` | Minimum accepted reCAPTCHA v3 score (`0..1`). |
-| `RECAPTCHA_ACTION` | `string` | `"submit"` | Expected reCAPTCHA v3 action label. Can be overridden per `CONFIG` entry. |
-| `ATOMIC_CONSUME` | `boolean` | `false` | Enable business-path atomic consume for captcha (captcha-only and PoW+captcha). In captcha-only mode proof cookies are ignored; in combined mode `/__pow/open` returns `consume` instead of setting `__Host-proof`. |
-| `ATOMIC_TURN_QUERY` | `string` | `"__ts"` | Query param for atomic `captchaToken` envelope. |
-| `ATOMIC_TICKET_QUERY` | `string` | `"__tt"` | Query param for ticket (captcha-only + atomic). |
-| `ATOMIC_CONSUME_QUERY` | `string` | `"__ct"` | Query param for consume token (combined + atomic). |
-| `ATOMIC_TURN_HEADER` | `string` | `"x-turnstile"` | Header for atomic `captchaToken` envelope. |
-| `ATOMIC_TICKET_HEADER` | `string` | `"x-ticket"` | Header for ticket (captcha-only + atomic). |
-| `ATOMIC_CONSUME_HEADER` | `string` | `"x-consume"` | Header for consume token (combined + atomic). |
-| `ATOMIC_COOKIE_NAME` | `string` | `"__Secure-pow_a"` | Short-lived cookie name for atomic navigation redirects; cleared after use. |
-| `STRIP_ATOMIC_QUERY` | `boolean` | `true` | Remove atomic query params before proxying. |
-| `STRIP_ATOMIC_HEADERS` | `boolean` | `true` | Remove atomic headers before proxying. |
-| `POW_API_PREFIX` | `string` | `"/__pow"` | Global API prefix for PoW endpoints (fixed default from `pow-config`; per-entry override is ignored). |
-| `POW_GLUE_URL` | `string` | (repo-pinned) | ES module URL imported by the challenge page (client UI + orchestration). |
-| `POW_ESM_URL` | `string` | (repo-pinned) | ES module URL for the PoW solver (`computePoswCommit`). Required when `powcheck: true`. |
-| `POW_VERSION` | `number` | `3` | Ticket version (changing breaks existing cookies). |
+| `powcheck` | `boolean` | `false` | Enable PoW gate (requires `__Host-proof` with `m & 1` when non-atomic). |
+| `turncheck` | `boolean` | `false` | Enable Turnstile gate (requires `__Host-proof` with `m & 2` when non-atomic). |
+| `bindPathMode` | `"none", "query", "header"` | `"none"` | Path binding derivation mode for proxy-style routes. |
+| `bindPathQueryName` | `string` | `"path"` | Query key used when `bindPathMode: "query"`. |
+| `bindPathHeaderName` | `string` | `""` | Header key used when `bindPathMode: "header"`. |
+| `stripBindPathHeader` | `boolean` | `false` | Remove bind-path header before origin proxy when enabled. |
+| `POW_VERSION` | `number` | `3` | Ticket version. |
+| `POW_API_PREFIX` | `string` | `"/__pow"` | Global API prefix for PoW endpoints. |
 | `POW_DIFFICULTY_BASE` | `number` | `8192` | Base step count. |
-| `POW_DIFFICULTY_COEFF` | `number` | `1.0` | Difficulty multiplier (steps ≈ `base * coeff`). |
-| `POW_MIN_STEPS` | `number` | `512` | Minimum step count (clamps computed steps). |
-| `POW_MAX_STEPS` | `number` | `8192` | Maximum step count (clamps computed steps). |
-| `POW_HASHCASH_BITS` | `number` | `0` | Extra “root-bound hashcash” check on the last index (0 disables). |
-| `POW_PAGE_BYTES` | `number` | `16384` | MHG page size in bytes. Values are normalized to a multiple of 16 (minimum 16). |
+| `POW_DIFFICULTY_COEFF` | `number` | `1.0` | Difficulty multiplier (steps ~= base * coeff). |
+| `POW_MIN_STEPS` | `number` | `512` | Minimum step clamp. |
+| `POW_MAX_STEPS` | `number` | `8192` | Maximum step clamp. |
+| `POW_HASHCASH_BITS` | `number` | `0` | Root-bound hashcash bits (`0` disables). |
+| `POW_PAGE_BYTES` | `number` | `16384` | MHG page size; normalized to a multiple of 16 (minimum 16). |
 | `POW_MIX_ROUNDS` | `number` | `2` | MHG AES mix rounds per page (`1..4`, clamped). |
-| `POW_SEGMENT_LEN` | `string, number` | `2` | Segment length: fixed `N` or range `"min-max"` (each clamped to `1..16`). |
-| `POW_SAMPLE_K` | `number` | `4` | Extra sampled indices per round (total extra ≈ `POW_SAMPLE_K * POW_CHAL_ROUNDS`). |
-| `POW_CHAL_ROUNDS` | `number` | `10` | Challenge rounds (controls how many indices are requested). |
-| `POW_OPEN_BATCH` | `number` | `4` | Indices per `/open` batch (clamped to `1..256`). |
-| `POW_COMMIT_TTL_SEC` | `number` | `120` | TTL for `__Host-pow_commit` (commit cookie). |
-| `POW_MAX_GEN_TIME_SEC` | `number` | `300` | Maximum allowed seconds for page generation stage (used by the `issuedAt` gate). |
-| `POW_TICKET_TTL_SEC` | `number` | `600` | TTL for challenge tickets. |
-| `PROOF_TTL_SEC` | `number` | `600` | TTL for `__Host-proof`. |
+| `POW_SEGMENT_LEN` | `string, number` | `2` | Segment length as fixed `N` or range `"min-max"` (`1..16`). |
+| `POW_SAMPLE_K` | `number` | `4` | Extra sampled indices per round. |
+| `POW_CHAL_ROUNDS` | `number` | `10` | Challenge rounds. |
+| `POW_OPEN_BATCH` | `number` | `4` | Indices per `/open` batch (`1..256`, clamped). |
+| `POW_COMMIT_TTL_SEC` | `number` | `120` | TTL for `__Host-pow_commit`. |
+| `POW_MAX_GEN_TIME_SEC` | `number` | `300` | Maximum generation-stage seconds. |
+| `POW_TICKET_TTL_SEC` | `number` | `600` | Ticket TTL. |
+| `PROOF_TTL_SEC` | `number` | `600` | Proof cookie TTL. |
 | `PROOF_RENEW_ENABLE` | `boolean` | `false` | Enable sliding renewal for `__Host-proof`. |
-| `PROOF_RENEW_MAX` | `number` | `2` | Max renewal count (hard cap; signed). |
-| `PROOF_RENEW_WINDOW_SEC` | `number` | `90` | Only renew when `exp - now <= window`. |
-| `PROOF_RENEW_MIN_SEC` | `number` | `30` | Minimum seconds between renewals. |
-| `POW_BIND_PATH` | `boolean` | `false` | Bind to canonical path hash; when enabled and `bindPathMode` is `query`/`header`, missing/invalid/oversized bindPath returns `400` (fail-closed). |
-| `bindPathMode` | `"none", "query", "header"` | `"none"` | How to derive canonical path for binding (proxy-style endpoints). |
-| `bindPathQueryName` | `string` | `"path"` | Query param name when `bindPathMode: "query"`. |
-| `bindPathHeaderName` | `string` | `""` | Header name when `bindPathMode: "header"`. |
-| `stripBindPathHeader` | `boolean` | `false` | If `true` and `bindPathMode: "header"`, delete the header before proxying upstream. |
-| `POW_BIND_IPRANGE` | `boolean` | `true` | Bind to client IP CIDR (uses `CF-Connecting-IP`). |
-| `IPV4_PREFIX` | `number` | `32` | IPv4 CIDR prefix length for IP binding (`0..32`). |
-| `IPV6_PREFIX` | `number` | `128` | IPv6 CIDR prefix length for IP binding (`0..128`). |
-| `POW_BIND_COUNTRY` | `boolean` | `true` | Bind to `request.cf.country`. |
-| `POW_BIND_ASN` | `boolean` | `true` | Bind to `request.cf.asn`. |
-| `POW_BIND_TLS` | `boolean` | `true` | Bind to TLS fingerprint derived from `request.cf.tlsClientExtensionsSha1` + `tlsClientCiphersSha1`. |
-| `POW_COMMIT_COOKIE` | `string` | `"__Host-pow_commit"` | Global commit cookie name (fixed default from `pow-config`; per-entry override is ignored). |
-| `INNER_AUTH_QUERY_NAME` | `string` | `""` | Query param name for internal bypass. Requires `INNER_AUTH_QUERY_VALUE`. |
-| `INNER_AUTH_QUERY_VALUE` | `string` | `""` | Query param value for internal bypass. Requires `INNER_AUTH_QUERY_NAME`. |
-| `INNER_AUTH_HEADER_NAME` | `string` | `""` | Header name for internal bypass. Requires `INNER_AUTH_HEADER_VALUE`. |
-| `INNER_AUTH_HEADER_VALUE` | `string` | `""` | Header value for internal bypass. Requires `INNER_AUTH_HEADER_NAME`. |
-| `stripInnerAuthQuery` | `boolean` | `true` | Remove the bypass query param before proxying (only when bypass matched). |
-| `stripInnerAuthHeader` | `boolean` | `true` | Remove the bypass header before proxying (only when bypass matched). |
+| `PROOF_RENEW_MAX` | `number` | `2` | Max renewal count. |
+| `PROOF_RENEW_WINDOW_SEC` | `number` | `90` | Renew only near expiry. |
+| `PROOF_RENEW_MIN_SEC` | `number` | `30` | Minimum interval between renewals. |
+| `ATOMIC_CONSUME` | `boolean` | `false` | Enable atomic transport contract on protected business requests. |
+| `AGGREGATOR_POW_ATOMIC_CONSUME` | `boolean` | `false` | Enable aggregator-managed one-time consume for PoW atomic mode. |
+| `ATOMIC_TURN_QUERY` | `string` | `"__ts"` | Query parameter carrying atomic turnstile token envelope. |
+| `ATOMIC_TICKET_QUERY` | `string` | `"__tt"` | Query parameter carrying ticket for atomic flows. |
+| `ATOMIC_CONSUME_QUERY` | `string` | `"__ct"` | Query parameter carrying consume token for atomic flows. |
+| `ATOMIC_TURN_HEADER` | `string` | `"x-turnstile"` | Header carrying atomic turnstile token envelope. |
+| `ATOMIC_TICKET_HEADER` | `string` | `"x-ticket"` | Header carrying ticket for atomic flows. |
+| `ATOMIC_CONSUME_HEADER` | `string` | `"x-consume"` | Header carrying consume token for atomic flows. |
+| `ATOMIC_COOKIE_NAME` | `string` | `"__Secure-pow_a"` | Short-lived cookie used for atomic navigation fallback. |
+| `STRIP_ATOMIC_QUERY` | `boolean` | `true` | Strip atomic query params before origin proxying. |
+| `STRIP_ATOMIC_HEADERS` | `boolean` | `true` | Strip atomic headers before origin proxying. |
+| `INNER_AUTH_QUERY_NAME` | `string` | `""` | Query key for internal bypass (requires value pair). |
+| `INNER_AUTH_QUERY_VALUE` | `string` | `""` | Query value for internal bypass (requires name pair). |
+| `INNER_AUTH_HEADER_NAME` | `string` | `""` | Header key for internal bypass (requires value pair). |
+| `INNER_AUTH_HEADER_VALUE` | `string` | `""` | Header value for internal bypass (requires name pair). |
+| `stripInnerAuthQuery` | `boolean` | `true` | Strip internal bypass query key when match succeeds. |
+| `stripInnerAuthHeader` | `boolean` | `true` | Strip internal bypass header when match succeeds. |
+| `POW_BIND_PATH` | `boolean` | `false` | Bind ticket to canonical path hash. |
+| `POW_BIND_IPRANGE` | `boolean` | `true` | Bind ticket to IP CIDR (from `CF-Connecting-IP`). |
+| `POW_BIND_COUNTRY` | `boolean` | `true` | Bind ticket to `request.cf.country`. |
+| `POW_BIND_ASN` | `boolean` | `true` | Bind ticket to `request.cf.asn`. |
+| `POW_BIND_TLS` | `boolean` | `true` | Bind ticket to TLS fingerprint fields from `request.cf`. |
+| `IPV4_PREFIX` | `number` | `32` | IPv4 prefix used by IP binding (`0..32`). |
+| `IPV6_PREFIX` | `number` | `128` | IPv6 prefix used by IP binding (`0..128`). |
+| `POW_COMMIT_COOKIE` | `string` | `"__Host-pow_commit"` | Global commit cookie name. |
+| `POW_ESM_URL` | `string` | (repo-pinned) | ESM worker URL for browser PoW solve logic. |
+| `POW_GLUE_URL` | `string` | (repo-pinned) | ESM glue runtime URL for challenge orchestration. |
+| `SITEVERIFY_URL` | `string` | `""` | siteverify aggregator URL. |
+| `SITEVERIFY_AUTH_KID` | `string` | `"v1"` | siteverify auth key id. |
+| `SITEVERIFY_AUTH_SECRET` | `string` | `""` | siteverify auth secret. |
+| `TURNSTILE_SITEKEY` | `string` | — | Turnstile site key. |
+| `TURNSTILE_SECRET` | `string` | — | Turnstile secret key. |
+| `POW_TOKEN` | `string` | — | HMAC secret for ticket and cookie MACs. |
 
 ### `when` conditions
 
-Each `CONFIG` entry may include an optional `when` field to gate the rule on request properties. Supported fields include `country`, `asn`, `ip`, `method`, `ua`, `path`, `tls`, `header`, `cookie`, and `query`. The `when` expression supports boolean logic and nesting:
-
-- `and`: array of conditions, all must match
-- `or`: array of conditions, any may match
-- `not`: single condition to negate
-- multiple keys inside the same condition object are an implicit AND (all keys must match)
-
-String matching semantics:
-
-- `ua`: string values use case-insensitive substring match; regex values are tested as-is
-- `path`: string values use case-sensitive exact match; regex values are tested as-is
-- `country`, `asn`, `method`: string values use case-insensitive exact match
-
-Arrays and regex:
-
-- `ua`, `path`, `header`, `cookie`, `query` accept a string, regex, or array of those; arrays match if any entry matches
-- `query` values are multi-valued; when present, any value that matches is accepted
-
-Existence checks:
-
-- `header`, `cookie`, `query` support `{ exists: true }` or `{ exists: false }` on a key to test presence
-
-IP matching:
-
-- `ip` accepts a single IP, CIDR, or an array of those
-- CIDR supports IPv4 and IPv6
-
-Examples:
-
-```js
-{ host: "example.com", path: "/**", when: {
-  and: [
-    { ua: "mobile" },
-    { header: { "x-debug": { exists: false } } },
-    { ip: ["203.0.113.0/24", "2001:db8::/32"] },
-  ],
-}, config: { powcheck: true } }
-```
-
-```js
-{ host: "example.com", path: "/**", when: {
-  or: [
-    { path: "/healthz" },
-    { query: { "probe": { exists: true } } },
-  ],
-}, config: { turncheck: true } }
-```
+Each `CONFIG` entry may include an optional `when` field with boolean logic (`and`, `or`, `not`) over `country`, `asn`, `ip`, `method`, `ua`, `path`, `tls`, `header`, `cookie`, and `query`.
 
 ## Proof Cookie (`__Host-proof`)
 
-The gate issues a single proof cookie with a mode mask:
+The proof cookie format is `v1.{ticketB64}.{iat}.{last}.{n}.{m}.{mac}` where mask `m` uses only:
 
-- Format: `v1.{ticketB64}.{iat}.{last}.{n}.{m}.{mac}`
-- `m` mask:
-  - `1` = PoW
-  - `2` = Turnstile
-  - `4` = reCAPTCHA v3
-  - Combos are bitwise OR (`3=PoW+Turnstile`, `5=PoW+reCAPTCHA`, `6=Turnstile+reCAPTCHA`, `7=all`).
-
-Proof and commit cookies (`__Host-proof`, `__Host-pow_commit`) are issued with `SameSite=Lax`.
+- `1` = PoW
+- `2` = Turnstile
+- `3` = PoW + Turnstile
 
 A request is allowed when `(m & requiredMask) == requiredMask`.
-When `ATOMIC_CONSUME` is enabled and captcha is required (`turncheck` or `recaptchaEnabled`), proof cookies are ignored; atomic tokens on the business request are mandatory.
 
-## Internal bypass
+## Turnstile and Atomic Flow
 
-You can bypass the gate for internal traffic by matching a specific query param or header. When a match occurs, the snippet returns `fetch(request)` and skips PoW/captcha checks. This is useful for internal APIs because Snippet rules cannot match on headers or query strings. You can also strip the bypass credential before proxying.
+- `/__pow/cap` exists only for turnstile captcha-only non-atomic flow.
+- Combined non-atomic flow verifies turnstile during final `POST /__pow/open`.
+- Atomic flow verifies on the business path with strict consume token validation.
+- Atomic input transport priority remains cookie > header > query.
 
-Configuration (exact match required):
+## 8-path matrix (PoW x Atomic x Turnstile)
 
-- Query param: `INNER_AUTH_QUERY_NAME` + `INNER_AUTH_QUERY_VALUE`
-- Header: `INNER_AUTH_HEADER_NAME` + `INNER_AUTH_HEADER_VALUE`
+This hard-cut model is an 8-path matrix with only three toggles: PoW (P), Atomic (A), Turnstile (T).
 
-Example:
-
-```js
-{ host: "example.com", path: "/**", config: {
-  POW_TOKEN: "replace-me",
-  powcheck: true,
-  INNER_AUTH_QUERY_NAME: "auth",
-  INNER_AUTH_QUERY_VALUE: "my-internal-token",
-  INNER_AUTH_HEADER_NAME: "X-Inner-Auth",
-  INNER_AUTH_HEADER_VALUE: "X-Inner-Auth-Value",
-  stripInnerAuthQuery: true,
-  stripInnerAuthHeader: true,
-} }
-```
-
-Notes:
-
-- Both name and value must be set for a match.
-- If both query and header are configured, **both must match** to bypass.
-- If only one is configured, that single match is sufficient.
-- The bypass only applies to protected paths (non-`/__pow/*` requests).
-- If `stripInnerAuthQuery`/`stripInnerAuthHeader` are `true`, the matched credential is removed before proxying.
-
-## Unified captcha flow (Turnstile + reCAPTCHA v3)
-
-- Unified endpoint: `POST /__pow/cap` (not `/__pow/turn`).
-- Turnstile verification uses `cData = ticket.mac` binding.
-- reCAPTCHA v3 verification enforces `success=true`, exact `hostname`, `remoteip` consistency (when provided), `score >= RECAPTCHA_MIN_SCORE`, and exact `action === RECAPTCHA_ACTION` (default `"submit"`).
-
-Default (`ATOMIC_CONSUME=false`):
-
-- **Captcha-only** (`powcheck=false`, any captcha enabled): client calls `POST /__pow/cap` with `{ ticketB64, pathHash, captchaToken }` and receives `__Host-proof` on success.
-- **Combined** (`powcheck=true`, captcha enabled): `/__pow/cap` is disabled (404); captcha verification happens in final `POST /__pow/open` using `captchaToken`.
-
-Atomic consume (`ATOMIC_CONSUME=true`):
-
-- **Captcha-only**: `/__pow/cap` is disabled (404). Client attaches `captchaToken + ticket` to the business request and the snippet verifies captcha then forwards.
-- **Combined**: `/__pow/open` returns `{ done: true, consume: "v2..." }` and does **not** set `__Host-proof`. Client attaches `captchaToken + consume` to the business request; the snippet verifies consume (HMAC + `captchaTag` + mask), binding, then required captcha providers.
-- **`captchaToken` envelope (canonical)**: always a JSON object containing `turnstile` and/or `recaptcha_v3` keys (for example `{"turnstile":"...","recaptcha_v3":"..."}`). Raw token string fallback is not supported.
-- **Transport**: cookie > header > query (header preferred over query when both present). Navigation tries a short-lived cookie first (Max-Age 5s, Path = target), then falls back to query; embedded flows use `postMessage` for header replay. Tokens are stripped when `STRIP_ATOMIC_QUERY/STRIP_ATOMIC_HEADERS` are `true`. The cookie is cleared after use.
-- **Fail-closed validation**: malformed/missing captcha envelope returns `400`; cryptographic or captcha-tag mismatch returns `403`; oversized atomic fields/snapshots return `431` (all with empty body). No legacy fallback is used.
-- **Navigation failure**: if atomic validation fails, navigation requests fall back to the challenge page (non-navigation still returns 403).
-- **Embedding**: the challenge page forbids iframe embedding (CSP/XFO). Atomic `postMessage` is restricted to same-origin parent/opener and uses a concrete origin.
-
-Disallowed verify points (no provider `siteverify` subrequest):
-
-- `POST /__pow/commit`
-- `POST /__pow/challenge`
-- non-final `POST /__pow/open`
-- atomic final `POST /__pow/open` (combined mode)
-
-Provider network verification is only performed at allowed points (`/__pow/cap`, non-atomic final `/__pow/open`, or atomic business-path consume).
-
-### 403 hint contract and `glue.js` routing
-
-- PoW API `403` responses may include compact header `x-pow-h` (one-word values only).
-- Current hint values:
-  - `stale`: expired/invalid ticket/session/captcha verification state.
-  - `cheat`: PoW/captcha binding tamper or proof/state mismatch.
-- `glue.js` routes `403` by `status + hint` (missing hint is treated as `stale` for backward compatibility):
-  - `stale` (and missing hint for backward compatibility) triggers a bounded page reload.
-  - Reload is debounced via `sessionStorage` (`2` attempts in `15s`); after limit it hard-fails.
-  - `cheat` hard-fails immediately (no reload path).
-- Client retries are transport-only: retry loop applies to fetch/network interruption errors, not HTTP status codes (including `403`).
-
-### Atomic dual-provider aggregator model (Turnstile + reCAPTCHA)
-
-When `ATOMIC_CONSUME=true` and both providers are required on a business request (`turncheck=true` + `recaptchaEnabled=true`):
-
-- `pow-config` does policy and forwarding only; it does not run provider verification.
-- `pow-core-2` calls the siteverify aggregator once and consumes unified `{ ok, reason, checks, providers }` output.
-- Aggregator auth and response contract is strict: auth failure => 404; non-auth responses are fixed 200 with ok/reason.
-- Provider entries keep raw diagnostics: rawResponse always returned; provider network failure maps to provider `httpStatus=502`.
+| # | P | A | T | Path Description | `pow-config` subrequests | `pow-core-1` subrequests | `pow-core-2` subrequests | Siteverify Timing | Core Interaction |
+|---|---|---|---|---|---:|---:|---:|---|---|
+| 0 | Off | Off | Off | No protection | 1 | 1 | 1 | None | Pass-through |
+| 1 | Off | Off | On | Non-atomic turnstile-only | 1 | 1 | 1 | `/__pow/cap` verify | `POST /__pow/cap` |
+| 2 | Off | On | Off | Invalid toggle (degenerates to #0) | 1 | 1 | 1 | None | Pass-through |
+| 3 | Off | On | On | Atomic turnstile-only business consume | 1 | 1 | 2 | Business path verify + origin | Business request |
+| 4 | On | Off | Off | PoW-only | 1 | 1 | 0 | None | `/commit`, `/challenge`, `/open` |
+| 5 | On | Off | On | Non-atomic PoW + turnstile | 1 | 1 | 1 | Final `/__pow/open` verify | PoW API |
+| 6 | On | On | Off | PoW-only atomic with aggregator consume | 1 | 1 | 2 | Business consume verify + origin | PoW API + Business |
+| 7 | On | On | On | Atomic PoW + turnstile | 1 | 1 | 2 | Business verify + origin | PoW API + Business |
 
 Subrequest matrix (API + business paths):
 
 | Flow | `pow-config` subrequests | `pow-core-1` subrequests | `pow-core-2` subrequests | Total |
 |---|---:|---:|---:|---:|
-| Non-atomic (`ATOMIC_CONSUME=false`) via `/__pow/cap` | `1` (forwarding the request to `pow-core-1`) | `1` (forwarding the request to `pow-core-2`) | `1` (aggregator verify) | `3` |
-| Non-atomic combined final `/__pow/open` | `1` (forwarding the request to `pow-core-1`) | `1` (forwarding the request to `pow-core-2`) | `1` (aggregator verify) | `3` |
-| Atomic, single-provider business request | `1` (forwarding the request to `pow-core-1`) | `1` (forwarding the request to `pow-core-2`) | `2` (aggregator verify + origin fetch) | `4` |
-| Atomic, dual-provider business request | `1` (forwarding the request to `pow-core-1`) | `1` (forwarding the request to `pow-core-2`) | `2` (aggregator verify + origin fetch) | `4` |
+| Non-atomic `/__pow/cap` | 1 | 1 | 1 | 3 |
+| Non-atomic combined final `/__pow/open` | 1 | 1 | 1 | 3 |
+| Atomic turnstile-only business request | 1 | 1 | 2 | 4 |
+| Atomic PoW business request (with or without turnstile) | 1 | 1 | 2 | 4 |
 
-The key budget guardrail is per-snippet, not total chain calls: atomic dual-provider stays at `<=2` subrequests in each snippet scope.
+### Aggregator consume contract
 
-### Early-bind (combined mode)
+- `AGGREGATOR_POW_ATOMIC_CONSUME=true` allows pow-only atomic consume and preserves turnstile atomic behavior.
+- Local PoW validity and consume-MAC verification remain in snippet runtime.
+- Aggregator receives only one-time consume contract material (`consumeKey`, `expireAt`) and enforces single-use semantics.
 
-In combined mode, PoW is bound to the active captcha envelope via `captchaTag(v1)`:
+### Siteverify aggregator contract
 
-- `captchaTag = base64url(sha256("ctag|v1|t=<turnstile>|r=<recaptcha_v3>").slice(0, 12))`
-- PoW seed uses `bindingString + "|" + captchaTag`.
-- `__Host-pow_commit` (v5) carries `captchaTag` and the final `/open` verifies `captchaToken → captchaTag`.
+`pow-core-2` integrates with a siteverify aggregator and consumes fixed-shape responses.
 
-This guarantees **one token → one PoW**, preventing “1 PoW + N tokens”.
-
-### Turnstile limitations (captcha-solver proxying)
-
-Some captcha-solving platforms now support SOCKS5 proxies supplied by the client. In that setup, PoW and RTT-lock are performed on the attacker's machine, while Turnstile token minting, `cData`, and the SOCKS5 proxy are handled by the solver. Turnstile effectively degrades to **friction** plus a **single-use consumption lock**.
-
-If the attacker pays for a high-end SOCKS5 proxy and makes the solver appear as the *same egress IP*, then:
-
-- IP can be matched (via the proxy).
-- `cData` can be matched (client-supplied parameter).
-- TLS fingerprint **cannot** be matched (solver uses a different stack, e.g., Chrome vs. Python).
-
-Because Turnstile does **not** return the verified IP/TLS fingerprint, TLS binding becomes ineffective in this extreme case, and defense degrades to pure economic friction.
-Turnstile almost certainly has access to these signals but chooses not to expose or enforce them, which is hard not to find suspicious.
-
-Ideally Turnstile would expose server-enforced flags such as:
-
-- `force-verify-remoteip: true`
-- `tls-fingerprint: <payload>`
-- `force-verify-tls-fingerprint: true`
-
-and return only `success: true/false`. Today it does not. `cData` is opaque and cannot prevent attacker-supplied input, since it is **client-provided**, not extracted by Cloudflare. Treat `cData` as a low-cost check, not a silver bullet.
-
-### `captchaTag` design (captcha binding tag)
-
-`captchaTag(v1)` is a compact binding tag derived from canonical captcha envelope material:
-
-- Material string: `ctag|v1|t=<turnstile>|r=<recaptcha_v3>` (missing provider => empty string).
-- `captchaTag = base64url(sha256(material).slice(0, 12))` (96-bit tag, 16 chars base64url).
-- Used to bind PoW/consume tokens to a specific captcha solve without carrying the full token.
-- Stored inside signed artifacts: `__Host-pow_commit` (v5) and `consume` (v2).
-- Recomputed on the server from canonical envelope and compared (`captchaTag` must match).
-- For non-captcha flows, `captchaTag = "any"`.
-
-`captchaTag` is not secret; integrity is enforced by HMAC on the enclosing token/cookie.
-
-## CCR: Commit → Challenge → Open
-
-PoW uses a stateless CCR API:
-
-1. **Commit**: the browser computes the PoSW commitment (`rootB64 + nonce`) and calls `POST /__pow/commit`.
-   - The snippet verifies the ticket binding and mints a short-lived `__Host-pow_commit` cookie.
-   - In combined mode, `/commit` must include `captchaToken` to bind `captchaTag` early.
-2. **Challenge**: the browser calls `POST /__pow/challenge`.
-   - The snippet uses deterministic RNG derived from the commit to generate sampled indices, per-index segment lengths, and a batch token.
-3. **Open**: the browser calls `POST /__pow/open` with `opens` for the sampled indices.
-    - The snippet verifies and advances the cursor; repeats until done, then issues `__Host-proof` (non-atomic).
-    - In combined mode, the final `/open` must include `captchaToken` and triggers provider verification (non-atomic).
-    - In atomic combined mode, the final `/open` returns `consume` and provider verification only happens on the business path consume.
-
-Key properties:
-
-- **No server-side session**: all state is either recomputed or carried in signed cookie/token.
-- **Strict serial progression (RTT-lock)**: each `/open` depends on the previous cursor/token, so clients cannot parallelize or reorder batches.
-
-## Sliding renewal (proof cookie)
-
-When enabled, the gate can renew `__Host-proof` on navigation requests:
-
-- `PROOF_RENEW_ENABLE: true`
-- `PROOF_RENEW_MAX`: max renewal count
-- `PROOF_RENEW_WINDOW_SEC`: only renew near expiry
-- `PROOF_RENEW_MIN_SEC`: minimum seconds between renewals
-
-The renewal re-issues a fresh ticket + proof with the same mask `m`, and is capped by a hard max lifetime.
-
-## Root-bound Hashcash (`POW_HASHCASH_BITS`)
-
-This is **not** a standard Hashcash stamp format. It is a lightweight, *commitment-bound* extra PoW condition:
-
-- It is only checked when the sampled index is the **last step** (`i = L`).
-- The server computes:
-- `digest = SHA256("hashcash|v4|" || merkleRoot || chain[L])`
-  - and requires `leadingZeroBits(digest) >= POW_HASHCASH_BITS`.
-
-Why it exists:
-
-- It provides an **exponential cost knob** with minimal server overhead (one SHA-256 and a leading-zero count).
-- Because it is bound to `merkleRoot` and `chain[L]`, it cannot be “pre-stamped” independently of the actual PoSW chain commitment.
-- Increasing `POW_HASHCASH_BITS` increases the expected client work by roughly `~ 2^bits`, because the client must retry with a different nonce (which changes the whole chain commitment) until the condition holds.
+- Auth is strict: auth failure => 404.
+- Non-auth responses are fixed 200 with ok/reason.
+- Provider diagnostics are preserved: rawResponse always returned.
+- Provider transport failures are normalized: provider network failure maps to provider `httpStatus=502`.
 
 ### MHG mix hot-path optimizations
 
-This is implementation-level optimization work and does not change protocol semantics or cryptographic equations.
+This is implementation-level optimization work and does not change protocol semantics.
 
-- During `mixPage`, both server (`lib/mhg/mix-aes.js`) and worker (`esm/mhg-worker.js`) derive per-index PA/PB once and reuse across mix rounds.
-- AES-CBC trim uses `subarray(0, pageBytes)` view-based slicing instead of copy-based trim to reduce transient buffer copy overhead.
+- derive per-index PA/PB once and reuse across mix rounds.
+- AES-CBC trim uses `subarray(0, pageBytes)` view-based slicing.
 
-### MHG full-dynamic offset cutover
+## Root-bound Hashcash (`POW_HASHCASH_BITS`)
 
-- Offset scheduling is now full-dynamic (`off1..off5` evolve from round state) and fully replaces the previous semi-static schedule.
-- This rollout is a hard cutover: publish the new worker asset first, make `POW_ESM_URL` point to that exact version (with cache busting), then synchronize updated server snippets.
-- Minimal cache-busting example: `POW_ESM_URL="https://cdn.example.com/esm/esm.js?v=mhg-fdo-20260212"`.
-- Mixed-version windows are unsupported; in-flight commit/ticket chains can fail verification until both sides run the same formula.
-- During version skew, common symptoms are short-lived `equation_failed` or other verification-failed responses on commit/challenge/open flows.
-- After versions converge on both server and worker, these mixed-version failures should disappear without extra migration logic.
+This is a lightweight commitment-bound extra PoW condition checked on the last sampled index:
 
-## MHG witness closure: why sampling works
-
-- The browser builds memory-hard pages `page[0..L]` and commits to the full set with a Merkle root (`rootB64`).
-- For each sampled index `i`, the browser submits one open entry: `{ i, seg, nodes }`.
-- `nodes` is a closure map keyed by index: each required node carries `{ pageB64, proof }`.
-- Server verification is strict and deterministic:
-  - build equation set `E = { i - seg + 1 .. i }` (boundary-clamped)
-  - expand dependency closure `Need(E) = E ∪ { p0(j), p1(j), p2(j) for j in E }`
-  - verify Merkle membership for every node in `Need(E)`
-  - recompute `mixPage` topologically for each `j in E` and compare with witness pages
-- When `seg=1`, predecessor relation is still enforced (`i-1 -> i`), never “current-node-only”.
-
-This makes “skipping work”, “sparse computation”, or “fabricating opens” a losing bet: any missing closure node, bad proof, or equation mismatch is rejected.
-
-## RTT-lock and throughput ceiling
-
-With default parameters:
-
-- Total sampled indices: `S = 2 + POW_SAMPLE_K * POW_CHAL_ROUNDS = 182`
-- `POW_OPEN_BATCH = 15` ⇒ number of `/open` calls: `m = ceil(S / 15) = 13`
-- Total serial PoW API requests: `M_api = 1(/commit) + 1(/challenge) + m(/open) = 15`
-
-So a single IP’s token minting throughput is bounded by:
-
-- `tokens/s ≤ 1 / (M_api * RTT)`
-
-This limit comes from network latency (physics), not local compute.
-
-## “Exchange rate” with Cloudflare WAF Rate Limit
-
-A practical ops pattern is to put a WAF Rate Limit (e.g. `50 req / 10s / per IP`) in front of both `/__pow/*` and protected paths.
-
-Since minting one proof consumes at least `M_api = 15` serial requests:
-
-- `1 proof ≈ 15 rate-limit units`
-- Under `50/10s/IP`, each IP can mint at most `floor(50/15) = 3` tokens per 10 seconds (in the ideal case)
-
-This effectively turns Cloudflare’s rate limiter into a *stateful* quota counter, while the snippet remains stateless.
-
-## Parallelization and “chain break” economics
-
-PoSW itself is not a magical “anti-parallel” primitive. Attackers may try to split the chain at some breakpoint and compute segments in parallel, gambling that samples never cross the breakpoint.
-
-This implementation reduces the expected value of such attacks by:
-
-- verifying *contiguous segments* (`(i - segLen, i]`) — any sample crossing the breakpoint fails immediately
-- using deterministic, more evenly-covered sampling to reduce “lucky gaps”
-
-## Operational tuning tips
-
-- Prefer adjusting `POW_DIFFICULTY_COEFF` and/or lowering `POW_OPEN_BATCH` (stronger RTT-lock) instead of blindly increasing `POW_SAMPLE_K`/`POW_CHAL_ROUNDS`.
-- Keep a WAF/RL budget that includes both `/__pow/*` and protected endpoints so token minting “spends” budget at a predictable rate.
+- `digest = SHA256("hashcash|v4|" || merkleRoot || chain[L])`
+- Verification requires leading zero bits `>= POW_HASHCASH_BITS`.
 
 ## Build
 
@@ -469,59 +221,12 @@ npm install
 npm run build
 ```
 
-Output: `dist/pow_config_snippet.js` + `dist/pow_core1_snippet.js` + `dist/pow_core2_snippet.js` (each checks the Cloudflare Snippet 32KB hard limit).
+Snippet output is written to `dist/`.
 
-Budget policy: `32 KiB` is the hard limit for every snippet. `23 KiB` is a best-effort target for `pow_core1_snippet.js` and `pow_core2_snippet.js` (reported in build telemetry, not a hard-fail gate).
+Budget policy: `32 KiB` is a hard limit for each snippet. `23 KiB` is the best-effort target for `pow_core1_snippet.js` and `pow_core2_snippet.js`.
 
 ## Deploy
 
-1. Set `CONFIG_SECRET` in `pow-config.js`, `pow-core-1.js`, and `pow-core-2.js` (must match, not `replace-me`).
-2. Build and copy `dist/pow_config_snippet.js`, `dist/pow_core1_snippet.js`, and `dist/pow_core2_snippet.js` into Cloudflare **Snippets**.
-3. Ensure deploy order is `pow-config -> pow-core-1 -> pow-core-2`, and keep that chain before downstream auth/business snippets.
-4. Keep `/__pow/*` reachable from browsers during the challenge flow.
-
-## Managed Challenge (optional)
-
-If you enable Turnstile with `cData` binding, Managed Challenge often adds little value and is usually unnecessary. Prefer tuning PoW/Turnstile + WAF Rate Limit; keep Managed Challenge only if you want an extra, independent hurdle.
-
-## Subrequest and API Flow Analysis
-
-The following table details the subrequest count and execution flow for all 16 possible combinations of the core features.
-
-### Core Concepts
-
-*   **Subrequest**: A `fetch()` network request initiated within a Snippet. Cloudflare's Pro plan limits this to 2 per Snippet execution.
-*   **`pow-config` subrequests**: Includes forwarding the request to `pow-core-1` only.
-*   **`pow-core-1` subrequests**: Includes forwarding the request to `pow-core-2` after inner validation and business-path decisions.
-*   **`pow-core-2` subrequests**: Includes aggregator verify and origin-forward calls when required by flow.
-*   **Siteverify Timing**: Verification is performed by the external siteverify aggregator, invoked by `pow-core-2` at allowed verify points.
-
-### Flow Analysis Table
-
-| # | PoW (P) | Atomic (A) | Turnstile (T) | reCAPTCHA (R) | Path Description | `pow-config` Subrequests | `pow-core-1` subrequests | `pow-core-2` subrequests | Siteverify Timing | Core API Interaction |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **0** | **Off** | **Off** | **Off** | **Off** | **No Protection** | 1 (forward) | 1 (forward) | 1 (forward) | None | None, request passes through |
-| **1** | **Off** | **Off** | **Off** | **On** | **Non-Atomic, reCAPTCHA only** | 1 (forward) | 1 (forward) | 1 (in `/cap`) | `pow-core-2` in `/cap` via aggregator (reCAPTCHA) | `POST /__pow/cap` |
-| **2** | **Off** | **Off** | **On** | **Off** | **Non-Atomic, Turnstile only** | 1 (forward) | 1 (forward) | 1 (in `/cap`) | `pow-core-2` in `/cap` via aggregator (Turnstile) | `POST /__pow/cap` |
-| **3** | **Off** | **Off** | **On** | **On** | **Non-Atomic, Dual Captcha** | 1 (forward) | 1 (forward) | 1 (in `/cap`) | `pow-core-2` in `/cap` via aggregator (dual-provider fan-out) | `POST /__pow/cap` |
-| **4** | **Off** | **On** | **Off** | **Off** | **Invalid Path** (Same as #0) | 1 (forward) | 1 (forward) | 1 (forward) | None | None, request passes through |
-| **5** | **Off** | **On** | **Off** | **On** | **Atomic, reCAPTCHA only** | 1 (forward) | 1 (forward) | **2** (on business path) | `pow-core-2` on business path via aggregator (reCAPTCHA + origin) | Business request w/ token |
-| **6** | **Off** | **On** | **On** | **Off** | **Atomic, Turnstile only** | 1 (forward) | 1 (forward) | **2** (on business path) | `pow-core-2` on business path via aggregator (Turnstile + origin) | Business request w/ token |
-| **7** | **Off** | **On** | **On** | **On** | **Atomic, Dual Captcha** | 1 (forward) | 1 (forward) | **2** (on business path) | `pow-core-2` on business path via aggregator (dual-provider fan-out + origin) | Business request w/ token |
-| **8** | **On** | **Off** | **Off** | **Off** | **PoW only** | 1 (forward) | 1 (forward) | 0 (in PoW API) | None | `/commit`, `/challenge`, `/open` |
-| **9** | **On** | **Off** | **Off** | **On** | **Non-Atomic, PoW + reCAPTCHA** | 1 (forward) | 1 (forward) | 1 (in `/open`) | `pow-core-2` in final `/open` via aggregator (reCAPTCHA) | PoW API |
-| **10** | **On** | **Off** | **On** | **Off** | **Non-Atomic, PoW + Turnstile** | 1 (forward) | 1 (forward) | 1 (in `/open`) | `pow-core-2` in final `/open` via aggregator (Turnstile) | PoW API |
-| **11** | **On** | **Off** | **On** | **On** | **Non-Atomic, PoW + Dual Captcha** | 1 (forward) | 1 (forward) | 1 (in `/open`) | `pow-core-2` in final `/open` via aggregator (dual-provider fan-out) | PoW API |
-| **12** | **On** | **On** | **Off** | **Off** | **Invalid Path** (Same as #8) | 1 (forward) | 1 (forward) | 0 (in PoW API) | None | PoW API |
-| **13** | **On** | **On** | **Off** | **On** | **Atomic, PoW + reCAPTCHA** | 1 (forward) | 1 (forward) | **2** (on business path) | `pow-core-2` on business path via aggregator (reCAPTCHA + origin) | PoW API + Business request |
-| **14** | **On** | **On** | **On** | **Off** | **Atomic, PoW + Turnstile** | 1 (forward) | 1 (forward) | **2** (on business path) | `pow-core-2` on business path via aggregator (Turnstile + origin) | PoW API + Business request |
-| **15** | **On** | **On** | **On** | **On** | **Atomic, PoW + Dual Captcha** | 1 (forward) | 1 (forward) | **2** (on business path) | `pow-core-2` on business path via aggregator (dual-provider fan-out + origin) | PoW API + Business request |
-
-### Key Path Analysis
-
-*   **Paths #0, #4, #12**: These are simplified or invalid configurations. In paths #4 and #12, `Atomic` mode is enabled but has no effect without a Captcha provider, so their behavior degenerates to paths #0 and #8, respectively.
-*   **Non-Atomic Captcha Paths (#1, #2, #3)**: verification runs in `pow-core-2` through one aggregator subrequest at `/cap`, including dual-provider fan-out inside aggregator.
-*   **Atomic Single-Captcha Paths (#5, #6, #13, #14)**: verification runs in `pow-core-2` on the final business request; `pow-core-2` performs aggregator verify + origin forward.
-*   **Atomic Dual-Captcha Paths (#7, #15)**: `pow-config` and `pow-core-1` each forward once; `pow-core-2` performs one aggregator verify (dual-provider fan-out) and then forwards to origin.
-
-This table reflects the aggregator-only verification architecture while keeping each snippet within Cloudflare subrequest budget limits.
+1. Set `CONFIG_SECRET` in `pow-config.js`, `pow-core-1.js`, and `pow-core-2.js`.
+2. Build and deploy snippets in order: `pow-config -> pow-core-1 -> pow-core-2`.
+3. Keep `/__pow/*` reachable from clients during challenge flow.

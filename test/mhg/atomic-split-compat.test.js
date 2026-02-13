@@ -168,10 +168,6 @@ const buildConfigModule = async (secret = CONFIG_SECRET, configOverrides = {}) =
         POW_TOKEN: POW_SECRET,
         powcheck: true,
         turncheck: true,
-        recaptchaEnabled: true,
-        RECAPTCHA_PAIRS: [{ sitekey: "rk-1", secret: "rs-1" }],
-        RECAPTCHA_ACTION: "submit",
-        RECAPTCHA_MIN_SCORE: 0.5,
         TURNSTILE_SITEKEY: "turn-site",
         TURNSTILE_SECRET: "turn-secret",
         SITEVERIFY_URL: SITEVERIFY_AGGREGATOR_URL,
@@ -275,10 +271,6 @@ const makeInnerPayload = (strategyAtomic, configOverrides = {}) => ({
     POW_TOKEN: POW_SECRET,
     powcheck: true,
     turncheck: true,
-    recaptchaEnabled: true,
-    RECAPTCHA_PAIRS: [{ sitekey: "rk-1", secret: "rs-1" }],
-    RECAPTCHA_ACTION: "submit",
-    RECAPTCHA_MIN_SCORE: 0.5,
     TURNSTILE_SITEKEY: "turn-site",
     TURNSTILE_SECRET: "turn-secret",
     SITEVERIFY_URL: SITEVERIFY_AGGREGATOR_URL,
@@ -399,10 +391,7 @@ const buildMhgWitnessBundle = async ({ ticketB64, nonce }) => {
 };
 
 const bootstrapConsume = async (core1Handler, configOverrides = {}) => {
-  const captchaEnvelope = JSON.stringify({
-    turnstile: "atomic-turn-token-1234567890",
-    recaptcha_v3: "atomic-recaptcha-token-1234567890",
-  });
+  const captchaEnvelope = JSON.stringify({ turnstile: "atomic-turn-token-1234567890" });
   const emptyAtomic = {
     captchaToken: "",
     ticketB64: "",
@@ -512,14 +501,10 @@ const makeAtomicBusinessRequest = ({ consumeToken, captchaEnvelope }) =>
     }
   );
 
-test("dual-provider atomic path keeps split and subrequest budget (providers mode)", async () => {
+test("turnstile atomic path keeps split and subrequest budget", async () => {
   const restoreGlobals = ensureGlobals();
   const core1Path = await buildCore1Module();
-  const configPath = await buildConfigModule(CONFIG_SECRET, {
-    turncheck: false,
-    recaptchaEnabled: false,
-    providers: "turnstile,recaptcha",
-  });
+  const configPath = await buildConfigModule(CONFIG_SECRET);
   const core1Mod = await import(`${pathToFileURL(core1Path).href}?v=${Date.now()}`);
   assert.equal(typeof core1Mod.default?.fetch, "function");
   const configMod = await import(`${pathToFileURL(configPath).href}?v=${Date.now()}`);
@@ -529,11 +514,7 @@ test("dual-provider atomic path keeps split and subrequest budget (providers mod
 
   try {
     let inCore1 = false;
-    const seed = await bootstrapConsume(core1Handler, {
-      turncheck: false,
-      recaptchaEnabled: false,
-      providers: "turnstile,recaptcha",
-    });
+    const seed = await bootstrapConsume(core1Handler);
     const counters = {
       aggregatorVerifyInPowConfig: 0,
       aggregatorVerifyInCore1: 0,

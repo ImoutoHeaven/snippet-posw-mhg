@@ -65,7 +65,6 @@ const base64Url = (buffer) =>
 const FULL_CONFIG = {
   powcheck: false,
   turncheck: false,
-  recaptchaEnabled: false,
   bindPathMode: "none",
   bindPathQueryName: "path",
   bindPathHeaderName: "",
@@ -92,6 +91,7 @@ const FULL_CONFIG = {
   PROOF_RENEW_WINDOW_SEC: 90,
   PROOF_RENEW_MIN_SEC: 30,
   ATOMIC_CONSUME: false,
+  AGGREGATOR_POW_ATOMIC_CONSUME: false,
   ATOMIC_TURN_QUERY: "__ts",
   ATOMIC_TICKET_QUERY: "__tt",
   ATOMIC_CONSUME_QUERY: "__ct",
@@ -119,9 +119,6 @@ const FULL_CONFIG = {
     "https://cdn.jsdelivr.net/gh/ImoutoHeaven/snippet-posw@412f7fcc71c319b62a614e4252280f2bb3d7302b/esm/esm.js",
   POW_GLUE_URL:
     "https://cdn.jsdelivr.net/gh/ImoutoHeaven/snippet-posw@412f7fcc71c319b62a614e4252280f2bb3d7302b/glue.js",
-  RECAPTCHA_PAIRS: [],
-  RECAPTCHA_ACTION: "submit",
-  RECAPTCHA_MIN_SCORE: 0.5,
 };
 
 const FULL_STRATEGY = {
@@ -142,6 +139,15 @@ test("normalizeConfig includes siteverify aggregator keys", () => {
   assert.equal(typeof cfg.SITEVERIFY_URL, "string");
   assert.equal(typeof cfg.SITEVERIFY_AUTH_KID, "string");
   assert.equal(typeof cfg.SITEVERIFY_AUTH_SECRET, "string");
+});
+
+test("normalizeConfig exposes turnstile-only captcha surface", () => {
+  const cfg = __testNormalizeConfig({});
+  assert.equal("recaptchaEnabled" in cfg, false);
+  assert.equal("RECAPTCHA_PAIRS" in cfg, false);
+  assert.equal("RECAPTCHA_ACTION" in cfg, false);
+  assert.equal("RECAPTCHA_MIN_SCORE" in cfg, false);
+  assert.equal(cfg.AGGREGATOR_POW_ATOMIC_CONSUME, false);
 });
 
 const buildInnerHeaders = (payloadObj, secret, expOverride) => {
@@ -652,28 +658,20 @@ test("split core bridge bypasses directly when inner.s.bypass.bypass is true", a
   }
 });
 
-test("requiredMask includes recaptcha bit in main gate", async () => {
+test("requiredMask only uses pow+turn bits", async () => {
   const repoRoot = fileURLToPath(new URL("..", import.meta.url));
-  const businessGateSource = await readFile(join(repoRoot, "lib", "pow", "business-gate.js"), "utf8");
   const apiEngineSource = await readFile(join(repoRoot, "lib", "pow", "api-engine.js"), "utf8");
-  assert.match(
-    businessGateSource,
-    /const requiredMask = \(needPow \? 1 : 0\) \| \(needTurn \? 2 : 0\) \| \(needRecaptcha \? 4 : 0\);/u
-  );
-  assert.match(
-    apiEngineSource,
-    /const requiredMask = \(needPow \? 1 : 0\) \| \(needTurn \? 2 : 0\) \| \(needRecaptcha \? 4 : 0\);/u
-  );
+  assert.match(apiEngineSource, /const requiredMask = \(needPow \? 1 : 0\) \| \(needTurn \? 2 : 0\);/u);
+  assert.doesNotMatch(apiEngineSource, /needRecaptcha/u);
+  assert.doesNotMatch(apiEngineSource, /const providersRaw = typeof config\.providers === "string"/u);
 });
 
 test("cap proof issuance uses computed requiredMask", async () => {
   const repoRoot = fileURLToPath(new URL("..", import.meta.url));
   const apiEngineSource = await readFile(join(repoRoot, "lib", "pow", "api-engine.js"), "utf8");
   assert.match(apiEngineSource, /const handleCap = async \(/u);
-  assert.match(
-    apiEngineSource,
-    /const requiredMask = \(needPow \? 1 : 0\) \| \(needTurn \? 2 : 0\) \| \(needRecaptcha \? 4 : 0\);/u
-  );
+  assert.match(apiEngineSource, /const requiredMask = \(needPow \? 1 : 0\) \| \(needTurn \? 2 : 0\);/u);
+  assert.match(apiEngineSource, /if \(needPow \|\| !needTurn \|\| config\.ATOMIC_CONSUME === true\) return S\(404\);/u);
   assert.match(apiEngineSource, /await issueProofCookie\([\s\S]*requiredMask/u);
   assert.doesNotMatch(
     apiEngineSource,
@@ -706,9 +704,6 @@ test("README documents split-chain deployment and snippet contracts", async () =
     readme,
     /Subrequest matrix \(API \+ business paths\):[\s\S]*\| Flow \| `pow-config` subrequests \| `pow-core-1` subrequests \| `pow-core-2` subrequests \| Total \|/u
   );
-  assert.match(
-    readme,
-    /### Flow Analysis Table[\s\S]*\| # \|[\s\S]*`pow-core-1` subrequests[\s\S]*`pow-core-2` subrequests/u
-  );
+  assert.doesNotMatch(readme, /### Flow Analysis Table/u);
   assert.doesNotMatch(readme, /\bpow\.js\b/u);
 });
