@@ -1114,14 +1114,23 @@ const runTurnstile = async (ticketB64, sitekey, submitToken) => {
   }
   log(t("waiting_turnstile"));
   const container = document.createElement("div");
-  if (el) {
-    el.appendChild(container);
-    // Force reflow before adding .show class to trigger transition
+  const showTurnstile = () => {
+    if (!el) return;
+    // Force reflow before adding .show class to trigger transition.
     void el.offsetHeight;
     requestAnimationFrame(() => {
       el.classList.add("show");
       el.classList.remove("hide");
     });
+  };
+  const hideTurnstile = () => {
+    if (!el) return;
+    el.classList.add("hide");
+    el.classList.remove("show");
+  };
+  if (el) {
+    el.appendChild(container);
+    hideTurnstile();
   }
   let tokenResolve;
   let tokenReject;
@@ -1137,11 +1146,11 @@ const runTurnstile = async (ticketB64, sitekey, submitToken) => {
       sitekey,
       theme: "dark",
       cData: ticketMac,
+      appearance: "interaction-only",
+      "before-interactive-callback": showTurnstile,
+      "after-interactive-callback": hideTurnstile,
       callback: (t) => {
-        if (el) {
-          el.classList.add("hide");
-          el.classList.remove("show");
-        }
+        hideTurnstile();
         if (tokenResolve) tokenResolve(t);
       },
       "error-callback": () => tokenReject && tokenReject(new Error("Turnstile Failed")),
@@ -1158,23 +1167,13 @@ const runTurnstile = async (ticketB64, sitekey, submitToken) => {
     } catch (e) {
       if (e && e.message === "Turnstile Expired") {
         log(t("turnstile_expired_retry"));
-        if (el) {
-          void el.offsetHeight;
-          requestAnimationFrame(() => {
-            el.classList.add("show");
-            el.classList.remove("hide");
-          });
-        }
         tokenPromise = nextToken();
         if (ts && typeof ts.reset === "function") ts.reset(widgetId);
         continue;
       }
       throw e;
     }
-    if (el) {
-      el.classList.add("hide");
-      el.classList.remove("show");
-    }
+    hideTurnstile();
     const submitLine = submitToken ? log(t("submitting_turnstile")) : -1;
     try {
       if (submitToken) await submitToken(token);
@@ -1183,8 +1182,7 @@ const runTurnstile = async (ticketB64, sitekey, submitToken) => {
       }
       log(t("turnstile_done", { done: doneMark() }));
       if (el) {
-        el.classList.add("hide");
-        el.classList.remove("show");
+        hideTurnstile();
         setTimeout(() => {
           if (el.classList.contains("hide")) {
             el.innerHTML = "";

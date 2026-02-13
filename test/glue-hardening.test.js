@@ -233,6 +233,70 @@ test("glue hardening", { concurrency: 1 }, async (t) => {
     });
   });
 
+  await t.test("turnstile stays hidden until interaction is required", async () => {
+    let renderOpts = null;
+    const glue = await importGlue();
+    globalThis.requestAnimationFrame = (fn) => {
+      if (typeof fn === "function") fn();
+      return 0;
+    };
+
+    const tsEl = globalThis.document.getElementById("ts");
+    const classes = new Set();
+    let showAdds = 0;
+    let hideAdds = 0;
+    tsEl.classList = {
+      add(...names) {
+        for (const name of names) {
+          classes.add(name);
+          if (name === "show") showAdds += 1;
+          if (name === "hide") hideAdds += 1;
+        }
+      },
+      remove(...names) {
+        for (const name of names) {
+          classes.delete(name);
+        }
+      },
+      contains(name) {
+        return classes.has(name);
+      },
+    };
+
+    globalThis.window.turnstile = {
+      render: (_el, opts) => {
+        renderOpts = opts;
+        return 1;
+      },
+      reset() {},
+      remove() {},
+    };
+
+    const args = makeRunPowArgs({
+      steps: 0,
+      captchaCfgB64: encodeCaptchaCfg({ turnstile: { sitekey: "ts-1" } }),
+      atomicCfg: "1",
+    });
+    const runPromise = glue.default(...args);
+    await new Promise((resolve) => queueMicrotask(resolve));
+
+    assert.equal(typeof renderOpts, "object");
+    assert.equal(renderOpts.appearance, "interaction-only");
+    assert.equal(typeof renderOpts["before-interactive-callback"], "function");
+    assert.equal(typeof renderOpts["after-interactive-callback"], "function");
+    assert.equal(showAdds, 0);
+
+    renderOpts["before-interactive-callback"]();
+    assert.equal(classes.has("show"), true);
+
+    renderOpts["after-interactive-callback"]();
+    assert.equal(classes.has("show"), false);
+
+    renderOpts.callback("turn-token");
+    await runPromise;
+    assert.ok(hideAdds > 0);
+  });
+
   await t.test("malformed captcha envelope is rejected before pow binding", async () => {
     let fetchCalls = 0;
     const glue = await importGlue();
