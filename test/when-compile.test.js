@@ -1,157 +1,67 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import {
-  compileWhenCondition,
-  collectWhenNeeds,
-  validateWhenCondition,
-} from "../lib/when-compile.js";
+import { compileConfigEntry } from "../lib/rule-engine/compile.js";
+import { validateConfigEntry } from "../lib/rule-engine/schema.js";
 
-test("compileWhenCondition serializes regex values", () => {
-  const input = {
-    ua: /bot/i,
-    and: [{ country: "CN" }, { path: /\.(css|js)$/ }],
-    not: { header: { "x-test": /deny/ } },
-  };
-
-  const output = compileWhenCondition(input);
-
-  assert.deepEqual(output, {
-    ua: { $re: { s: "bot", f: "i" } },
-    and: [
-      { country: "CN" },
-      { path: { $re: { s: "\\.(css|js)$", f: "" } } },
-    ],
-    not: { header: { "x-test": { $re: { s: "deny", f: "" } } } },
-  });
-});
-
-test("validateWhenCondition rejects unknown fields", () => {
+test("validateConfigEntry rejects legacy when values", () => {
   assert.throws(
     () =>
-      validateWhenCondition({
-        country: "US",
-        extra: true,
+      validateConfigEntry({
+        host: { eq: "example.com" },
+        when: { ua: "bot" },
+        config: {},
       }),
-    /unknown key/i,
+    /matcher object/i,
   );
-});
 
-test("validateWhenCondition rejects nested unknown keys", () => {
   assert.throws(
-    () => validateWhenCondition({ and: [{ country: "US", extra: true }] }),
-    /unknown key/i,
+    () =>
+      validateConfigEntry({
+        host: { eq: "example.com" },
+        when: { query: { q: /beta/i } },
+        config: {},
+      }),
+    /matcher object/i,
   );
 });
 
-test("validateWhenCondition rejects invalid types", () => {
+test("validateConfigEntry rejects unknown when fields", () => {
   assert.throws(
-    () => validateWhenCondition({ and: { country: "US" } }),
-    /and/i,
-  );
-  assert.throws(
-    () => validateWhenCondition({ not: /oops/ }),
-    /not/i,
-  );
-  assert.throws(
-    () => validateWhenCondition({ tls: "yes" }),
-    /tls/i,
-  );
-  assert.throws(
-    () => validateWhenCondition({ country: ["US", 3] }),
-    /country/i,
-  );
-  assert.throws(
-    () => validateWhenCondition({ header: { "x-test": { exists: "no" } } }),
-    /exists/i,
+    () =>
+      validateConfigEntry({
+        host: { eq: "example.com" },
+        when: { and: [{ country: { eq: "US" }, extra: { eq: "x" } }] },
+        config: {},
+      }),
+    /supported condition field/i,
   );
 });
 
-test("validateWhenCondition rejects RegExp outside leaf values", () => {
-  assert.throws(() => validateWhenCondition(/top/), /regexp/i);
-  assert.throws(() => validateWhenCondition({ and: [/nested/] }), /regexp/i);
-});
+test("compileConfigEntry compiles header/cookie/query matcher IR", () => {
+  const entry = compileConfigEntry({
+    host: { eq: "example.com" },
+    when: {
+      and: [
+        { header: { "x-role": { glob: "*admin*" } } },
+        { cookie: { session: { re: "^s-[0-9]+$", flags: "" } } },
+        { query: { tag: { exists: true } } },
+      ],
+    },
+    config: { powcheck: true },
+  });
 
-test("validateWhenCondition accepts leaf RegExp values", () => {
-  assert.doesNotThrow(() => validateWhenCondition({ ua: /Firefox/ }));
-  assert.doesNotThrow(() =>
-    validateWhenCondition({ header: { "user-agent": /bot/i } }),
-  );
-});
+  assert.equal(entry.when.kind, "and");
+  assert.equal(entry.when.children[0].field, "header");
+  assert.equal(entry.when.children[0].matcher.kind, "glob");
+  assert.equal(entry.when.children[1].field, "cookie");
+  assert.equal(entry.when.children[1].matcher.kind, "re");
+  assert.equal(entry.when.children[2].field, "query");
+  assert.equal(entry.when.children[2].matcher.kind, "exists");
 
-test("validateWhenCondition allows null or undefined", () => {
-  assert.doesNotThrow(() => validateWhenCondition(null));
-  assert.doesNotThrow(() => validateWhenCondition(undefined));
-});
-
-test("validateWhenCondition accepts compiled regex values", () => {
-  assert.doesNotThrow(() =>
-    validateWhenCondition({ ua: { $re: { s: "bot", f: "i" } } }),
-  );
-  assert.doesNotThrow(() =>
-    validateWhenCondition({ header: { "user-agent": { $re: { s: "bot" } } } }),
-  );
-  assert.doesNotThrow(() =>
-    validateWhenCondition({ query: { q: [{ $re: { s: "abc" } }, "def"] } }),
-  );
-});
-
-test("collectWhenNeeds reports used fields", () => {
-  const input = {
-    and: [
-      { ua: "bot" },
-      { header: { "x-test": { exists: true } } },
-      { or: [{ cookie: { a: "1" } }, { query: { q: /x/ } }] },
-      { not: { tls: true } },
-      { ip: "203.0.113.0/24" },
-      { country: "US" },
-      { asn: "13335" },
-      { path: "/healthz" },
-      { method: "GET" },
-    ],
-  };
-
-  const needs = collectWhenNeeds(input);
-
-  assert.deepEqual(needs, {
-    ua: true,
+  assert.deepEqual(entry.whenNeeds, {
     header: true,
     cookie: true,
     query: true,
-    tls: true,
-    ip: true,
-    country: true,
-    asn: true,
-    path: true,
-    method: true,
-  });
-});
-
-test("collectWhenNeeds skips unknown keys", () => {
-  const input = {
-    and: [{ extra: true }, { ua: "bot" }, { not: { path: "/healthz" } }],
-  };
-
-  const needs = collectWhenNeeds(input);
-
-  assert.deepEqual(needs, {
-    ua: true,
-    path: true,
-  });
-});
-
-test("collectWhenNeeds ignores compiled regex nodes", () => {
-  const input = {
-    and: [
-      { ua: "bot" },
-      { or: [{ path: "/foo" }, { $re: { s: "x" } }] },
-    ],
-  };
-
-  const needs = collectWhenNeeds(input);
-
-  assert.deepEqual(needs, {
-    ua: true,
-    path: true,
   });
 });

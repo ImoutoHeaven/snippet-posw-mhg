@@ -23,13 +23,21 @@ This project provides a self-contained L7 front gate that:
 
 ## Configuration
 
-Edit `CONFIG` in `pow-config.js` to match your host/path rules:
+Edit `CONFIG` in `pow-config.js` with matcher objects for `host`, optional `path`, and optional `when`:
 
 ```js
 const CONFIG = [
   {
-    host: "example.com",
-    path: "/**",
+    host: { eq: "example.com" },
+    path: { glob: "/api/**" },
+    when: {
+      and: [
+        { method: { in: ["GET", "POST"] } },
+        { header: { "x-env": { eq: "prod" } } },
+        { cookie: { session: { exists: true } } },
+        { query: { tag: { re: "^(alpha|beta)$", flags: "i" } } },
+      ],
+    },
     config: {
       POW_TOKEN: "replace-me",
       powcheck: true,
@@ -44,7 +52,8 @@ const CONFIG = [
 Notes:
 
 - `POW_TOKEN` is required when `powcheck` or `turncheck` is `true`.
-- `host` is required on every entry; only `host`/`path` entries are supported.
+- `host` is required on every entry and must be a matcher object.
+- No legacy compatibility exists: bare strings and `RegExp` literals are rejected for `host`, `path`, and `when`.
 - Set `CONFIG_SECRET` to the same non-placeholder value in `pow-config.js`, `pow-core-1.js`, and `pow-core-2.js`.
 - When `turncheck: true`, set `TURNSTILE_SITEKEY` and `TURNSTILE_SECRET`.
 - `AGGREGATOR_POW_ATOMIC_CONSUME` is the only switch that enables aggregator-managed PoW one-time consume semantics.
@@ -65,15 +74,43 @@ Deployment chain is strict: `pow-config -> pow-core-1 -> pow-core-2`.
 Each `CONFIG` entry looks like:
 
 ```js
-{ host: "example.com", path: "/**", config: { /* keys below */ } }
+{
+  host: { glob: "*.example.com" },
+  path: { glob: "/api/**" },
+  when: { ua: { glob: "*bot*" } },
+  config: { /* keys below */ }
+}
 ```
 
-### `host`/`path` syntax
+### Matcher DSL (`host`, `path`, `when`)
+
+All matching uses matcher objects. Legacy string and `RegExp` shorthand is not supported.
+
+Text matchers (`host`, `path`, `ua`, `country`, `asn`, `method`, `header.*`, `cookie.*`, `query.*`):
+
+- `{ eq: "value" }`
+- `{ in: ["a", "b"] }`
+- `{ glob: "pattern*" }`
+- `{ re: "^expr$", flags: "i" }`
+- `{ exists: true|false }` (only for `header.*`, `cookie.*`, and `query.*`)
+
+IP matchers (`ip`):
+
+- `{ eq: "203.0.113.4" }`
+- `{ in: ["203.0.113.4", "203.0.113.5"] }`
+- `{ cidr: "203.0.113.0/24" }`
+
+Logic matchers in `when`:
+
+- `{ and: [ ...conditions ] }`
+- `{ or: [ ...conditions ] }`
+- `{ not: { ...condition } }`
 
 | Field | Type | Description |
 |---|---|---|
-| `host` | `string` | Host glob. `*` matches a single label segment (does not cross `.`). |
-| `path` | `string` | Optional path glob. Supports `*` (no `/`) and `**` (may include `/`); trailing `/**` also matches the base path. |
+| `host` | `matcher object` | Required text matcher. `glob` supports `*`; use `eq` for exact host. |
+| `path` | `matcher object` | Optional text matcher; commonly `{ glob: "/prefix/**" }` or `{ eq: "/exact" }`. |
+| `when` | `condition object` | Optional boolean logic over matcher objects for request attributes. |
 
 ### `config` keys (all supported)
 
@@ -142,7 +179,7 @@ Each `CONFIG` entry looks like:
 
 ### `when` conditions
 
-Each `CONFIG` entry may include an optional `when` field with boolean logic (`and`, `or`, `not`) over `country`, `asn`, `ip`, `method`, `ua`, `path`, `tls`, `header`, `cookie`, and `query`.
+Each `CONFIG` entry may include an optional `when` field with boolean logic (`and`, `or`, `not`) over `country`, `asn`, `ip`, `method`, `ua`, `path`, `tls`, `header`, `cookie`, and `query`, and every leaf must be a matcher object.
 
 ## Proof Cookie (`__Host-proof`)
 

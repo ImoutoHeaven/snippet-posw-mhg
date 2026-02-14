@@ -13,10 +13,15 @@ const writeTempConfig = async (contents) => {
   return filePath;
 };
 
-test("buildCompiledConfig compiles when conditions", async () => {
+test("buildCompiledConfig compiles matcher-object when conditions", async () => {
   const filePath = await writeTempConfig(`
 const CONFIG = [
-  { host: "example.com", path: "/api/**", when: { ua: /bot/i }, config: { powcheck: true } },
+  {
+    host: { eq: "example.com" },
+    path: { glob: "/api/**" },
+    when: { ua: { re: "bot", flags: "i" } },
+    config: { powcheck: true },
+  },
 ];
 `);
 
@@ -24,20 +29,38 @@ const CONFIG = [
 
   assert.equal(compiled.length, 1);
   const entry = compiled[0];
-  assert.equal(entry.when.ua.$re.s, "bot");
-  assert.equal(entry.when.ua.$re.f, "i");
-  assert.ok(entry.host && entry.host.s.length > 0);
-  assert.ok(entry.path && entry.path.s.length > 0);
+  assert.equal(entry.host.kind, "eq");
+  assert.equal(entry.path.kind, "glob");
+  assert.equal(entry.when.kind, "atom");
+  assert.equal(entry.when.matcher.kind, "re");
+  assert.equal(entry.when.matcher.source, "bot");
+  assert.equal(entry.when.matcher.flags, "i");
 });
 
 test("buildCompiledConfig rejects invalid when conditions", async () => {
   const filePath = await writeTempConfig(`
  const CONFIG = [
-   { host: "example.com", path: "/api/**", when: { foo: "bar" }, config: { powcheck: true } },
+   { host: { eq: "example.com" }, path: { glob: "/api/**" }, when: { foo: { eq: "bar" } }, config: { powcheck: true } },
  ];
   `);
 
-  await assert.rejects(() => buildCompiledConfig(filePath), /unknown key/i);
+  await assert.rejects(() => buildCompiledConfig(filePath), /supported condition field/i);
+});
+
+test("buildCompiledConfig rejects legacy host/path values", async () => {
+  const hostPath = await writeTempConfig(`
+ const CONFIG = [
+   { host: "example.com", config: { powcheck: true } },
+ ];
+ `);
+  await assert.rejects(() => buildCompiledConfig(hostPath), /host.*matcher object/i);
+
+  const pathPath = await writeTempConfig(`
+ const CONFIG = [
+   { host: { eq: "example.com" }, path: /api/, config: { powcheck: true } },
+ ];
+ `);
+  await assert.rejects(() => buildCompiledConfig(pathPath), /path.*matcher object/i);
 });
 
 test("buildCompiledConfig rejects legacy pattern key", async () => {
@@ -50,7 +73,7 @@ test("buildCompiledConfig rejects legacy pattern key", async () => {
   await assert.rejects(() => buildCompiledConfig(filePath), /pattern/i);
 });
 
-test("buildCompiledConfig rejects missing or blank host", async () => {
+test("buildCompiledConfig rejects missing host", async () => {
   const missingHostPath = await writeTempConfig(`
  const CONFIG = [
    { config: { powcheck: true } },
@@ -58,24 +81,16 @@ test("buildCompiledConfig rejects missing or blank host", async () => {
  `);
 
   await assert.rejects(() => buildCompiledConfig(missingHostPath), /host/i);
-
-  const blankHostPath = await writeTempConfig(`
- const CONFIG = [
-   { host: "   ", config: { powcheck: true } },
- ];
- `);
-
-  await assert.rejects(() => buildCompiledConfig(blankHostPath), /host/i);
 });
 
-test("buildCompiledConfig rejects invalid path", async () => {
+test("buildCompiledConfig rejects invalid path matcher", async () => {
   const filePath = await writeTempConfig(`
  const CONFIG = [
-   { host: "example.com", path: "nope", config: { powcheck: true } },
+   { host: { eq: "example.com" }, path: { exists: true }, config: { powcheck: true } },
  ];
  `);
 
-  await assert.rejects(() => buildCompiledConfig(filePath), /path/i);
+  await assert.rejects(() => buildCompiledConfig(filePath), /path.*exists.*not allowed/i);
 });
 
 test("buildCompiledConfig works without structuredClone", async () => {
@@ -84,7 +99,7 @@ test("buildCompiledConfig works without structuredClone", async () => {
     globalThis.structuredClone = undefined;
     const filePath = await writeTempConfig(`
 const CONFIG = [
-  { host: "example.com", config: { powcheck: true } },
+  { host: { eq: "example.com" }, config: { powcheck: true } },
 ];
 `);
 
@@ -104,13 +119,13 @@ const CONFIG = [
 test("buildCompiledConfig emits matcher metadata for host/path globs", async () => {
   const filePath = await writeTempConfig(`
  const CONFIG = [
-   { host: "example.com", path: "/foo/**", when: { ua: "bot" }, config: { powcheck: true } },
-   { host: "*.example.com", path: "/bar", config: { turncheck: true } },
-   { host: "foo*bar.example.com", path: "/baz", config: { softban: true } },
-   { host: "example.net", path: "/**", config: { allow: true } },
-   { host: "example.com", config: { hostonly: true } },
-   { host: "example.org", path: "/a/*/b/**", config: { multi: true } },
-   { host: "example.org", path: "/**/x", config: { multi2: true } },
+   { host: { eq: "example.com" }, path: { glob: "/foo/**" }, when: { ua: { glob: "*bot*" } }, config: { powcheck: true } },
+   { host: { glob: "*.example.com" }, path: { eq: "/bar" }, config: { turncheck: true } },
+   { host: { glob: "foo*bar.example.com" }, path: { eq: "/baz" }, config: { softban: true } },
+   { host: { eq: "example.net" }, path: { glob: "/**" }, config: { allow: true } },
+   { host: { eq: "example.com" }, config: { hostonly: true } },
+   { host: { eq: "example.org" }, path: { glob: "/a/*/b/**" }, config: { multi: true } },
+   { host: { eq: "example.org" }, path: { glob: "/**/x" }, config: { multi2: true } },
  ];
  `);
 

@@ -184,10 +184,15 @@ export const __splitTrace = splitTrace;
 
 const buildConfigModule = async (secret = "config-secret") => {
   const repoRoot = fileURLToPath(new URL("..", import.meta.url));
-  const powConfigSource = await readFile(join(repoRoot, "pow-config.js"), "utf8");
+  const [powConfigSource, runtimeSource] = await Promise.all([
+    readFile(join(repoRoot, "pow-config.js"), "utf8"),
+    readFile(join(repoRoot, "lib", "rule-engine", "runtime.js"), "utf8"),
+  ]);
   const compiledConfig = JSON.stringify([
     {
-      host: { s: "^example\\.com$", f: "" },
+      host: { kind: "eq", value: "example.com" },
+      hostType: "exact",
+      hostExact: "example.com",
       path: null,
       config: {
         POW_TOKEN: "test-secret",
@@ -211,6 +216,8 @@ const buildConfigModule = async (secret = "config-secret") => {
   const injected = powConfigSource.replace(/__COMPILED_CONFIG__/gu, compiledConfig);
   const withSecret = replaceConfigSecret(injected, secret);
   const tmpDir = await mkdtemp(join(tmpdir(), "pow-config-test-"));
+  await mkdir(join(tmpDir, "lib", "rule-engine"), { recursive: true });
+  await writeFile(join(tmpDir, "lib", "rule-engine", "runtime.js"), runtimeSource);
   const tmpPath = join(tmpDir, "pow-config-test.js");
   await writeFile(tmpPath, withSecret);
   return tmpPath;
@@ -576,7 +583,6 @@ test("split core-2 challenge rejects commit cookie tamper after commit", async (
       POW_TOKEN: "test-secret",
       powcheck: true,
       turncheck: false,
-      recaptchaEnabled: false,
       POW_VERSION: 3,
       POW_API_PREFIX: "/__pow",
       POW_DIFFICULTY_BASE: 64,
@@ -599,7 +605,6 @@ test("split core-2 challenge rejects commit cookie tamper after commit", async (
       PROOF_TTL_SEC: 300,
       ATOMIC_CONSUME: false,
       POW_TICKET_TTL_SEC: 180,
-      RECAPTCHA_PAIRS: [],
     };
     const derived = {
       ipScope: "1.2.3.4/32",

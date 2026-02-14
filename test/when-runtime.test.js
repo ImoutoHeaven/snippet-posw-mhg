@@ -3,10 +3,11 @@ import assert from "node:assert/strict";
 
 globalThis.__COMPILED_CONFIG__ = [];
 const powConfig = await import("../pow-config.js");
-const { evaluateCondition, matchCidr } = powConfig.__test || {};
+const { evaluateWhen, matchIpMatcher, pickConfigWithId, setCompiledConfigForTest } =
+  powConfig.__test || {};
 
-test("evaluateCondition handles implicit and/or/not", () => {
-  assert.equal(typeof evaluateCondition, "function");
+test("evaluateWhen handles implicit and/or/not for IR nodes", () => {
+  assert.equal(typeof evaluateWhen, "function");
   const context = {
     ua: "SuperBot/1.0",
     path: "/API",
@@ -16,314 +17,258 @@ test("evaluateCondition handles implicit and/or/not", () => {
     header: new Headers({ "x-allow": "1" }),
   };
   const condition = {
-    country: "US",
-    ua: "bot",
-    and: [{ path: "/API" }, { method: "GET" }],
-    or: [{ asn: "123" }, { asn: "456" }],
-    not: { header: { "x-deny": { exists: true } } },
+    kind: "and",
+    children: [
+      { kind: "atom", field: "country", matcher: { kind: "eq", value: "US" } },
+      { kind: "atom", field: "ua", matcher: { kind: "glob", pattern: "*bot*", case: "insensitive" } },
+      {
+        kind: "and",
+        children: [
+          { kind: "atom", field: "path", matcher: { kind: "eq", value: "/API", case: "sensitive" } },
+          { kind: "atom", field: "method", matcher: { kind: "eq", value: "GET" } },
+        ],
+      },
+      {
+        kind: "or",
+        children: [
+          { kind: "atom", field: "asn", matcher: { kind: "eq", value: "123" } },
+          { kind: "atom", field: "asn", matcher: { kind: "eq", value: "456" } },
+        ],
+      },
+      {
+        kind: "not",
+        child: {
+          kind: "atom",
+          field: "header",
+          key: "x-deny",
+          matcher: { kind: "exists", value: true },
+        },
+      },
+    ],
   };
 
-  assert.equal(evaluateCondition(condition, context), true);
-  assert.equal(evaluateCondition({ ...condition, ua: "crawler" }, context), false);
+  assert.equal(evaluateWhen(condition, context), true);
+  assert.equal(
+    evaluateWhen(
+      { ...condition, children: [...condition.children, { kind: "atom", field: "country", matcher: { kind: "eq", value: "CN" } }] },
+      context,
+    ),
+    false,
+  );
 });
 
-test("evaluateCondition matches ua as case-insensitive contains", () => {
-  assert.equal(typeof evaluateCondition, "function");
-  assert.equal(evaluateCondition({ ua: "bot" }, { ua: "MyBoT/2.0" }), true);
-  assert.equal(evaluateCondition({ ua: "bot" }, { ua: "browser" }), false);
+test("evaluateWhen matches ua and path with explicit case semantics", () => {
+  assert.equal(typeof evaluateWhen, "function");
+  assert.equal(
+    evaluateWhen(
+      { kind: "atom", field: "ua", matcher: { kind: "glob", pattern: "*bot*", case: "insensitive" } },
+      { ua: "MyBoT/2.0" },
+    ),
+    true,
+  );
+  assert.equal(
+    evaluateWhen(
+      { kind: "atom", field: "path", matcher: { kind: "eq", value: "/API", case: "sensitive" } },
+      { path: "/api" },
+    ),
+    false,
+  );
 });
 
-test("evaluateCondition matches path as case-sensitive exact", () => {
-  assert.equal(typeof evaluateCondition, "function");
-  assert.equal(evaluateCondition({ path: "/API" }, { path: "/API" }), true);
-  assert.equal(evaluateCondition({ path: "/API" }, { path: "/api" }), false);
+test("matchIpMatcher supports ipv4 and ipv6 cidr", () => {
+  assert.equal(typeof matchIpMatcher, "function");
+  assert.equal(matchIpMatcher({ kind: "cidr", value: "192.168.1.0/24" }, "192.168.1.12"), true);
+  assert.equal(matchIpMatcher({ kind: "cidr", value: "192.168.1.0/24" }, "192.168.2.12"), false);
+  assert.equal(matchIpMatcher({ kind: "cidr", value: "2001:db8::/32" }, "2001:db8::1"), true);
+  assert.equal(matchIpMatcher({ kind: "cidr", value: "2001:db8::/32" }, "2001:dead::1"), false);
 });
 
-test("evaluateCondition returns false for unknown keys", () => {
-  assert.equal(typeof evaluateCondition, "function");
-  assert.equal(evaluateCondition({ unknown: "value" }, { ua: "bot" }), false);
-});
-
-test("matchCidr supports ipv4 and ipv6", () => {
-  assert.equal(typeof matchCidr, "function");
-  assert.equal(matchCidr("192.168.1.12", "192.168.1.0/24"), true);
-  assert.equal(matchCidr("192.168.2.12", "192.168.1.0/24"), false);
-  assert.equal(matchCidr("2001:db8::1", "2001:db8::/32"), true);
-  assert.equal(matchCidr("2001:dead::1", "2001:db8::/32"), false);
-});
-
-test("evaluateCondition rejects invalid not values", () => {
-  assert.equal(typeof evaluateCondition, "function");
-  const context = { ua: "Agent" };
-  assert.equal(evaluateCondition({ not: "invalid" }, context), false);
-});
-
-test("evaluateCondition treats empty object as match", () => {
-  assert.equal(typeof evaluateCondition, "function");
-  const context = { ua: "Agent" };
-  assert.equal(evaluateCondition({}, context), true);
-});
-
-test("evaluateCondition handles header/cookie/query exists checks", () => {
-  assert.equal(typeof evaluateCondition, "function");
+test("evaluateWhen covers exists/glob/re for header/cookie/query", () => {
+  assert.equal(typeof evaluateWhen, "function");
   const context = {
-    header: new Headers({ "x-flag": "on" }),
+    header: new Headers({ "x-role": "AdminUser" }),
     cookie: new Map([
-      ["session", "abc"],
+      ["session", "s-123"],
       ["mode", "beta"],
     ]),
     query: new URLSearchParams("tag=alpha&tag=beta"),
   };
 
-  assert.equal(evaluateCondition({ header: { "x-flag": { exists: true } } }, context), true);
-  assert.equal(evaluateCondition({ header: { missing: { exists: true } } }, context), false);
-  assert.equal(evaluateCondition({ cookie: { session: { exists: true } } }, context), true);
-  assert.equal(evaluateCondition({ cookie: { missing: { exists: false } } }, context), true);
-  assert.equal(evaluateCondition({ query: { tag: { exists: true } } }, context), true);
-  assert.equal(evaluateCondition({ query: { missing: { exists: false } } }, context), true);
-});
-
-test("evaluateCondition matches header/cookie/query array and regex values", () => {
-  assert.equal(typeof evaluateCondition, "function");
-  const context = {
-    header: new Headers({ "x-role": "admin" }),
-    cookie: new Map([
-      ["session", "abc"],
-      ["mode", "beta"],
-    ]),
-    query: new URLSearchParams("tag=alpha&tag=beta"),
+  const condition = {
+    kind: "and",
+    children: [
+      { kind: "atom", field: "header", key: "x-role", matcher: { kind: "glob", pattern: "*admin*" } },
+      { kind: "atom", field: "cookie", key: "session", matcher: { kind: "re", source: "^s-[0-9]+$", flags: "" } },
+      { kind: "atom", field: "query", key: "tag", matcher: { kind: "exists", value: true } },
+    ],
   };
 
+  assert.equal(evaluateWhen(condition, context), true);
   assert.equal(
-    evaluateCondition({ header: { "x-role": ["user", "admin"] } }, context),
-    true
-  );
-  assert.equal(evaluateCondition({ cookie: { mode: /bet/ } }, context), true);
-  assert.equal(evaluateCondition({ query: { tag: /beta/ } }, context), true);
-  assert.equal(
-    evaluateCondition({ query: { tag: ["delta", "beta"] } }, context),
-    true
+    evaluateWhen(
+      { kind: "atom", field: "query", key: "missing", matcher: { kind: "exists", value: false } },
+      context,
+    ),
+    true,
   );
 });
 
-test("evaluateCondition matches any query value", () => {
-  assert.equal(typeof evaluateCondition, "function");
-  const context = {
-    query: new URLSearchParams("tag=alpha&tag=beta"),
-  };
-
-  assert.equal(evaluateCondition({ query: { tag: "beta" } }, context), true);
-  assert.equal(evaluateCondition({ query: { tag: "delta" } }, context), false);
+test("evaluateWhen returns false for malformed nodes", () => {
+  assert.equal(typeof evaluateWhen, "function");
+  assert.equal(evaluateWhen({ kind: "unknown" }, {}), false);
+  assert.equal(evaluateWhen({ kind: "and", children: {} }, {}), false);
+  assert.equal(evaluateWhen({ kind: "or", children: {} }, {}), false);
+  assert.equal(evaluateWhen({ kind: "atom", field: "ua" }, { ua: "bot" }), false);
 });
 
-test("pickConfigWithId filters configs by when", () => {
-  const { __test } = powConfig;
-  assert.equal(typeof __test?.setCompiledConfigForTest, "function");
-  assert.equal(typeof __test?.pickConfigWithId, "function");
+test("pickConfigWithId filters configs by IR when condition", () => {
+  assert.equal(typeof setCompiledConfigForTest, "function");
+  assert.equal(typeof pickConfigWithId, "function");
+
   const compiled = [
     {
-      hostRegex: /example\.com/,
-      pathRegex: null,
-      when: { query: { tag: "beta" } },
+      host: { kind: "eq", value: "example.com" },
+      hostType: "exact",
+      hostExact: "example.com",
+      path: null,
+      pathType: null,
+      when: {
+        kind: "atom",
+        field: "query",
+        key: "tag",
+        matcher: { kind: "eq", value: "beta", case: "insensitive" },
+      },
+      whenNeeds: { query: true },
       config: { id: "beta" },
     },
     {
-      hostRegex: /example\.com/,
-      pathRegex: null,
-      when: { query: { tag: "delta" } },
+      host: { kind: "eq", value: "example.com" },
+      hostType: "exact",
+      hostExact: "example.com",
+      path: null,
+      pathType: null,
+      when: {
+        kind: "atom",
+        field: "query",
+        key: "tag",
+        matcher: { kind: "eq", value: "delta", case: "insensitive" },
+      },
+      whenNeeds: { query: true },
       config: { id: "delta" },
     },
   ];
-  const restore = __test.setCompiledConfigForTest(compiled);
+
+  const restore = setCompiledConfigForTest(compiled);
   try {
     const request = new Request("https://example.com/?tag=alpha&tag=beta", {
       headers: { "user-agent": "TestAgent" },
     });
     const url = new URL(request.url);
-    const selected = __test.pickConfigWithId(request, url, url.hostname, url.pathname);
+    const selected = pickConfigWithId(request, url, url.hostname, url.pathname);
     assert.equal(selected?.config?.id, "beta");
   } finally {
     restore();
   }
 });
 
-test("pickConfigWithId uses matcher metadata without changing results", () => {
-  const { __test } = powConfig;
-  assert.equal(typeof __test?.setCompiledConfigForTest, "function");
-  assert.equal(typeof __test?.pickConfigWithId, "function");
+test("pickConfigWithId uses matcher metadata and fallback matcher", () => {
+  assert.equal(typeof setCompiledConfigForTest, "function");
+  assert.equal(typeof pickConfigWithId, "function");
+
   const compiled = [
     {
-      host: { s: "^example\\.com$", f: "" },
-      path: { s: "^/foo(?:/.*)?$", f: "" },
+      host: { kind: "eq", value: "example.com" },
+      path: { kind: "glob", pattern: "/foo/**", case: "sensitive" },
       hostType: "exact",
       hostExact: "example.com",
       pathType: "prefix",
       pathPrefix: "/foo",
-      when: { ua: "bot" },
+      when: {
+        kind: "atom",
+        field: "ua",
+        matcher: { kind: "glob", pattern: "*bot*", case: "insensitive" },
+      },
       whenNeeds: { ua: true },
-      config: { powcheck: true },
+      config: { id: "meta" },
     },
     {
-      host: { s: "^[^.]*\\.example\\.com$", f: "" },
-      path: { s: "^/bar$", f: "" },
-      hostType: "wildcard",
-      hostLabels: ["*", "example", "com"],
-      hostLabelCount: 3,
-      pathType: "exact",
-      pathExact: "/bar",
+      host: { kind: "glob", pattern: "*.example.com", case: "insensitive" },
+      path: { kind: "eq", value: "/bar", case: "sensitive" },
+      hostType: null,
+      hostRegex: null,
+      pathType: null,
+      pathRegex: null,
       when: null,
-      config: { turncheck: true },
+      config: { id: "fallback" },
     },
   ];
-  const restore = __test.setCompiledConfigForTest(compiled);
+
+  const restore = setCompiledConfigForTest(compiled);
   try {
     const request0 = new Request("https://example.com/foo", {
       headers: { "user-agent": "bot" },
     });
     const url0 = new URL(request0.url);
-    const selected0 = __test.pickConfigWithId(
-      request0,
-      url0,
-      url0.hostname,
-      url0.pathname
-    );
-    assert.equal(selected0?.cfgId, 0);
+    const selected0 = pickConfigWithId(request0, url0, url0.hostname, url0.pathname);
+    assert.equal(selected0?.config?.id, "meta");
 
     const request1 = new Request("https://a.example.com/bar", {
       headers: { "user-agent": "browser" },
     });
     const url1 = new URL(request1.url);
-    const selected1 = __test.pickConfigWithId(
-      request1,
-      url1,
-      url1.hostname,
-      url1.pathname
-    );
-    assert.equal(selected1?.cfgId, 1);
+    const selected1 = pickConfigWithId(request1, url1, url1.hostname, url1.pathname);
+    assert.equal(selected1?.config?.id, "fallback");
   } finally {
     restore();
   }
 });
 
-test("pickConfigWithId matches cookie when whenNeeds is missing", () => {
-  const { __test } = powConfig;
-  assert.equal(typeof __test?.setCompiledConfigForTest, "function");
-  assert.equal(typeof __test?.pickConfigWithId, "function");
-  const compiled = [
-    {
-      host: { s: "^example\\.com$", f: "" },
-      path: { s: "^/foo$", f: "" },
-      hostType: "exact",
-      hostExact: "example.com",
-      pathType: "exact",
-      pathExact: "/foo",
-      when: { cookie: { session: "abc" } },
-      config: { powcheck: true },
-    },
-  ];
-  const restore = __test.setCompiledConfigForTest(compiled);
-  try {
-    const request = new Request("https://example.com/foo", {
-      headers: { cookie: "session=abc" },
-    });
-    const url = new URL(request.url);
-    const selected = __test.pickConfigWithId(request, url, url.hostname, url.pathname);
-    assert.equal(selected?.cfgId, 0);
-  } finally {
-    restore();
-  }
-});
+test("pickConfigWithId keeps lazy cookie parsing with whenNeeds", () => {
+  assert.equal(typeof setCompiledConfigForTest, "function");
+  assert.equal(typeof pickConfigWithId, "function");
 
-test("pickConfigWithId parses cookie for later rules", () => {
-  const { __test } = powConfig;
-  assert.equal(typeof __test?.setCompiledConfigForTest, "function");
-  assert.equal(typeof __test?.pickConfigWithId, "function");
   const compiled = [
     {
-      host: { s: "^example\\.com$", f: "" },
-      path: { s: "^/foo$", f: "" },
+      host: { kind: "eq", value: "example.com" },
+      path: { kind: "eq", value: "/foo", case: "sensitive" },
       hostType: "exact",
       hostExact: "example.com",
       pathType: "exact",
       pathExact: "/foo",
-      when: { ua: "bot" },
+      when: {
+        kind: "atom",
+        field: "ua",
+        matcher: { kind: "glob", pattern: "*bot*", case: "insensitive" },
+      },
       whenNeeds: { ua: true },
       config: { id: "ua" },
     },
     {
-      host: { s: "^example\\.com$", f: "" },
-      path: { s: "^/foo$", f: "" },
+      host: { kind: "eq", value: "example.com" },
+      path: { kind: "eq", value: "/foo", case: "sensitive" },
       hostType: "exact",
       hostExact: "example.com",
       pathType: "exact",
       pathExact: "/foo",
-      when: { cookie: { session: "abc" } },
+      when: {
+        kind: "atom",
+        field: "cookie",
+        key: "session",
+        matcher: { kind: "eq", value: "abc", case: "insensitive" },
+      },
       whenNeeds: { cookie: true },
       config: { id: "cookie" },
     },
   ];
-  const restore = __test.setCompiledConfigForTest(compiled);
+
+  const restore = setCompiledConfigForTest(compiled);
   try {
     const request = new Request("https://example.com/foo", {
       headers: { "user-agent": "browser", cookie: "session=abc" },
     });
     const url = new URL(request.url);
-    const selected = __test.pickConfigWithId(request, url, url.hostname, url.pathname);
+    const selected = pickConfigWithId(request, url, url.hostname, url.pathname);
     assert.equal(selected?.config?.id, "cookie");
-  } finally {
-    restore();
-  }
-});
-
-test("pickConfigWithId matches prefix root path", () => {
-  const { __test } = powConfig;
-  assert.equal(typeof __test?.setCompiledConfigForTest, "function");
-  assert.equal(typeof __test?.pickConfigWithId, "function");
-  const compiled = [
-    {
-      host: { s: "^example\\.com$", f: "" },
-      path: { s: "^/(?:.*)?$", f: "" },
-      hostType: "exact",
-      hostExact: "example.com",
-      pathType: "prefix",
-      pathPrefix: "/",
-      when: null,
-      config: { turncheck: true },
-    },
-  ];
-  const restore = __test.setCompiledConfigForTest(compiled);
-  try {
-    const request = new Request("https://example.com/foo");
-    const url = new URL(request.url);
-    const selected = __test.pickConfigWithId(request, url, url.hostname, url.pathname);
-    assert.equal(selected?.cfgId, 0);
-  } finally {
-    restore();
-  }
-});
-
-test("pickConfigWithId falls back to regex when metadata missing", () => {
-  const { __test } = powConfig;
-  assert.equal(typeof __test?.setCompiledConfigForTest, "function");
-  assert.equal(typeof __test?.pickConfigWithId, "function");
-  const compiled = [
-    {
-      host: { s: "^example\\.com$", f: "" },
-      path: { s: "^/foo$", f: "" },
-      hostType: "exact",
-      hostExact: null,
-      pathType: "exact",
-      pathExact: null,
-      when: null,
-      config: { powcheck: true },
-    },
-  ];
-  const restore = __test.setCompiledConfigForTest(compiled);
-  try {
-    const request = new Request("https://example.com/foo");
-    const url = new URL(request.url);
-    const selected = __test.pickConfigWithId(request, url, url.hostname, url.pathname);
-    assert.equal(selected?.cfgId, 0);
   } finally {
     restore();
   }

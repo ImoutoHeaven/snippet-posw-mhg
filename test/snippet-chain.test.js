@@ -558,12 +558,17 @@ export const __splitTrace = splitTrace;
 
 const buildConfigModule = async (secret = "config-secret", options = {}) => {
   const repoRoot = fileURLToPath(new URL("..", import.meta.url));
-  const powConfigSource = await readFile(join(repoRoot, "pow-config.js"), "utf8");
+  const [powConfigSource, runtimeSource] = await Promise.all([
+    readFile(join(repoRoot, "pow-config.js"), "utf8"),
+    readFile(join(repoRoot, "lib", "rule-engine", "runtime.js"), "utf8"),
+  ]);
   const gluePadding = options.longGlue ? "x".repeat(12000) : "";
   const configOverrides = options.configOverrides || {};
   const compiledConfig = JSON.stringify([
     {
-      host: { s: "^example\\.com$", f: "" },
+      host: { kind: "eq", value: "example.com" },
+      hostType: "exact",
+      hostExact: "example.com",
       path: null,
       config: {
         POW_TOKEN: "pow-secret",
@@ -580,6 +585,8 @@ const buildConfigModule = async (secret = "config-secret", options = {}) => {
   const injected = powConfigSource.replace(/__COMPILED_CONFIG__/gu, compiledConfig);
   const withSecret = replaceConfigSecret(injected, secret);
   const tmpDir = await mkdtemp(join(tmpdir(), "pow-config-chain-"));
+  await mkdir(join(tmpDir, "lib", "rule-engine"), { recursive: true });
+  await writeFile(join(tmpDir, "lib", "rule-engine", "runtime.js"), runtimeSource);
   const tmpPath = join(tmpDir, "pow-config.js");
   await writeFile(tmpPath, withSecret);
   return tmpPath;

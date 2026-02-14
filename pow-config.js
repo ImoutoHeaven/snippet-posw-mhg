@@ -1,5 +1,7 @@
 // Cloudflare Snippet: pow-config header injector
 
+import { evaluateWhen, matchIpMatcher, matchTextMatcher } from "./lib/rule-engine/runtime.js";
+
 const CONFIG = [];
 
 const DEFAULTS = {
@@ -64,19 +66,28 @@ const DEFAULTS = {
   SITEVERIFY_AUTH_SECRET: "",
 };
 
+const compileRegexFromMatcher = (matcher) => {
+  if (!matcher || matcher.kind !== "re") return null;
+  const source = typeof matcher.source === "string" ? matcher.source : "";
+  const flags = typeof matcher.flags === "string" ? matcher.flags : "";
+  try {
+    return new RegExp(source, flags);
+  } catch {
+    return null;
+  }
+};
+
+const testRegexDeterministic = (regex, value) => {
+  if (!(regex instanceof RegExp)) return false;
+  regex.lastIndex = 0;
+  return regex.test(value);
+};
+
 const normalizeCompiledEntry = (entry) => ({
-  hostRegex:
-    entry.hostRegex instanceof RegExp
-      ? entry.hostRegex
-      : entry.host
-        ? new RegExp(entry.host.s, entry.host.f || "")
-        : null,
-  pathRegex:
-    entry.pathRegex instanceof RegExp
-      ? entry.pathRegex
-      : entry.path
-        ? new RegExp(entry.path.s, entry.path.f || "")
-        : null,
+  host: entry.host || null,
+  path: entry.path || null,
+  hostRegex: entry.hostRegex instanceof RegExp ? entry.hostRegex : compileRegexFromMatcher(entry.host),
+  pathRegex: entry.pathRegex instanceof RegExp ? entry.pathRegex : compileRegexFromMatcher(entry.path),
   hostType: entry.hostType,
   hostExact: entry.hostExact,
   hostLabels: entry.hostLabels,
@@ -556,239 +567,6 @@ const validateAtomicSnapshot = (atomic) => {
   return { ok: true };
 };
 
-const isPlainObject = (value) => {
-  if (value === null || typeof value !== "object") return false;
-  if (Array.isArray(value)) return false;
-  return Object.getPrototypeOf(value) === Object.prototype;
-};
-
-const reviveRegex = (value) => {
-  if (!isPlainObject(value) || !Object.prototype.hasOwnProperty.call(value, "$re")) {
-    return value;
-  }
-  const inner = value.$re;
-  if (!isPlainObject(inner) || typeof inner.s !== "string") return value;
-  const flags = typeof inner.f === "string" ? inner.f : "";
-  try {
-    return new RegExp(inner.s, flags);
-  } catch {
-    return value;
-  }
-};
-
-const matchValue = (actual, expected, options = {}) => {
-  if (expected === null || expected === undefined) return false;
-  if (Array.isArray(expected)) {
-    let matched = false;
-    for (const entry of expected) {
-      if (matchValue(actual, entry, options)) matched = true;
-    }
-    return matched;
-  }
-  const revived = reviveRegex(expected);
-  if (revived instanceof RegExp) {
-    const testRegex = (value) => {
-      revived.lastIndex = 0;
-      return revived.test(String(value));
-    };
-    if (Array.isArray(actual)) {
-      for (const entry of actual) {
-        if (testRegex(entry)) return true;
-      }
-      return false;
-    }
-    if (actual === null || actual === undefined) return false;
-    return testRegex(actual);
-  }
-  if (typeof revived === "string") {
-    const matches = (value) => {
-      if (value === null || value === undefined) return false;
-      const actualStr = String(value);
-      const expectedStr = revived;
-      if (options.contains) {
-        return actualStr.toLowerCase().includes(expectedStr.toLowerCase());
-      }
-      if (options.caseSensitive) {
-        return actualStr === expectedStr;
-      }
-      return actualStr.toLowerCase() === expectedStr.toLowerCase();
-    };
-    if (Array.isArray(actual)) {
-      for (const entry of actual) {
-        if (matches(entry)) return true;
-      }
-      return false;
-    }
-    return matches(actual);
-  }
-  return false;
-};
-
-const matchObject = (container, conditions, options = {}) => {
-  if (!conditions || typeof conditions !== "object") return false;
-  let matched = true;
-  const isExistsCheck = (value) =>
-    isPlainObject(value) &&
-    Object.keys(value).length === 1 &&
-    typeof value.exists === "boolean";
-  for (const [key, expected] of Object.entries(conditions)) {
-    let exists = false;
-    let actual;
-    if (container instanceof Headers) {
-      exists = container.has(key);
-      actual = container.get(key);
-    } else if (container instanceof Map) {
-      exists = container.has(key);
-      actual = container.get(key);
-    } else if (container instanceof URLSearchParams) {
-      exists = container.has(key);
-      const values = container.getAll(key);
-      actual = values.length ? values : undefined;
-    } else if (container && typeof container === "object") {
-      exists = Object.prototype.hasOwnProperty.call(container, key);
-      actual = exists ? container[key] : undefined;
-    } else {
-      matched = false;
-      continue;
-    }
-
-    if (isExistsCheck(expected)) {
-      if (exists !== expected.exists) matched = false;
-      continue;
-    }
-    if (!matchValue(actual, expected, options)) matched = false;
-  }
-  return matched;
-};
-
-const ipInCidr = (ip, cidr) => {
-  if (typeof ip !== "string" || typeof cidr !== "string") return false;
-  const slash = cidr.indexOf("/");
-  if (slash === -1) return false;
-  const base = cidr.slice(0, slash);
-  const prefixRaw = cidr.slice(slash + 1);
-  if (!prefixRaw) return false;
-  const prefix = Number(prefixRaw);
-  if (!Number.isFinite(prefix)) return false;
-  if (isIpv4(base) && isIpv4(ip)) {
-    const baseBytes = parseIpv4(base);
-    const ipBytes = parseIpv4(ip);
-    if (!baseBytes || !ipBytes) return false;
-    const p = Math.min(32, Math.max(0, prefix));
-    const toInt = (bytes) =>
-      ((bytes[0] << 24) | (bytes[1] << 16) | (bytes[2] << 8) | bytes[3]) >>> 0;
-    const mask = p === 0 ? 0 : (~0 << (32 - p)) >>> 0;
-    return (toInt(ipBytes) & mask) === (toInt(baseBytes) & mask);
-  }
-  if (isIpv6(base) && isIpv6(ip)) {
-    const baseBytes = parseIpv6(base);
-    const ipBytes = parseIpv6(ip);
-    if (!baseBytes || !ipBytes) return false;
-    const p = Math.min(128, Math.max(0, prefix));
-    const fullBytes = Math.floor(p / 8);
-    const rem = p % 8;
-    for (let i = 0; i < fullBytes; i++) {
-      if (ipBytes[i] !== baseBytes[i]) return false;
-    }
-    if (rem === 0) return true;
-    const mask = 0xff << (8 - rem);
-    return (ipBytes[fullBytes] & mask) === (baseBytes[fullBytes] & mask);
-  }
-  return false;
-};
-
-const matchCidr = (ip, cidr) => {
-  if (Array.isArray(cidr)) {
-    let matched = false;
-    for (const entry of cidr) {
-      if (matchCidr(ip, entry)) matched = true;
-    }
-    return matched;
-  }
-  if (typeof cidr !== "string") return false;
-  if (cidr.includes("/")) return ipInCidr(ip, cidr);
-  if (typeof ip !== "string") return false;
-  return ip === cidr;
-};
-
-const evaluateCondition = (condition, context) => {
-  if (condition === null || condition === undefined) return true;
-  if (!condition || typeof condition !== "object" || Array.isArray(condition)) {
-    return false;
-  }
-  let matched = true;
-  for (const [key, value] of Object.entries(condition)) {
-    let result = false;
-    switch (key) {
-      case "and": {
-        if (!Array.isArray(value)) {
-          result = false;
-          break;
-        }
-        let all = true;
-        for (const entry of value) {
-          if (!evaluateCondition(entry, context)) all = false;
-        }
-        result = all;
-        break;
-      }
-      case "or": {
-        if (!Array.isArray(value)) {
-          result = false;
-          break;
-        }
-        let any = false;
-        for (const entry of value) {
-          if (evaluateCondition(entry, context)) any = true;
-        }
-        result = any;
-        break;
-      }
-      case "not":
-        if (!value || typeof value !== "object" || Array.isArray(value)) {
-          result = false;
-          break;
-        }
-        result = !evaluateCondition(value, context);
-        break;
-      case "country":
-        result = matchValue(context && context.country, value);
-        break;
-      case "asn":
-        result = matchValue(context && context.asn, value);
-        break;
-      case "ip":
-        result = matchCidr(context && context.ip, value);
-        break;
-      case "method":
-        result = matchValue(context && context.method, value);
-        break;
-      case "ua":
-        result = matchValue(context && context.ua, value, { contains: true });
-        break;
-      case "path":
-        result = matchValue(context && context.path, value, { caseSensitive: true });
-        break;
-      case "tls":
-        result = typeof value === "boolean" && value === (context && context.tls === true);
-        break;
-      case "header":
-        result = matchObject(context && context.header, value);
-        break;
-      case "cookie":
-        result = matchObject(context && context.cookie, value);
-        break;
-      case "query":
-        result = matchObject(context && context.query, value);
-        break;
-      default:
-        result = false;
-    }
-    if (!result) matched = false;
-  }
-  return matched;
-};
-
 const getClientIP = (request) =>
   request.headers.get("CF-Connecting-IP") ||
   request.headers.get("cf-connecting-ip") ||
@@ -971,12 +749,12 @@ const matchHostFast = (host, rule) => {
   if (!host || !rule) return false;
   if (rule.hostType === "exact") {
     if (typeof rule.hostExact === "string") return host === rule.hostExact;
-    if (rule.hostRegex) return rule.hostRegex.test(host);
+    if (rule.hostRegex) return testRegexDeterministic(rule.hostRegex, host);
     return false;
   }
   if (rule.hostType === "wildcard") {
     if (!Array.isArray(rule.hostLabels)) {
-      if (rule.hostRegex) return rule.hostRegex.test(host);
+      if (rule.hostRegex) return testRegexDeterministic(rule.hostRegex, host);
       return false;
     }
     const labels = host.split(".");
@@ -990,29 +768,29 @@ const matchHostFast = (host, rule) => {
     }
     return true;
   }
-  if (rule.hostRegex) return rule.hostRegex.test(host);
-  return false;
+  if (rule.hostRegex) return testRegexDeterministic(rule.hostRegex, host);
+  return matchTextMatcher(rule.host, host, { defaultCase: "insensitive" });
 };
 
 const matchPathFast = (path, rule) => {
   if (!rule) return false;
   if (rule.pathType === "exact") {
     if (typeof rule.pathExact === "string") return path === rule.pathExact;
-    if (rule.pathRegex) return rule.pathRegex.test(path);
+    if (rule.pathRegex) return testRegexDeterministic(rule.pathRegex, path);
     return false;
   }
   if (rule.pathType === "prefix") {
     if (typeof rule.pathPrefix !== "string") {
-      if (rule.pathRegex) return rule.pathRegex.test(path);
+      if (rule.pathRegex) return testRegexDeterministic(rule.pathRegex, path);
       return false;
     }
     if (rule.pathPrefix === "/") {
-      return path.startsWith("/") || (rule.pathRegex ? rule.pathRegex.test(path) : false);
+      return path.startsWith("/") || (rule.pathRegex ? testRegexDeterministic(rule.pathRegex, path) : false);
     }
     return path === rule.pathPrefix || path.startsWith(`${rule.pathPrefix}/`);
   }
-  if (rule.pathRegex) return rule.pathRegex.test(path);
-  return false;
+  if (rule.pathRegex) return testRegexDeterministic(rule.pathRegex, path);
+  return matchTextMatcher(rule.path, path, { defaultCase: "sensitive" });
 };
 
 const buildTlsFingerprintHash = async (request) => {
@@ -1252,7 +1030,7 @@ const pickConfigWithId = (request, url, hostname, path) => {
     const rule = COMPILED_CONFIG[i];
     if (!rule) continue;
     if (!matchHostFast(host, rule)) continue;
-    if (rule.pathRegex || rule.pathType) {
+    if (rule.pathRegex || rule.pathType || rule.path) {
       if (!matchPathFast(requestPath, rule)) continue;
     }
     if (rule.when) {
@@ -1262,7 +1040,7 @@ const pickConfigWithId = (request, url, hostname, path) => {
       } else if (needsCookie && context.cookie === null) {
         context.cookie = parseCookieHeader(context.header.get("Cookie"));
       }
-      if (!evaluateCondition(rule.when, context)) continue;
+      if (!evaluateWhen(rule.when, context)) continue;
     }
     return { cfgId: i, config: rule.config || null };
   }
@@ -1578,7 +1356,7 @@ const resolveConfig = async (request, url, requestPath) => {
 
 export { hmacSha256Base64UrlNoPad };
 export const __testNormalizeConfig = (config) => normalizeConfig(config);
-export const __test = { evaluateCondition, matchCidr, pickConfigWithId, setCompiledConfigForTest };
+export const __test = { evaluateWhen, matchIpMatcher, pickConfigWithId, setCompiledConfigForTest };
 
 export default {
   async fetch(request) {
