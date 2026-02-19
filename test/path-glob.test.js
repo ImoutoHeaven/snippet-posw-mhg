@@ -48,3 +48,11 @@ test("/foo/**/ keeps trailing slash boundary and allows zero segments", () => {
   assert.equal(regex.test("/foo/a/b/"), true);
   assert.equal(regex.test("/foo"), false);
 });
+
+test("/api/** matches /api, /api/, and nested paths", () => {
+  const source = compilePathGlobRegexSource("/api/**");
+  const regex = new RegExp(`^${source}$`);
+  assert.equal(regex.test("/api"), true);
+  assert.equal(regex.test("/api/"), true);
+  assert.equal(regex.test("/api/x"), true);
+});

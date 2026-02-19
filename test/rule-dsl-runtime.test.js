@@ -519,6 +519,32 @@ test("runtime fails closed for invalid path glob IR", () => {
   );
 });
 
+test("pow-config malformed path glob never matches even with prefix metadata", () => {
+  const { __test } = powConfig;
+  const compiled = [
+    {
+      host: { kind: "eq", value: "example.com" },
+      hostType: "exact",
+      hostExact: "example.com",
+      path: { kind: "glob", pattern: "/foo/**bar", case: "sensitive" },
+      pathType: "prefix",
+      pathPrefix: "/foo",
+      when: null,
+      config: { id: "must-not-match" },
+    },
+  ];
+
+  const restore = __test.setCompiledConfigForTest(compiled);
+  try {
+    const request = new Request("https://example.com/foo");
+    const url = new URL(request.url);
+    const selected = __test.pickConfigWithId(request, url, url.hostname, url.pathname);
+    assert.equal(selected, null);
+  } finally {
+    restore();
+  }
+});
+
 test("glob cache key isolates text and path modes", () => {
   const matcher = { kind: "glob", pattern: "/foo/*", case: "sensitive" };
   assert.equal(
@@ -601,10 +627,19 @@ test("pow-config /api/** parity between metadata prefix and fallback glob", () =
   const metaRule = compileRule("prefix");
   const fallbackRule = compileRule(null);
 
-  for (const path of ["/api", "/api/x"]) {
+  for (const path of ["/api", "/api/", "/api/x"]) {
     expectMatch(metaRule, path);
     expectMatch(fallbackRule, path);
   }
+
+  assert.equal(
+    matchTextMatcher(
+      { kind: "glob", pattern: "/api/**", case: "sensitive" },
+      "/api/",
+      { defaultCase: "sensitive", globMode: "path" },
+    ),
+    true,
+  );
 });
 
 test("malformed regex IR fails closed and does not match", () => {

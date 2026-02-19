@@ -103,7 +103,7 @@ Matcher operator semantics are strict:
   - `path.glob`: `**` is valid only as a standalone segment (for example: `/api/**`, `/**/api`, `/a/**/b`).
   - `path.glob`: invalid forms are rejected (`a**b`, `***`, `**a`, `a**`).
   - `path.glob`: invalid syntax is rejected at config compile time; malformed runtime IR fails closed (no match).
-  - `path.glob` trailing `/**` matches zero extra segments, so `/api/**` matches both `/api` and `/api/x`.
+  - `path.glob` trailing `/**` matches zero extra segments plus an optional trailing slash, so `/api/**` matches `/api`, `/api/`, and `/api/x`.
   - generic text glob (for non-host/non-path text fields): `*` can match across any chars.
 - `re` is regular expression matching.
 
@@ -122,7 +122,7 @@ Logic matchers in `when`:
 | Field | Type | Description |
 |---|---|---|
 | `host` | `matcher object` | Required text matcher. For `glob`, `*` does not cross `.`; use `eq` for exact host. |
-| `path` | `matcher object` | Optional text matcher. For `glob`, `*` stays within one segment, `**` matches zero or more full directory segments only when used as a standalone segment, and trailing `/**` also matches the prefix itself. |
+| `path` | `matcher object` | Optional text matcher. For `glob`, `*` stays within one segment, `**` matches zero or more full directory segments only when used as a standalone segment, and trailing `/**` matches `/api`, `/api/`, and `/api/x` style paths. |
 | `when` | `condition object` | Optional boolean logic over matcher objects for request attributes. |
 
 ### `config` keys (all supported)

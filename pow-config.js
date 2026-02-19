@@ -1,6 +1,7 @@
 // Cloudflare Snippet: pow-config header injector
 
 import { evaluateWhen, matchIpMatcher, matchTextMatcher } from "./lib/rule-engine/runtime.js";
+import { validatePathGlobPattern } from "./lib/rule-engine/path-glob.js";
 
 const CONFIG = [];
 
@@ -66,6 +67,16 @@ const DEFAULTS = {
   SITEVERIFY_AUTH_SECRET: "",
 };
 
+const isValidPathGlobMatcher = (matcher) => {
+  if (!matcher || matcher.kind !== "glob") return true;
+  try {
+    validatePathGlobPattern(matcher.pattern);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 const normalizeCompiledEntry = (entry) => ({
   host: entry.host || null,
   path: entry.path || null,
@@ -76,6 +87,7 @@ const normalizeCompiledEntry = (entry) => ({
   pathType: entry.pathType,
   pathExact: entry.pathExact,
   pathPrefix: entry.pathPrefix,
+  pathGlobValid: isValidPathGlobMatcher(entry.path || null),
   whenNeeds: entry.whenNeeds,
   when: entry.when ?? null,
   config: entry.config || {},
@@ -753,6 +765,7 @@ const matchHostFast = (host, rule) => {
 
 const matchPathFast = (path, rule) => {
   if (!rule) return false;
+  if (rule.pathGlobValid === false) return false;
   if (rule.pathType === "exact") {
     if (typeof rule.pathExact === "string") return path === rule.pathExact;
   }
