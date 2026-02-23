@@ -632,6 +632,45 @@ test("pow-config clamps invalid cfgId from pow api", async () => {
   }
 });
 
+test("pow-config rejects non-canonical verify ticket numeric fields", async () => {
+  const restoreGlobals = ensureGlobals();
+  const modulePath = await buildConfigModule();
+  const mod = await import(`${pathToFileURL(modulePath).href}?v=${Date.now()}`);
+  const handler = mod.default.fetch;
+  const ticket = ["4x", "1700000600x", "0x", "1700000000", "mactag"].join(".");
+  const ticketB64 = base64Url(Buffer.from(ticket, "utf8"));
+  let forwarded = null;
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async (request) => {
+      forwarded = request;
+      return new Response("ok", { status: 200 });
+    };
+
+    const req = new Request("https://example.com/__pow/verify", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ ticketB64 }),
+    });
+    const res = await handler(req);
+    assert.equal(res.status, 200);
+    assert.ok(forwarded, "fetch called with modified request");
+
+    const { payload } = readInnerPayload(forwarded.headers);
+    const decoded = base64UrlDecode(payload);
+    assert.ok(decoded, "payload decodes");
+    const parsed = JSON.parse(decoded);
+    assert.equal(parsed.id, -1);
+    assert.equal(parsed.c.powcheck, false);
+    assert.equal(parsed.c.POW_TOKEN, undefined);
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreGlobals();
+  }
+});
+
 test("pow-config preserves valid numeric POW_EQ_N", async () => {
   const restoreGlobals = ensureGlobals();
   const modulePath = await buildConfigModule("config-secret", {

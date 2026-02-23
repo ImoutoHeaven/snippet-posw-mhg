@@ -170,6 +170,7 @@ const sha256Bytes = async (data) => {
 };
 
 const BASE64URL_RE = /^[A-Za-z0-9_-]+$/;
+const DECIMAL_INT_RE = /^(0|[1-9][0-9]*)$/;
 const B64_HASH_MAX_LEN = 64;
 const B64_TICKET_MAX_LEN = 256;
 const BIND_PATH_INPUT_MAX_LEN = 2048;
@@ -189,6 +190,20 @@ const isBase64Url = (value, minLen, maxLen) => {
   const len = value.length;
   if (len < minLen || len > maxLen) return false;
   return BASE64URL_RE.test(value);
+};
+
+const parseStrictDecimalInt = (value, min = 0, max = Number.MAX_SAFE_INTEGER) => {
+  if (typeof value === "number") {
+    if (!Number.isSafeInteger(value)) return null;
+    if (value < min || value > max) return null;
+    return value;
+  }
+  if (typeof value !== "string") return null;
+  if (!DECIMAL_INT_RE.test(value)) return null;
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed)) return null;
+  if (parsed < min || parsed > max) return null;
+  return parsed;
 };
 
 const normalizeNumber = (value, fallback) => {
@@ -1009,13 +1024,13 @@ const parsePowVerifyTicketCfgId = (ticketB64) => {
   const raw = decoder.decode(bytes);
   const parts = raw.split(".");
   if (parts.length !== 5) return null;
-  const version = Number.parseInt(parts[0], 10);
-  const cfgId = Number.parseInt(parts[2], 10);
-  const issuedAt = Number.parseInt(parts[3], 10);
+  const version = parseStrictDecimalInt(parts[0], 1);
+  const expireAt = parseStrictDecimalInt(parts[1], 1);
+  const cfgId = parseStrictDecimalInt(parts[2], 0);
+  const issuedAt = parseStrictDecimalInt(parts[3], 1);
   const mac = parts[4] || "";
-  if (!Number.isFinite(version) || version !== 4) return null;
-  if (!Number.isFinite(cfgId)) return null;
-  if (!Number.isFinite(issuedAt) || issuedAt <= 0) return null;
+  if (version === null || expireAt === null || cfgId === null || issuedAt === null) return null;
+  if (version !== 4) return null;
   if (!isBase64Url(mac, 1, B64_HASH_MAX_LEN)) return null;
   return { cfgId };
 };
