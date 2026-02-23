@@ -98,6 +98,7 @@ test("client calls only /verify in pow mode", async () => {
   const initPayloads = [];
   const solvePayloads = [];
   const glue = await importGlue();
+  const ticketB64 = b64u("4.1700000600.3.1700000000.mactag");
 
   globalThis.Worker = class FakeWorker {
     constructor() {
@@ -142,7 +143,7 @@ test("client calls only /verify in pow mode", async () => {
     if (endpoint.endsWith("/verify")) {
       sequence.push("verify");
       const body = init && init.body ? JSON.parse(init.body) : {};
-      assert.equal(body.ticketB64, b64u("4.1700000600.3.1700000000.mactag"));
+      assert.equal(body.ticketB64, ticketB64);
       assert.equal(body.pathHash, "pathhash");
       assert.equal(body.pow && body.pow.nonceB64, "nonce");
       assert.equal(body.pow && body.pow.proofB64, "proof");
@@ -157,7 +158,7 @@ test("client calls only /verify in pow mode", async () => {
 
   const args = [
     makeBootstrapB64({
-      ticketB64: b64u("4.1700000600.3.1700000000.mactag"),
+      ticketB64,
       pathHash: "pathhash",
       n: 90,
       k: 5,
@@ -174,6 +175,7 @@ test("client calls only /verify in pow mode", async () => {
   assert.deepEqual(sequence, ["verify"]);
   assert.equal(initPayloads.length > 0, true);
   assert.equal(solvePayloads.length > 0, true);
+  assert.equal(solvePayloads[0].seed, `${ticketB64}|pathhash`);
 });
 
 test("client forwards bootstrap equihash params to worker", async () => {

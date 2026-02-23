@@ -18,8 +18,10 @@ const FIXTURE = {
   n: 24,
   k: 2,
   pathHash: "eqh-fixed-seed-v1",
-  nonce: new TextEncoder().encode("eqh-fixed-nonce!"),
-  proof: fromHex("00000000000000ea000013b300001614"),
+  ticketB64: "NC4xNzAwMDAwNjAwLjcuMTcwMDAwMDAwMC5qN3ZkOUVrbUJta1N0d3d1TDlnVmxVSXRKeGk1T1ZqQnRuLUNPUXBrVzBB",
+  nonceB64: "R_PfsXHr64v1gIxJXOoCM5fudAQ2aF6n",
+  proofB64: "AACq1wAAq28AAKx3AACtPQ",
+  proof: fromHex("0000aad70000ab6f0000ac770000ad3d"),
 };
 
 const baseConfig = {
@@ -74,8 +76,8 @@ const issueTicket = async ({ ctx, pathHash = FIXTURE.pathHash, ttl = 600 }) =>
   });
 
 const makeValidPow = () => ({
-  nonceB64: toB64Url(FIXTURE.nonce),
-  proofB64: toB64Url(FIXTURE.proof),
+  nonceB64: FIXTURE.nonceB64,
+  proofB64: FIXTURE.proofB64,
 });
 
 const callVerify = async ({ ctx, body, fetchMock }) => {
@@ -121,6 +123,7 @@ test("/verify matrix preserves turnstile/atomic/aggregator semantics", { concurr
 
   const powOnlyCtx = makeInnerCtx({ powcheck: true, turncheck: false, ATOMIC_CONSUME: false });
   const powOnlyTicket = await issueTicket({ ctx: powOnlyCtx });
+  assert.equal(powOnlyTicket, FIXTURE.ticketB64);
   const powOnlyRes = await callVerify({
     ctx: powOnlyCtx,
     body: { ticketB64: powOnlyTicket, pathHash: FIXTURE.pathHash, pow: makeValidPow() },
@@ -323,7 +326,7 @@ test("/verify matrix preserves turnstile/atomic/aggregator semantics", { concurr
     body: {
       ticketB64,
       pathHash: FIXTURE.pathHash,
-      pow: { nonceB64: toB64Url(FIXTURE.nonce), proofB64: toB64Url(fromHex("00000000000000ea000013b300001615")) },
+      pow: { nonceB64: FIXTURE.nonceB64, proofB64: toB64Url(fromHex("0000aad70000ab6f0000ac770000ad3c")) },
       captchaToken: { turnstile: "turnstile-token-1234567890" },
     },
   });
@@ -348,6 +351,35 @@ test("/verify matrix preserves turnstile/atomic/aggregator semantics", { concurr
   });
   assert.equal(captchaRequiredRes.status, 403);
   assert.equal(captchaRequiredRes.headers.get("x-pow-h"), "captcha_required");
+});
+
+test("/verify binds pow solution to ticket material", { concurrency: false }, async () => {
+  const ctx = makeInnerCtx({ powcheck: true, turncheck: false, ATOMIC_CONSUME: false });
+  const sourceTicket = await issueTicket({ ctx, ttl: 600 });
+  const replayTicket = await issueTicket({ ctx, ttl: 601 });
+  assert.equal(sourceTicket, FIXTURE.ticketB64);
+  assert.notEqual(replayTicket, sourceTicket);
+
+  const sourceOk = await callVerify({
+    ctx,
+    body: {
+      ticketB64: sourceTicket,
+      pathHash: FIXTURE.pathHash,
+      pow: makeValidPow(),
+    },
+  });
+  assert.equal(sourceOk.status, 200);
+
+  const replayRes = await callVerify({
+    ctx,
+    body: {
+      ticketB64: replayTicket,
+      pathHash: FIXTURE.pathHash,
+      pow: makeValidPow(),
+    },
+  });
+  assert.equal(replayRes.status, 403);
+  assert.equal(replayRes.headers.get("x-pow-h"), "cheat");
 });
 
 test("/verify validates ticket envelope before binding resolution", { concurrency: false }, async () => {

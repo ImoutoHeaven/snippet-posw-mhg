@@ -399,6 +399,9 @@ const parseBootstrap = (bootstrapB64) => {
   return { ticketB64, pathHash, apiPrefix, eq };
 };
 
+const makeEquihashSeed = (ticketB64, pathHash) =>
+  `${String(ticketB64 || "")}|${String(pathHash || "")}`;
+
 const throwVerifyDeny = (reason) => {
   const hint = String(reason || "stale").trim().toLowerCase() || "stale";
   const err = new Error(`verify denied: ${hint}`);
@@ -1349,7 +1352,7 @@ const runPowFlow = async (
 
     ensureHashingLine();
     const solveRes = await rpc.call("SOLVE", {
-      seed: String(pathHash || ""),
+      seed: makeEquihashSeed(ticketB64, pathHash),
       n: eqN,
       k: eqK,
     });
