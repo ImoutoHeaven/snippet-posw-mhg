@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
-import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -85,14 +85,12 @@ const makePowBindingString = (
   country,
   asn,
   tlsFingerprint,
-  pageBytes,
-  mixRounds
+  eqN,
+  eqK
 ) =>
   [
     String(ticket.v),
     String(ticket.e),
-    String(ticket.L),
-    String(ticket.r),
     String(ticket.cfgId),
     String(hostname || "").toLowerCase(),
     pathHash,
@@ -100,8 +98,8 @@ const makePowBindingString = (
     country,
     asn,
     tlsFingerprint,
-    String(pageBytes),
-    String(mixRounds),
+    String(eqN),
+    String(eqK),
     String(ticket.issuedAt),
   ].join("|");
 
@@ -144,11 +142,12 @@ const replaceConfigSecret = (source, secret) =>
 
 const buildConfigModule = async (secret = "config-secret", options = {}) => {
   const repoRoot = fileURLToPath(new URL("..", import.meta.url));
-  const [powConfigSource, runtimeSource, pathGlobSource, lruCacheSource] = await Promise.all([
+  const [powConfigSource, runtimeSource, pathGlobSource, lruCacheSource, eqParamsSource] = await Promise.all([
     readFile(join(repoRoot, "pow-config.js"), "utf8"),
     readFile(join(repoRoot, "lib", "rule-engine", "runtime.js"), "utf8"),
     readFile(join(repoRoot, "lib", "rule-engine", "path-glob.js"), "utf8"),
     readFile(join(repoRoot, "lib", "rule-engine", "lru-cache.js"), "utf8"),
+    readFile(join(repoRoot, "lib", "equihash", "params.js"), "utf8"),
   ]);
   const gluePadding = options.longGlue ? "x".repeat(6000) : "";
   const configOverrides = options.configOverrides || {};
@@ -176,9 +175,11 @@ const buildConfigModule = async (secret = "config-secret", options = {}) => {
   const withSecret = replaceConfigSecret(injected, secret);
   const tmpDir = await mkdtemp(join(tmpdir(), "pow-config-test-"));
   await mkdir(join(tmpDir, "lib", "rule-engine"), { recursive: true });
+  await mkdir(join(tmpDir, "lib", "equihash"), { recursive: true });
   await writeFile(join(tmpDir, "lib", "rule-engine", "runtime.js"), runtimeSource);
   await writeFile(join(tmpDir, "lib", "rule-engine", "path-glob.js"), pathGlobSource);
   await writeFile(join(tmpDir, "lib", "rule-engine", "lru-cache.js"), lruCacheSource);
+  await writeFile(join(tmpDir, "lib", "equihash", "params.js"), eqParamsSource);
   const tmpPath = join(tmpDir, "pow-config-test.js");
   await writeFile(tmpPath, withSecret);
   return tmpPath;
@@ -197,75 +198,24 @@ const readOptionalFile = async (filePath) => {
 
 const buildCoreModules = async (secret = "config-secret") => {
   const repoRoot = fileURLToPath(new URL("..", import.meta.url));
-  const [
-    core1SourceRaw,
-    core2SourceRaw,
-    transitSource,
-    innerAuthSource,
-    internalHeadersSource,
-    apiEngineSource,
-    businessGateSource,
-    siteverifyClientSource,
-    mhgGraphSource,
-    mhgHashSource,
-    mhgMixSource,
-    mhgMerkleSource,
-    mhgVerifySource,
-    mhgConstantsSource,
-  ] = await Promise.all([
+  const [core1SourceRaw, core2SourceRaw] = await Promise.all([
     readFile(join(repoRoot, "pow-core-1.js"), "utf8"),
     readFile(join(repoRoot, "pow-core-2.js"), "utf8"),
-    readFile(join(repoRoot, "lib", "pow", "transit-auth.js"), "utf8"),
-    readOptionalFile(join(repoRoot, "lib", "pow", "inner-auth.js")),
-    readOptionalFile(join(repoRoot, "lib", "pow", "internal-headers.js")),
-    readOptionalFile(join(repoRoot, "lib", "pow", "api-engine.js")),
-    readOptionalFile(join(repoRoot, "lib", "pow", "business-gate.js")),
-    readOptionalFile(join(repoRoot, "lib", "pow", "siteverify-client.js")),
-    readFile(join(repoRoot, "lib", "mhg", "graph.js"), "utf8"),
-    readFile(join(repoRoot, "lib", "mhg", "hash.js"), "utf8"),
-    readFile(join(repoRoot, "lib", "mhg", "mix-aes.js"), "utf8"),
-    readFile(join(repoRoot, "lib", "mhg", "merkle.js"), "utf8"),
-    readFile(join(repoRoot, "lib", "mhg", "verify.js"), "utf8"),
-    readFile(join(repoRoot, "lib", "mhg", "constants.js"), "utf8"),
   ]);
 
   const core1Source = replaceConfigSecret(core1SourceRaw, secret);
   const core2Source = replaceConfigSecret(core2SourceRaw, secret);
 
   const tmpDir = await mkdtemp(join(tmpdir(), "pow-core-inner-test-"));
-  await mkdir(join(tmpDir, "lib", "pow"), { recursive: true });
-  await mkdir(join(tmpDir, "lib", "mhg"), { recursive: true });
-  const writes = [
+  await mkdir(join(tmpDir, "lib"), { recursive: true });
+  await Promise.all([
+    cp(join(repoRoot, "lib", "pow"), join(tmpDir, "lib", "pow"), { recursive: true }),
+    cp(join(repoRoot, "lib", "equihash"), join(tmpDir, "lib", "equihash"), { recursive: true }),
+  ]);
+  await Promise.all([
     writeFile(join(tmpDir, "pow-core-1.js"), core1Source),
     writeFile(join(tmpDir, "pow-core-2.js"), core2Source),
-    writeFile(join(tmpDir, "lib", "pow", "transit-auth.js"), transitSource),
-    writeFile(join(tmpDir, "lib", "mhg", "graph.js"), mhgGraphSource),
-    writeFile(join(tmpDir, "lib", "mhg", "hash.js"), mhgHashSource),
-    writeFile(join(tmpDir, "lib", "mhg", "mix-aes.js"), mhgMixSource),
-    writeFile(join(tmpDir, "lib", "mhg", "merkle.js"), mhgMerkleSource),
-    writeFile(join(tmpDir, "lib", "mhg", "verify.js"), mhgVerifySource),
-    writeFile(join(tmpDir, "lib", "mhg", "constants.js"), mhgConstantsSource),
-  ];
-  if (innerAuthSource !== null) {
-    writes.push(writeFile(join(tmpDir, "lib", "pow", "inner-auth.js"), innerAuthSource));
-  }
-  if (internalHeadersSource !== null) {
-    writes.push(
-      writeFile(join(tmpDir, "lib", "pow", "internal-headers.js"), internalHeadersSource)
-    );
-  }
-  if (apiEngineSource !== null) {
-    writes.push(writeFile(join(tmpDir, "lib", "pow", "api-engine.js"), apiEngineSource));
-  }
-  if (businessGateSource !== null) {
-    writes.push(writeFile(join(tmpDir, "lib", "pow", "business-gate.js"), businessGateSource));
-  }
-  if (siteverifyClientSource !== null) {
-    writes.push(
-      writeFile(join(tmpDir, "lib", "pow", "siteverify-client.js"), siteverifyClientSource)
-    );
-  }
-  await Promise.all(writes);
+  ]);
 
   const nonce = `${Date.now()}-${Math.random()}`;
   const [core1Module, core2Module] = await Promise.all([
@@ -658,7 +608,7 @@ test("pow-config clamps invalid cfgId from pow api", async () => {
       return new Response("ok", { status: 200 });
     };
 
-    const req = new Request("https://example.com/__pow/commit", {
+    const req = new Request("https://example.com/__pow/verify", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -682,10 +632,10 @@ test("pow-config clamps invalid cfgId from pow api", async () => {
   }
 });
 
-test("pow-config preserves numeric POW_SEGMENT_LEN", async () => {
+test("pow-config preserves valid numeric POW_EQ_N", async () => {
   const restoreGlobals = ensureGlobals();
   const modulePath = await buildConfigModule("config-secret", {
-    configOverrides: { POW_SEGMENT_LEN: 32 },
+    configOverrides: { POW_EQ_N: 96 },
   });
   const mod = await import(`${pathToFileURL(modulePath).href}?v=${Date.now()}`);
   const handler = mod.default.fetch;
@@ -710,7 +660,8 @@ test("pow-config preserves numeric POW_SEGMENT_LEN", async () => {
     const decoded = base64UrlDecode(payload);
     assert.ok(decoded, "payload decodes");
     const parsed = JSON.parse(decoded);
-    assert.equal(parsed.c.POW_SEGMENT_LEN, 16);
+    assert.equal(parsed.c.POW_EQ_N, 96);
+    assert.equal(parsed.c.POW_EQ_K, 5);
   } finally {
     globalThis.fetch = originalFetch;
     restoreGlobals();
@@ -852,11 +803,11 @@ test("pow-config forwards aggregator consume toggle", async () => {
   }
 });
 
-test("pow-config normalizes numeric string POW_SEGMENT_LEN for split core", async () => {
+test("pow-config normalizes numeric string POW_EQ_N for split core", async () => {
   const restoreGlobals = ensureGlobals();
   const secret = "config-secret";
   const modulePath = await buildConfigModule(secret, {
-    configOverrides: { POW_SEGMENT_LEN: "32" },
+    configOverrides: { POW_EQ_N: "96" },
   });
   const mod = await import(`${pathToFileURL(modulePath).href}?v=${Date.now()}`);
   const handler = mod.default.fetch;
@@ -881,7 +832,7 @@ test("pow-config normalizes numeric string POW_SEGMENT_LEN for split core", asyn
     const decoded = base64UrlDecode(payload);
     assert.ok(decoded, "payload decodes");
     const parsed = JSON.parse(decoded);
-    assert.equal(parsed.c.POW_SEGMENT_LEN, 16);
+    assert.equal(parsed.c.POW_EQ_N, 96);
 
     const { core1 } = await buildCoreModules(secret);
     const powRes = await core1.fetch(
@@ -900,11 +851,11 @@ test("pow-config normalizes numeric string POW_SEGMENT_LEN for split core", asyn
   }
 });
 
-test("pow-config normalizes range string POW_SEGMENT_LEN for split core", async () => {
+test("pow-config falls back on invalid POW_EQ_N", async () => {
   const restoreGlobals = ensureGlobals();
   const secret = "config-secret";
   const modulePath = await buildConfigModule(secret, {
-    configOverrides: { POW_SEGMENT_LEN: "12-34" },
+    configOverrides: { POW_EQ_N: 91 },
   });
   const mod = await import(`${pathToFileURL(modulePath).href}?v=${Date.now()}`);
   const handler = mod.default.fetch;
@@ -929,7 +880,7 @@ test("pow-config normalizes range string POW_SEGMENT_LEN for split core", async 
     const decoded = base64UrlDecode(payload);
     assert.ok(decoded, "payload decodes");
     const parsed = JSON.parse(decoded);
-    assert.equal(parsed.c.POW_SEGMENT_LEN, "12-16");
+    assert.equal(parsed.c.POW_EQ_N, 90);
 
     const { core1 } = await buildCoreModules(secret);
     const powRes = await core1.fetch(
@@ -1482,10 +1433,8 @@ test("pow-config omits turnstilePreflight for atomic dual-provider ticket flow",
 
     const now = Math.floor(Date.now() / 1000);
     const ticket = {
-      v: 1,
+      v: 4,
       e: now + 600,
-      L: 32,
-      r: base64Url(Buffer.from("ticket-random", "utf8")),
       cfgId: 0,
       issuedAt: now,
       mac: "",
@@ -1499,14 +1448,14 @@ test("pow-config omits turnstilePreflight for atomic dual-provider ticket flow",
       "any",
       "any",
       "any",
-      16384,
-      2
+      90,
+      5
     );
     assert.ok(binding.endsWith(`|${ticket.issuedAt}`));
     ticket.mac = hmacSha256Base64Url("pow-secret", binding);
     const ticketB64 = base64Url(
       Buffer.from(
-        `${ticket.v}.${ticket.e}.${ticket.L}.${ticket.r}.${ticket.cfgId}.${ticket.issuedAt}.${ticket.mac}`,
+        `${ticket.v}.${ticket.e}.${ticket.cfgId}.${ticket.issuedAt}.${ticket.mac}`,
         "utf8"
       )
     );
@@ -1598,7 +1547,7 @@ test("pow-config omits turnstilePreflight when bind strategy is invalid", async 
   }
 });
 
-test("pow-config exposes whitepaper defaults for page bytes and mix rounds", async () => {
+test("pow-config exposes equihash defaults", async () => {
   const restoreGlobals = ensureGlobals();
   const modulePath = await buildConfigModule("config-secret");
   const mod = await import(`${pathToFileURL(modulePath).href}?v=${Date.now()}`);
@@ -1624,18 +1573,20 @@ test("pow-config exposes whitepaper defaults for page bytes and mix rounds", asy
     const decoded = base64UrlDecode(payload);
     assert.ok(decoded, "payload decodes");
     const parsed = JSON.parse(decoded);
-    assert.equal(parsed.c.POW_PAGE_BYTES, 16384);
-    assert.equal(parsed.c.POW_MIX_ROUNDS, 2);
+    assert.equal(parsed.c.POW_EQ_N, 90);
+    assert.equal(parsed.c.POW_EQ_K, 5);
+    assert.equal("POW_PAGE_BYTES" in parsed.c, false);
+    assert.equal("POW_MIX_ROUNDS" in parsed.c, false);
   } finally {
     globalThis.fetch = originalFetch;
     restoreGlobals();
   }
 });
 
-test("pow-config normalizes page bytes alignment and mix rounds bounds", async () => {
+test("pow-config normalizes equihash bounds", async () => {
   const restoreGlobals = ensureGlobals();
   const modulePath = await buildConfigModule("config-secret", {
-    configOverrides: { POW_PAGE_BYTES: 16399, POW_MIX_ROUNDS: 9 },
+    configOverrides: { POW_EQ_N: 300, POW_EQ_K: 12 },
   });
   const mod = await import(`${pathToFileURL(modulePath).href}?v=${Date.now()}`);
   const handler = mod.default.fetch;
@@ -1660,8 +1611,8 @@ test("pow-config normalizes page bytes alignment and mix rounds bounds", async (
     const decoded = base64UrlDecode(payload);
     assert.ok(decoded, "payload decodes");
     const parsed = JSON.parse(decoded);
-    assert.equal(parsed.c.POW_PAGE_BYTES, 16384);
-    assert.equal(parsed.c.POW_MIX_ROUNDS, 4);
+    assert.equal(parsed.c.POW_EQ_N, 90);
+    assert.equal(parsed.c.POW_EQ_K, 5);
   } finally {
     globalThis.fetch = originalFetch;
     restoreGlobals();

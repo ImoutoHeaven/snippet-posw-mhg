@@ -2,6 +2,7 @@
 
 import { evaluateWhen, matchIpMatcher, matchTextMatcher } from "./lib/rule-engine/runtime.js";
 import { validatePathGlobPattern } from "./lib/rule-engine/path-glob.js";
+import { EQ_DEFAULT_K, EQ_DEFAULT_N, normalizeEquihashParams } from "./lib/equihash/params.js";
 
 const CONFIG = [];
 
@@ -12,21 +13,14 @@ const DEFAULTS = {
   bindPathQueryName: "path",
   bindPathHeaderName: "",
   stripBindPathHeader: false,
-  POW_VERSION: 3,
+  POW_VERSION: 4,
   POW_API_PREFIX: "/__pow",
   POW_DIFFICULTY_BASE: 8192,
   POW_DIFFICULTY_COEFF: 1.0,
   POW_MIN_STEPS: 512,
   POW_MAX_STEPS: 8192,
-  POW_HASHCASH_BITS: 0,
-  POW_PAGE_BYTES: 16384,
-  POW_MIX_ROUNDS: 2,
-  POW_SEGMENT_LEN: 2,
-  POW_SAMPLE_K: 4,
-  POW_CHAL_ROUNDS: 10,
-  POW_OPEN_BATCH: 4,
-  POW_COMMIT_TTL_SEC: 120,
-  POW_MAX_GEN_TIME_SEC: 300,
+  POW_EQ_N: EQ_DEFAULT_N,
+  POW_EQ_K: EQ_DEFAULT_K,
   POW_TICKET_TTL_SEC: 600,
   PROOF_TTL_SEC: 600,
   PROOF_RENEW_ENABLE: false,
@@ -57,7 +51,6 @@ const DEFAULTS = {
   POW_BIND_TLS: true,
   IPV4_PREFIX: 32,
   IPV6_PREFIX: 128,
-  POW_COMMIT_COOKIE: "__Host-pow_commit",
   POW_ESM_URL:
     "https://cdn.jsdelivr.net/gh/ImoutoHeaven/snippet-posw@6a34eb1/esm/esm.js",
   POW_GLUE_URL:
@@ -215,6 +208,15 @@ const normalizeBoolean = (value, fallback) =>
 const normalizeString = (value, fallback) =>
   typeof value === "string" ? value : fallback;
 
+const normalizeApiPrefix = (value) => {
+  if (typeof value !== "string") return DEFAULTS.POW_API_PREFIX;
+  const trimmed = value.trim();
+  if (!trimmed) return DEFAULTS.POW_API_PREFIX;
+  const withSlash = trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+  const normalized = withSlash.replace(/\/+$/u, "");
+  return normalized || DEFAULTS.POW_API_PREFIX;
+};
+
 const normalizeStringArray = (value, fallback) => {
   if (!Array.isArray(value)) {
     return Array.isArray(fallback) ? [...fallback] : [];
@@ -232,37 +234,11 @@ const normalizeStringArray = (value, fallback) => {
   return normalized;
 };
 
-const clampIntRange = (value, min, max) =>
-  Math.min(max, Math.max(min, Math.floor(value)));
-
-const normalizeSegmentLen = (value, fallback) => {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return clampIntRange(value, 1, 16);
-  }
-  if (typeof value === "string") {
-    const trimmed = value.trim();
-    if (/^\d+$/.test(trimmed)) {
-      return clampIntRange(Number(trimmed), 1, 16);
-    }
-    const match = trimmed.match(/^(\d+)\s*-\s*(\d+)$/);
-    if (match) {
-      let min = clampIntRange(Number(match[1]), 1, 16);
-      let max = clampIntRange(Number(match[2]), 1, 16);
-      if (min > max) {
-        [min, max] = [max, min];
-      }
-      return `${min}-${max}`;
-    }
-  }
-  return fallback;
-};
-
-const normalizePageBytes = (value, fallback) => {
+const normalizePositiveInt = (value, fallback, min, max) => {
   const num = Number(value);
-  if (!Number.isFinite(num)) return fallback;
-  const pageBytes = Math.floor(num);
-  if (pageBytes < 16) return fallback;
-  return Math.floor(pageBytes / 16) * 16;
+  if (!Number.isInteger(num)) return fallback;
+  if (num < min || num > max) return fallback;
+  return num;
 };
 
 const normalizePath = (pathname) => {
@@ -792,7 +768,21 @@ const buildTlsFingerprintHash = async (request) => {
 
 const normalizeConfig = (baseConfig) => {
   const mergedRaw = { ...DEFAULTS, ...(baseConfig || {}) };
-  const { SITEVERIFY_URL: _legacySiteverifyUrl, ...merged } = mergedRaw;
+  const {
+    SITEVERIFY_URL: _legacySiteverifyUrl,
+    POW_PAGE_BYTES: _legacyPowPageBytes,
+    POW_MIX_ROUNDS: _legacyPowMixRounds,
+    POW_SEGMENT_LEN: _legacyPowSegmentLen,
+    POW_SAMPLE_K: _legacyPowSampleK,
+    POW_CHAL_ROUNDS: _legacyPowChalRounds,
+    POW_OPEN_BATCH: _legacyPowOpenBatch,
+    POW_HASHCASH_BITS: _legacyPowHashcashBits,
+    POW_COMMIT_TTL_SEC: _legacyPowCommitTtl,
+    POW_MAX_GEN_TIME_SEC: _legacyPowMaxGenTime,
+    POW_COMMIT_COOKIE: _legacyPowCommitCookie,
+    ...merged
+  } = mergedRaw;
+  const normalizedEq = normalizeEquihashParams(merged.POW_EQ_N, merged.POW_EQ_K);
   return {
     ...merged,
     powcheck: normalizeBoolean(merged.powcheck, DEFAULTS.powcheck),
@@ -808,8 +798,8 @@ const normalizeConfig = (baseConfig) => {
       merged.stripBindPathHeader,
       DEFAULTS.stripBindPathHeader
     ),
-    POW_VERSION: normalizeNumberClamp(merged.POW_VERSION, DEFAULTS.POW_VERSION, 1, 10),
-    POW_API_PREFIX: DEFAULTS.POW_API_PREFIX,
+    POW_VERSION: DEFAULTS.POW_VERSION,
+    POW_API_PREFIX: normalizeApiPrefix(merged.POW_API_PREFIX),
     POW_DIFFICULTY_BASE: normalizeNumberClamp(
       merged.POW_DIFFICULTY_BASE,
       DEFAULTS.POW_DIFFICULTY_BASE,
@@ -834,45 +824,8 @@ const normalizeConfig = (baseConfig) => {
       1,
       1000000
     ),
-    POW_HASHCASH_BITS: normalizeNumberClamp(
-      merged.POW_HASHCASH_BITS,
-      DEFAULTS.POW_HASHCASH_BITS,
-      0,
-      32
-    ),
-    POW_PAGE_BYTES: normalizePageBytes(merged.POW_PAGE_BYTES, DEFAULTS.POW_PAGE_BYTES),
-    POW_MIX_ROUNDS: normalizeNumberClamp(merged.POW_MIX_ROUNDS, DEFAULTS.POW_MIX_ROUNDS, 1, 4),
-    POW_SEGMENT_LEN: normalizeSegmentLen(merged.POW_SEGMENT_LEN, DEFAULTS.POW_SEGMENT_LEN),
-    POW_SAMPLE_K: normalizeNumberClamp(
-      merged.POW_SAMPLE_K,
-      DEFAULTS.POW_SAMPLE_K,
-      1,
-      256
-    ),
-    POW_CHAL_ROUNDS: normalizeNumberClamp(
-      merged.POW_CHAL_ROUNDS,
-      DEFAULTS.POW_CHAL_ROUNDS,
-      1,
-      256
-    ),
-    POW_OPEN_BATCH: normalizeNumberClamp(
-      merged.POW_OPEN_BATCH,
-      DEFAULTS.POW_OPEN_BATCH,
-      1,
-      256
-    ),
-    POW_COMMIT_TTL_SEC: normalizeNumberClamp(
-      merged.POW_COMMIT_TTL_SEC,
-      DEFAULTS.POW_COMMIT_TTL_SEC,
-      0,
-      1000000000
-    ),
-    POW_MAX_GEN_TIME_SEC: normalizeNumberClamp(
-      merged.POW_MAX_GEN_TIME_SEC,
-      DEFAULTS.POW_MAX_GEN_TIME_SEC,
-      1,
-      1000000000
-    ),
+    POW_EQ_N: normalizedEq.n,
+    POW_EQ_K: normalizedEq.k,
     POW_TICKET_TTL_SEC: normalizeNumberClamp(
       merged.POW_TICKET_TTL_SEC,
       DEFAULTS.POW_TICKET_TTL_SEC,
@@ -969,7 +922,6 @@ const normalizeConfig = (baseConfig) => {
     POW_BIND_TLS: normalizeBoolean(merged.POW_BIND_TLS, DEFAULTS.POW_BIND_TLS),
     IPV4_PREFIX: normalizeNumberClamp(merged.IPV4_PREFIX, DEFAULTS.IPV4_PREFIX, 0, 32),
     IPV6_PREFIX: normalizeNumberClamp(merged.IPV6_PREFIX, DEFAULTS.IPV6_PREFIX, 0, 128),
-    POW_COMMIT_COOKIE: DEFAULTS.POW_COMMIT_COOKIE,
     POW_ESM_URL: normalizeString(merged.POW_ESM_URL, DEFAULTS.POW_ESM_URL),
     POW_GLUE_URL: normalizeString(merged.POW_GLUE_URL, DEFAULTS.POW_GLUE_URL),
     TURNSTILE_SITEKEY: normalizeString(merged.TURNSTILE_SITEKEY, ""),
@@ -1050,42 +1002,22 @@ const getConfigById = (cfgId) => {
   return entry && entry.config ? entry.config : null;
 };
 
-const parsePowTicket = (ticketB64) => {
+const parsePowVerifyTicketCfgId = (ticketB64) => {
   if (!isBase64Url(ticketB64, 1, B64_TICKET_MAX_LEN)) return null;
   const bytes = base64UrlDecodeToBytes(ticketB64);
   if (!bytes) return null;
   const raw = decoder.decode(bytes);
   const parts = raw.split(".");
-  if (parts.length !== 7) return null;
-  const cfgId = Number.parseInt(parts[4], 10);
-  const issuedAt = Number.parseInt(parts[5], 10);
+  if (parts.length !== 5) return null;
+  const version = Number.parseInt(parts[0], 10);
+  const cfgId = Number.parseInt(parts[2], 10);
+  const issuedAt = Number.parseInt(parts[3], 10);
+  const mac = parts[4] || "";
+  if (!Number.isFinite(version) || version !== 4) return null;
   if (!Number.isFinite(cfgId)) return null;
   if (!Number.isFinite(issuedAt) || issuedAt <= 0) return null;
-  return { cfgId };
-};
-
-const parsePowTicketFull = (ticketB64) => {
-  if (!isBase64Url(ticketB64, 1, B64_TICKET_MAX_LEN)) return null;
-  const bytes = base64UrlDecodeToBytes(ticketB64);
-  if (!bytes) return null;
-  const raw = decoder.decode(bytes);
-  const parts = raw.split(".");
-  if (parts.length !== 7) return null;
-  const v = Number.parseInt(parts[0], 10);
-  const e = Number.parseInt(parts[1], 10);
-  const L = Number.parseInt(parts[2], 10);
-  const r = parts[3] || "";
-  const cfgId = Number.parseInt(parts[4], 10);
-  const issuedAt = Number.parseInt(parts[5], 10);
-  const mac = parts[6] || "";
-  if (!Number.isFinite(v) || v <= 0) return null;
-  if (!Number.isFinite(e) || e <= 0) return null;
-  if (!Number.isFinite(L) || L <= 0) return null;
-  if (!Number.isFinite(cfgId) || cfgId < 0) return null;
-  if (!Number.isFinite(issuedAt) || issuedAt <= 0) return null;
-  if (!isBase64Url(r, 1, B64_HASH_MAX_LEN)) return null;
   if (!isBase64Url(mac, 1, B64_HASH_MAX_LEN)) return null;
-  return { v, e, L, r, cfgId, issuedAt, mac, ticketB64 };
+  return { cfgId };
 };
 
 const parseConsumeToken = (value) => {
@@ -1171,123 +1103,22 @@ const getPowBindingValues = async (canonicalPath, config, derived) => {
   return getPowBindingValuesWithPathHash(pathHash, config, derived);
 };
 
-const getPowDifficultyBinding = (config) => ({
-  pageBytes: Math.max(1, Math.floor(Number(config?.POW_PAGE_BYTES) || 0)),
-  mixRounds: Math.max(1, Math.floor(Number(config?.POW_MIX_ROUNDS) || 0)),
-});
-
-const makePowBindingString = (
-  ticket,
-  hostname,
-  pathHash,
-  ipScope,
-  country,
-  asn,
-  tlsFingerprint,
-  pageBytes,
-  mixRounds
-) => {
-  const host = typeof hostname === "string" ? hostname.toLowerCase() : "";
-  return (
-    ticket.v +
-    "|" +
-    ticket.e +
-    "|" +
-    ticket.L +
-    "|" +
-    ticket.r +
-    "|" +
-    ticket.cfgId +
-    "|" +
-    host +
-    "|" +
-    pathHash +
-    "|" +
-    ipScope +
-    "|" +
-    country +
-    "|" +
-    asn +
-    "|" +
-    tlsFingerprint +
-    "|" +
-    pageBytes +
-    "|" +
-    mixRounds +
-    "|" +
-    ticket.issuedAt
-  );
-};
-
-const verifyTicketMac = async (ticket, hostname, bindingValues, config, powSecret) => {
-  if (!powSecret) return "";
-  const difficultyBinding = getPowDifficultyBinding(config);
-  const bindingString = makePowBindingString(
-    ticket,
-    hostname,
-    bindingValues.pathHash,
-    bindingValues.ipScope,
-    bindingValues.country,
-    bindingValues.asn,
-    bindingValues.tlsFingerprint,
-    difficultyBinding.pageBytes,
-    difficultyBinding.mixRounds
-  );
-  const expectedMac = await hmacSha256Base64UrlNoPad(powSecret, bindingString);
-  if (!timingSafeEqual(expectedMac, ticket.mac)) return "";
-  return bindingString;
-};
-
-
-const parsePowCommitCookie = (value) => {
-  if (!value) return null;
-  const parts = value.split(".");
-  if (parts.length !== 8) return null;
-  if (parts[0] !== "v5") return null;
-  const ticketB64 = parts[1] || "";
-  const rootB64 = parts[2] || "";
-  const pathHash = parts[3] || "";
-  const captchaTag = parts[4] || "";
-  const nonce = parts[5] || "";
-  const exp = Number.parseInt(parts[6], 10);
-  const mac = parts[7] || "";
-  if (!isBase64Url(ticketB64, 1, B64_TICKET_MAX_LEN)) return null;
-  if (!isBase64Url(rootB64, 1, B64_HASH_MAX_LEN)) return null;
-  if (!(pathHash === "any" || isBase64Url(pathHash, 1, B64_HASH_MAX_LEN))) return null;
-  if (!(captchaTag === "any" || isBase64Url(captchaTag, CAPTCHA_TAG_LEN, CAPTCHA_TAG_LEN))) {
-    return null;
-  }
-  if (!isBase64Url(nonce, NONCE_MIN_LEN, NONCE_MAX_LEN)) return null;
-  if (!isBase64Url(mac, 1, B64_HASH_MAX_LEN)) return null;
-  if (!Number.isFinite(exp) || exp <= 0) return null;
-  return { ticketB64 };
-};
-
-const readJsonBody = async (request) => {
+const resolveCfgIdFromPowApi = async (request, requestPath) => {
+  if (!requestPath || !requestPath.endsWith("/verify")) return null;
+  let body;
   try {
-    return await request.json();
+    body = await request.clone().json();
   } catch {
     return null;
   }
-};
-
-const resolveCfgIdFromPowApi = async (request, requestPath) => {
-  if (!requestPath.startsWith(`${DEFAULTS.POW_API_PREFIX}/`)) return null;
-  const action = requestPath.slice(DEFAULTS.POW_API_PREFIX.length);
-  if (action === "/commit" || action === "/cap") {
-    const body = await readJsonBody(request.clone());
-    const ticketB64 = body && typeof body.ticketB64 === "string" ? body.ticketB64 : "";
-    const ticket = parsePowTicket(ticketB64);
-    return ticket ? ticket.cfgId : null;
-  }
-  if (action === "/challenge" || action === "/open") {
-    const cookies = parseCookieHeader(request.headers.get("Cookie"));
-    const commitRaw = cookies.get(DEFAULTS.POW_COMMIT_COOKIE) || "";
-    const commit = parsePowCommitCookie(commitRaw);
-    const ticket = commit ? parsePowTicket(commit.ticketB64) : null;
-    return ticket ? ticket.cfgId : null;
-  }
-  return null;
+  const ticketB64 = body && typeof body.ticketB64 === "string" ? body.ticketB64 : "";
+  const ticket = parsePowVerifyTicketCfgId(ticketB64);
+  if (!ticket) return null;
+  const cfg = getConfigById(ticket.cfgId);
+  if (!cfg) return null;
+  const normalized = normalizeConfig(cfg);
+  const expectedPath = `${normalized.POW_API_PREFIX}/verify`;
+  return requestPath === expectedPath ? ticket.cfgId : null;
 };
 
 const buildDerivedBindings = async (request, config) => {

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
-import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -152,78 +152,21 @@ const readOptionalFile = async (filePath) => {
 
 const buildCoreModules = async (secret) => {
   const repoRoot = fileURLToPath(new URL("..", import.meta.url));
-  const [
-    core1SourceRaw,
-    core2SourceRaw,
-    transitSource,
-    innerAuthSource,
-    internalHeadersSource,
-    apiEngineSource,
-    businessGateSource,
-    siteverifyClientSource,
-    mhgGraphSource,
-    mhgHashSource,
-    mhgMixSource,
-    mhgMerkleSource,
-    mhgVerifySource,
-    mhgConstantsSource,
-  ] =
-    await Promise.all([
-      readFile(join(repoRoot, "pow-core-1.js"), "utf8"),
-      readFile(join(repoRoot, "pow-core-2.js"), "utf8"),
-      readFile(join(repoRoot, "lib", "pow", "transit-auth.js"), "utf8"),
-      readFile(join(repoRoot, "lib", "pow", "inner-auth.js"), "utf8"),
-      readFile(join(repoRoot, "lib", "pow", "internal-headers.js"), "utf8"),
-      readOptionalFile(join(repoRoot, "lib", "pow", "api-engine.js")),
-      readOptionalFile(join(repoRoot, "lib", "pow", "business-gate.js")),
-      readOptionalFile(join(repoRoot, "lib", "pow", "siteverify-client.js")),
-      readOptionalFile(join(repoRoot, "lib", "mhg", "graph.js")),
-      readOptionalFile(join(repoRoot, "lib", "mhg", "hash.js")),
-      readOptionalFile(join(repoRoot, "lib", "mhg", "mix-aes.js")),
-      readOptionalFile(join(repoRoot, "lib", "mhg", "merkle.js")),
-      readOptionalFile(join(repoRoot, "lib", "mhg", "verify.js")),
-      readOptionalFile(join(repoRoot, "lib", "mhg", "constants.js")),
-    ]);
+  const [core1SourceRaw, core2SourceRaw] = await Promise.all([
+    readFile(join(repoRoot, "pow-core-1.js"), "utf8"),
+    readFile(join(repoRoot, "pow-core-2.js"), "utf8"),
+  ]);
 
   const core1Source = replaceConfigSecret(core1SourceRaw, secret);
   const core2Source = replaceConfigSecret(core2SourceRaw, secret);
 
   const tmpDir = await mkdtemp(join(tmpdir(), "pow-transit-core-"));
-  await mkdir(join(tmpDir, "lib", "pow"), { recursive: true });
-  await mkdir(join(tmpDir, "lib", "mhg"), { recursive: true });
+  await mkdir(join(tmpDir, "lib"), { recursive: true });
   await Promise.all([
+    cp(join(repoRoot, "lib", "pow"), join(tmpDir, "lib", "pow"), { recursive: true }),
+    cp(join(repoRoot, "lib", "equihash"), join(tmpDir, "lib", "equihash"), { recursive: true }),
     writeFile(join(tmpDir, "pow-core-1.js"), core1Source),
     writeFile(join(tmpDir, "pow-core-2.js"), core2Source),
-    writeFile(join(tmpDir, "lib", "pow", "transit-auth.js"), transitSource),
-    writeFile(join(tmpDir, "lib", "pow", "inner-auth.js"), innerAuthSource),
-    writeFile(join(tmpDir, "lib", "pow", "internal-headers.js"), internalHeadersSource),
-    ...(apiEngineSource === null
-      ? []
-      : [writeFile(join(tmpDir, "lib", "pow", "api-engine.js"), apiEngineSource)]),
-    ...(businessGateSource === null
-      ? []
-      : [writeFile(join(tmpDir, "lib", "pow", "business-gate.js"), businessGateSource)]),
-    ...(siteverifyClientSource === null
-      ? []
-      : [writeFile(join(tmpDir, "lib", "pow", "siteverify-client.js"), siteverifyClientSource)]),
-    ...(mhgGraphSource === null
-      ? []
-      : [writeFile(join(tmpDir, "lib", "mhg", "graph.js"), mhgGraphSource)]),
-    ...(mhgHashSource === null
-      ? []
-      : [writeFile(join(tmpDir, "lib", "mhg", "hash.js"), mhgHashSource)]),
-    ...(mhgMixSource === null
-      ? []
-      : [writeFile(join(tmpDir, "lib", "mhg", "mix-aes.js"), mhgMixSource)]),
-    ...(mhgMerkleSource === null
-      ? []
-      : [writeFile(join(tmpDir, "lib", "mhg", "merkle.js"), mhgMerkleSource)]),
-    ...(mhgVerifySource === null
-      ? []
-      : [writeFile(join(tmpDir, "lib", "mhg", "verify.js"), mhgVerifySource)]),
-    ...(mhgConstantsSource === null
-      ? []
-      : [writeFile(join(tmpDir, "lib", "mhg", "constants.js"), mhgConstantsSource)]),
   ]);
 
   const nonce = `${Date.now()}-${Math.random()}`;
@@ -388,7 +331,7 @@ test("core2 fail-closed on kind mismatch", async () => {
       return new Response(null, { status: 200 });
     };
 
-    const apiPath = "/__pow/open";
+    const apiPath = "/__pow/verify";
     const apiHeaders = makeTransitHeaders({
       secret: TEST_SECRET,
       exp: Math.floor(Date.now() / 1000) + 3,
@@ -582,7 +525,7 @@ test("core1 issues api transit on /__pow/* path", async () => {
     };
 
     const method = "POST";
-    const pathname = "/__pow/open";
+    const pathname = "/__pow/verify";
     const innerHeaders = makeInnerHeaders({ secret: TEST_SECRET });
     const res = await core1.fetch(
       new Request(`https://example.com${pathname}`, { method, headers: innerHeaders })
@@ -624,8 +567,8 @@ test("core1 treats encoded api path as api transit", async () => {
     };
 
     const method = "POST";
-    const requestPathname = "/__pow%2Fopen";
-    const transitPathname = "/__pow/open";
+    const requestPathname = "/__pow%2Fverify";
+    const transitPathname = "/__pow/verify";
     const innerHeaders = makeInnerHeaders({ secret: TEST_SECRET });
     const res = await core1.fetch(
       new Request(`https://example.com${requestPathname}`, { method, headers: innerHeaders })
@@ -667,7 +610,7 @@ test("core1 classifies kind using signed inner POW_API_PREFIX", async () => {
     };
 
     const method = "POST";
-    const pathname = "/altpow/open";
+    const pathname = "/altpow/verify";
     const innerHeaders = makeInnerHeaders({
       secret: TEST_SECRET,
       apiPrefix: "/altpow",
@@ -713,7 +656,7 @@ test("core2 fail-closes api transit without signed inner headers", async () => {
     };
 
     const method = "POST";
-    const pathname = "/altpow/open";
+    const pathname = "/altpow/verify";
     const exp = Math.floor(Date.now() / 1000) + 3;
     const headers = makeTransitHeaders({
       secret: TEST_SECRET,
@@ -779,8 +722,8 @@ test("core2 routes encoded api path through api engine", async () => {
     };
 
     const method = "POST";
-    const requestPathname = "/__pow%2Fcommit";
-    const transitPathname = "/__pow/commit";
+    const requestPathname = "/__pow%2Fverify";
+    const transitPathname = "/__pow/verify";
     const exp = Math.floor(Date.now() / 1000) + 3;
     const headers = makeTransitHeaders({
       secret: TEST_SECRET,
@@ -804,7 +747,7 @@ test("core2 routes encoded api path through api engine", async () => {
       })
     );
 
-    assert.equal(res.status, 400);
+    assert.equal(res.status, 403);
     assert.equal(originCalls, 0);
   } finally {
     globalThis.fetch = originalFetch;
@@ -829,7 +772,7 @@ test("core1->core2 api path keeps signed inner and denies without commit", async
     };
 
     const method = "POST";
-    const pathname = "/altpow/open";
+    const pathname = "/altpow/verify";
     const innerHeaders = makeInnerHeaders({
       secret: TEST_SECRET,
       apiPrefix: "/altpow",
@@ -863,7 +806,7 @@ test("core2 rejects transit when api prefix header is tampered", async () => {
     };
 
     const method = "POST";
-    const pathname = "/altpow/open";
+    const pathname = "/altpow/verify";
     const exp = Math.floor(Date.now() / 1000) + 3;
     const headers = makeTransitHeaders({
       secret: TEST_SECRET,

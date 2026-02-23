@@ -4,7 +4,7 @@ Stateless PoW and Turnstile gate for Cloudflare Snippets and Workers.
 
 This project provides a self-contained L7 front gate that:
 
-- Exposes a PoW API under `/{POW_API_PREFIX}/*` (default: `/__pow/*`).
+- Exposes exactly one PoW API endpoint: `${POW_API_PREFIX}/verify` (default: `/__pow/verify`).
 - Supports PoW-only, turnstile-only, or combined mode.
 - Issues a single proof cookie (`__Host-proof`) when non-atomic flow succeeds.
 - Keeps server state stateless in snippet runtime; optional one-time consume is delegated to the siteverify worker when enabled.
@@ -12,10 +12,10 @@ This project provides a self-contained L7 front gate that:
 ## Files
 
 - `pow-config.js`: policy frontload layer (rule match + bypass/bindPath/atomic derivation + signed inner snapshot).
-- `pow-core-1.js`: business-path gate execution layer (proof/challenge/atomic decisions), consumes `inner.s`, and forwards with transit.
-- `pow-core-2.js`: PoW API + verification engine (`/__pow/*` + validated business passthrough), requires valid transit plus signed inner metadata.
+- `pow-core-1.js`: business-path gate execution layer (proof/verify/atomic decisions), consumes `inner.s`, and forwards with transit.
+- `pow-core-2.js`: PoW API + verification engine (`${POW_API_PREFIX}/verify` + validated business passthrough), requires valid transit plus signed inner metadata.
 - `glue.js`: browser-side UI + orchestration loaded by challenge pages.
-- `esm/esm.js`: browser-side PoW solver (`computePoswCommit`).
+- `esm/esm.js`: exports the browser Equihash worker URL used by `glue.js`.
 - `siteverify_provider/src/worker.js`: siteverify aggregator worker with optional D1 consume ledger.
 - `dist/pow_config_snippet.js`: config snippet build output.
 - `dist/pow_core1_snippet.js`: core-1 snippet build output.
@@ -40,6 +40,7 @@ const CONFIG = [
     },
     config: {
       POW_TOKEN: "replace-me",
+      POW_VERSION: 4,
       powcheck: true,
       turncheck: true,
       ATOMIC_CONSUME: true,
@@ -135,21 +136,14 @@ Logic matchers in `when`:
 | `bindPathQueryName` | `string` | `"path"` | Query key used when `bindPathMode: "query"`. |
 | `bindPathHeaderName` | `string` | `""` | Header key used when `bindPathMode: "header"`. |
 | `stripBindPathHeader` | `boolean` | `false` | Remove bind-path header before origin proxy when enabled. |
-| `POW_VERSION` | `number` | `3` | Ticket version. |
+| `POW_VERSION` | `number` | `4` | Verify-only protocol ticket version (fixed to v4 by runtime normalization). |
 | `POW_API_PREFIX` | `string` | `"/__pow"` | Global API prefix for PoW endpoints. |
 | `POW_DIFFICULTY_BASE` | `number` | `8192` | Base step count. |
 | `POW_DIFFICULTY_COEFF` | `number` | `1.0` | Difficulty multiplier (steps ~= base * coeff). |
 | `POW_MIN_STEPS` | `number` | `512` | Minimum step clamp. |
 | `POW_MAX_STEPS` | `number` | `8192` | Maximum step clamp. |
-| `POW_HASHCASH_BITS` | `number` | `0` | Root-bound hashcash bits (`0` disables). |
-| `POW_PAGE_BYTES` | `number` | `16384` | MHG page size; normalized to a multiple of 16 (minimum 16). |
-| `POW_MIX_ROUNDS` | `number` | `2` | MHG AES mix rounds per page (`1..4`, clamped). |
-| `POW_SEGMENT_LEN` | `string, number` | `2` | Segment length as fixed `N` or range `"min-max"` (`1..16`). |
-| `POW_SAMPLE_K` | `number` | `4` | Extra sampled indices per round. |
-| `POW_CHAL_ROUNDS` | `number` | `10` | Challenge rounds. |
-| `POW_OPEN_BATCH` | `number` | `4` | Indices per `/open` batch (`1..256`, clamped). |
-| `POW_COMMIT_TTL_SEC` | `number` | `120` | TTL for `__Host-pow_commit`. |
-| `POW_MAX_GEN_TIME_SEC` | `number` | `300` | Maximum generation-stage seconds. |
+| `POW_EQ_N` | `number` | `90` | Equihash `n` parameter (`8..256`, even, and must satisfy `n % (k + 1) == 0`). |
+| `POW_EQ_K` | `number` | `5` | Equihash `k` parameter (`2..8`, and must satisfy `n % (k + 1) == 0`). |
 | `POW_TICKET_TTL_SEC` | `number` | `600` | Ticket TTL. |
 | `PROOF_TTL_SEC` | `number` | `600` | Proof cookie TTL. |
 | `PROOF_RENEW_ENABLE` | `boolean` | `false` | Enable sliding renewal for `__Host-proof`. |
@@ -180,7 +174,6 @@ Logic matchers in `when`:
 | `POW_BIND_TLS` | `boolean` | `true` | Bind ticket to TLS fingerprint fields from `request.cf`. |
 | `IPV4_PREFIX` | `number` | `32` | IPv4 prefix used by IP binding (`0..32`). |
 | `IPV6_PREFIX` | `number` | `128` | IPv6 prefix used by IP binding (`0..128`). |
-| `POW_COMMIT_COOKIE` | `string` | `"__Host-pow_commit"` | Global commit cookie name. |
 | `POW_ESM_URL` | `string` | (repo-pinned) | ESM worker URL for browser PoW solve logic. |
 | `POW_GLUE_URL` | `string` | (repo-pinned) | ESM glue runtime URL for challenge orchestration. |
 | `SITEVERIFY_URLS` | `string[]` | `[]` | Optional aggregator shard list; requests are deterministically routed by `ticketMac`. |
@@ -191,6 +184,8 @@ Logic matchers in `when`:
 | `POW_TOKEN` | `string` | — | HMAC secret for ticket and cookie MACs. |
 
 ### `when` conditions
+
+Notes:
 
 Each `CONFIG` entry may include an optional `when` field with boolean logic (`and`, `or`, `not`) over `country`, `asn`, `ip`, `method`, `ua`, `path`, `tls`, `header`, `cookie`, and `query`, and every leaf must be a matcher object.
 
@@ -204,13 +199,38 @@ The proof cookie format is `v1.{ticketB64}.{iat}.{last}.{n}.{m}.{mac}` where mas
 
 A request is allowed when `(m & requiredMask) == requiredMask`.
 
-## Turnstile and Atomic Flow
+## Verify API and Atomic Flow
 
-- `/__pow/cap` exists only for turnstile captcha-only non-atomic flow.
-- Combined non-atomic flow verifies turnstile during final `POST /__pow/open`.
-- Non-atomic PoW-only flow with `AGGREGATOR_POW_ATOMIC_CONSUME=true` verifies consume via aggregator in final `POST /__pow/open` even when `turncheck=false`.
-- Atomic flow verifies on the business path with strict consume token validation.
+The hard-cut protocol exposes exactly one PoW API endpoint: `POST ${POW_API_PREFIX}/verify` (default: `POST /__pow/verify`).
+
+- Non-atomic requests are verified at `POST ${POW_API_PREFIX}/verify` and mint `__Host-proof` on success.
+- Turnstile-only and combined PoW+turnstile flows both use the same verify endpoint.
+- Atomic flows return consume material from `POST ${POW_API_PREFIX}/verify`; consume validation is enforced on the business request path.
 - Atomic input transport priority remains cookie > header > query.
+
+### Verify request/response contract
+
+Request shape:
+
+```json
+{
+  "ticketB64": "...",
+  "pathHash": "...",
+  "pow": {
+    "nonceB64": "...",
+    "proofB64": "..."
+  },
+  "captchaToken": {
+    "turnstile": "..."
+  }
+}
+```
+
+Response shape:
+
+- Non-atomic success: `{ "ok": true, "mode": "proof", "proofTtlSec": 600 }` and `Set-Cookie: __Host-proof=...`.
+- Atomic success: `{ "ok": true, "mode": "consume", "consume": "...", "expireAt": 1735689600 }`.
+- Verification failure: HTTP 403 with JSON payload `{ "ok": false, "reason": "..." }` where `reason` is one of `bad_request|stale|pow_required|captcha_required|cheat`; `x-pow-h` mirrors the same deterministic reason value.
 
 ### Atomic transport details (PoW-only)
 
@@ -226,11 +246,11 @@ This hard-cut model is an 8-path matrix with only three toggles: PoW (P), Atomic
 | # | P | A | T | Path Description | `pow-config` subrequests | `pow-core-1` subrequests | `pow-core-2` subrequests | Siteverify Timing | Core Interaction |
 |---|---|---|---|---|---:|---:|---:|---|---|
 | 0 | Off | Off | Off | No protection | 1 | 1 | 1 | None | Pass-through |
-| 1 | Off | Off | On | Non-atomic turnstile-only | 1 | 1 | 1 | `/__pow/cap` verify | `POST /__pow/cap` |
+| 1 | Off | Off | On | Non-atomic turnstile-only | 1 | 1 | 1 | Verify during `POST /__pow/verify` | PoW API |
 | 2 | Off | On | Off | Invalid toggle (degenerates to #0) | 1 | 1 | 1 | None | Pass-through |
 | 3 | Off | On | On | Atomic turnstile-only business consume | 1 | 1 | 2 | Business path verify + origin | Business request |
-| 4 | On | Off | Off | PoW-only | 1 | 1 | 0 | None | `/commit`, `/challenge`, `/open` |
-| 5 | On | Off | On | Non-atomic PoW + turnstile | 1 | 1 | 1 | Final `/__pow/open` verify | PoW API |
+| 4 | On | Off | Off | PoW-only | 1 | 1 | 1 | Verify during `POST /__pow/verify` | PoW API |
+| 5 | On | Off | On | Non-atomic PoW + turnstile | 1 | 1 | 1 | Verify during `POST /__pow/verify` | PoW API |
 | 6 | On | On | Off | PoW-only atomic with aggregator consume | 1 | 1 | 2 | Business consume verify + origin | PoW API + Business |
 | 7 | On | On | On | Atomic PoW + turnstile | 1 | 1 | 2 | Business verify + origin | PoW API + Business |
 
@@ -238,8 +258,8 @@ Subrequest matrix (API + business paths):
 
 | Flow | `pow-config` subrequests | `pow-core-1` subrequests | `pow-core-2` subrequests | Total |
 |---|---:|---:|---:|---:|
-| Non-atomic `/__pow/cap` | 1 | 1 | 1 | 3 |
-| Non-atomic combined final `/__pow/open` | 1 | 1 | 1 | 3 |
+| Non-atomic `POST /__pow/verify` | 1 | 1 | 1 | 3 |
+| Non-atomic verify with PoW + turnstile | 1 | 1 | 1 | 3 |
 | Atomic turnstile-only business request | 1 | 1 | 2 | 4 |
 | Atomic PoW business request (with or without turnstile) | 1 | 1 | 2 | 4 |
 
@@ -262,20 +282,6 @@ Subrequest matrix (API + business paths):
 - Missing `POW_NONCE_DB` on consume requests returns `reason: "pow_nonce_db_missing"`.
 - Schema bootstrap is opt-in via `INIT_TABLES` (top-level const in `siteverify_provider/src/worker.js`, optionally overridden by env `INIT_TABLES === true`).
 
-### MHG mix hot-path optimizations
-
-This is implementation-level optimization work and does not change protocol semantics.
-
-- derive per-index PA/PB once and reuse across mix rounds.
-- AES-CBC trim uses `subarray(0, pageBytes)` view-based slicing.
-
-## Root-bound Hashcash (`POW_HASHCASH_BITS`)
-
-This is a lightweight commitment-bound extra PoW condition checked on the last sampled index:
-
-- `digest = SHA256("hashcash|v4|" || merkleRoot || chain[L])`
-- Verification requires leading zero bits `>= POW_HASHCASH_BITS`.
-
 ## Build
 
 ```bash
@@ -291,4 +297,4 @@ Budget policy: `32 KiB` is a hard limit for each snippet. `23 KiB` is the best-e
 
 1. Set `CONFIG_SECRET` in `pow-config.js`, `pow-core-1.js`, and `pow-core-2.js`.
 2. Build and deploy snippets in order: `pow-config -> pow-core-1 -> pow-core-2`.
-3. Keep `/__pow/*` reachable from clients during challenge flow.
+3. Keep `POST ${POW_API_PREFIX}/verify` reachable from clients during verification flow (default: `POST /__pow/verify`).

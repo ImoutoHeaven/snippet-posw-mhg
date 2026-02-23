@@ -16,6 +16,9 @@ const b64u = (value) =>
 const makeModuleUrl = (workerUrl) =>
   `data:text/javascript,${encodeURIComponent(`export const workerUrl = "${workerUrl}";`)}`;
 
+const makeBootstrapB64 = ({ ticketB64, pathHash, n, k, apiPrefix = "/__pow" }) =>
+  b64u(JSON.stringify({ ticketB64, pathHash, eq: { n, k }, apiPrefix }));
+
 const setupDom = () => {
   const makeEl = (tag = "div") => ({
     tagName: tag,
@@ -90,10 +93,10 @@ const importGlue = async () => {
   return await import(glueUrl);
 };
 
-test("client still performs commit->challenge->open loop", async () => {
+test("client calls only /verify in pow mode", async () => {
   const sequence = [];
-  const openBodies = [];
   const initPayloads = [];
+  const solvePayloads = [];
   const glue = await importGlue();
 
   globalThis.Worker = class FakeWorker {
@@ -112,45 +115,23 @@ test("client still performs commit->challenge->open loop", async () => {
       };
       if (msg.type === "INIT") {
         initPayloads.push(msg);
-        emit({ type: "INIT_OK", rid: msg.rid });
+        emit({ type: "OK", rid: msg.rid });
       }
-      if (msg.type === "COMMIT") emit({ type: "COMMIT_OK", rid: msg.rid, rootB64: "AA", nonce: "nonce" });
+      if (msg.type === "SOLVE") {
+        solvePayloads.push(msg);
+        emit({ type: "OK", rid: msg.rid, nonceB64: "nonce", proofB64: "proof" });
+      }
+      if (msg.type === "COMMIT") {
+        emit({ type: "OK", rid: msg.rid, rootB64: "root", nonce: "nonce" });
+      }
       if (msg.type === "OPEN") {
-        if (!Array.isArray(msg.segs) || msg.segs.length !== (msg.indices || []).length) {
-          emit({ type: "ERROR", rid: msg.rid, message: "missing segs" });
-          return;
-        }
-        const opens = (msg.indices || []).map((i, k) => ({
-          i,
-          seg: msg.segs[k],
-          nodes: {
-            "0": { pageB64: "AA", proof: [] },
-            [String(i)]: { pageB64: "AA", proof: [] },
-          },
-        }));
-        emit({ type: "OPEN_OK", rid: msg.rid, opens });
+        emit({ type: "OK", rid: msg.rid, opens: [] });
       }
-      if (msg.type === "CANCEL") emit({ type: "CANCEL_OK", rid: msg.rid });
-      if (msg.type === "DISPOSE") emit({ type: "DISPOSE_OK", rid: msg.rid });
+      if (msg.type === "CANCEL" || msg.type === "DISPOSE") {
+        emit({ type: "OK", rid: msg.rid });
+      }
     }
     terminate() {}
-  };
-
-  const challenge1 = {
-    done: false,
-    sid: "s1",
-    cursor: 0,
-    token: "tok-a",
-    indices: [1],
-    segs: [2],
-  };
-  const challenge2 = {
-    done: false,
-    sid: "s1",
-    cursor: 1,
-    token: "tok-b",
-    indices: [2],
-    segs: [2],
   };
 
   globalThis.fetch = async (url, init) => {
@@ -158,49 +139,46 @@ test("client still performs commit->challenge->open loop", async () => {
     if (endpoint.endsWith("/worker.js")) {
       return { ok: true, status: 200, text: async () => "self.onmessage = () => {};" };
     }
-    if (endpoint.endsWith("/commit")) {
-      sequence.push("commit");
-      return { ok: true, status: 200, json: async () => ({}) };
+    if (endpoint.endsWith("/verify")) {
+      sequence.push("verify");
+      const body = init && init.body ? JSON.parse(init.body) : {};
+      assert.equal(body.ticketB64, b64u("4.1700000600.3.1700000000.mactag"));
+      assert.equal(body.pathHash, "pathhash");
+      assert.equal(body.pow && body.pow.nonceB64, "nonce");
+      assert.equal(body.pow && body.pow.proofB64, "proof");
+      return { ok: true, status: 200, json: async () => ({ ok: true, mode: "proof" }) };
     }
-    if (endpoint.endsWith("/challenge")) {
-      sequence.push("challenge");
-      return { ok: true, status: 200, json: async () => challenge1 };
-    }
-    if (endpoint.endsWith("/open")) {
-      sequence.push("open");
-      openBodies.push(JSON.parse(init.body));
-      if (openBodies.length === 1) return { ok: true, status: 200, json: async () => challenge2 };
-      return { ok: true, status: 200, json: async () => ({ done: true }) };
+    if (endpoint.endsWith("/commit") || endpoint.endsWith("/challenge") || endpoint.endsWith("/open")) {
+      sequence.push(endpoint.split("/").pop());
+      throw new Error(`legacy endpoint called: ${endpoint}`);
     }
     throw new Error(`unexpected fetch: ${endpoint}`);
   };
 
   const args = [
+    makeBootstrapB64({
+      ticketB64: b64u("4.1700000600.3.1700000000.mactag"),
+      pathHash: "pathhash",
+      n: 90,
+      k: 5,
+    }),
     b64u("binding"),
-    2,
-    b64u("1.2.3.4.5.6"),
-    "pathhash",
-    0,
-    2,
+    1,
     b64u("https://example.com/ok"),
-    b64u("/__pow"),
     b64u(makeModuleUrl("https://example.com/worker.js")),
     b64u("{}"),
     "0",
   ];
 
   await glue.default(...args);
-  assert.equal(sequence.join(","), "commit,challenge,open,open");
+  assert.deepEqual(sequence, ["verify"]);
   assert.equal(initPayloads.length > 0, true);
-  assert.equal(initPayloads[0].ticketB64, b64u("1.2.3.4.5.6"));
-  assert.equal(Object.hasOwn(openBodies[0], "spinePos"), false);
-  assert.equal(Object.hasOwn(openBodies[1], "spinePos"), false);
-  assert.equal(openBodies[0].opens[0].seg, 2);
-  assert.equal(typeof openBodies[0].opens[0].nodes, "object");
-  assert.equal(Object.hasOwn(openBodies[0].opens[0], "page"), false);
+  assert.equal(solvePayloads.length > 0, true);
 });
 
-test("client keeps screening log visible when worker only reports hashcash", async () => {
+test("client forwards bootstrap equihash params to worker", async () => {
+  const initPayloads = [];
+  const solvePayloads = [];
   const glue = await importGlue();
 
   globalThis.Worker = class FakeWorker {
@@ -217,48 +195,77 @@ test("client keeps screening log visible when worker only reports hashcash", asy
         const list = this.listeners.get("message") || [];
         for (const cb of list) cb({ data });
       };
-      if (msg.type === "INIT") emit({ type: "INIT_OK", rid: msg.rid });
-      if (msg.type === "COMMIT") {
-        emit({ type: "PROGRESS", phase: "hashcash", attempt: 1 });
-        emit({ type: "COMMIT_OK", rid: msg.rid, rootB64: "AA", nonce: "nonce" });
+      if (msg.type === "INIT") {
+        initPayloads.push(msg);
+        emit({ type: "OK", rid: msg.rid });
       }
-      if (msg.type === "CANCEL") emit({ type: "CANCEL_OK", rid: msg.rid });
-      if (msg.type === "DISPOSE") emit({ type: "DISPOSE_OK", rid: msg.rid });
+      if (msg.type === "SOLVE") {
+        solvePayloads.push(msg);
+        emit({ type: "OK", rid: msg.rid, nonceB64: "nonce", proofB64: "proof" });
+      }
+      if (msg.type === "CANCEL" || msg.type === "DISPOSE") {
+        emit({ type: "OK", rid: msg.rid });
+      }
     }
     terminate() {}
   };
 
   globalThis.fetch = async (url) => {
     const endpoint = String(url);
-    if (endpoint.endsWith("/worker.js")) {
-      return { ok: true, status: 200, text: async () => "self.onmessage = () => {};" };
-    }
-    if (endpoint.endsWith("/__pow/commit")) {
-      return {
-        ok: false,
-        status: 500,
-        headers: { get: () => null },
-        json: async () => ({}),
-      };
+    if (endpoint.endsWith("/verify")) {
+      return { ok: true, status: 200, json: async () => ({ ok: true, mode: "proof" }) };
     }
     throw new Error(`unexpected fetch: ${endpoint}`);
   };
 
   const args = [
+    makeBootstrapB64({
+      ticketB64: b64u("4.1700000600.3.1700000000.mactag"),
+      pathHash: "pathhash",
+      n: 96,
+      k: 3,
+    }),
     b64u("binding"),
-    2,
-    b64u("1.2.3.4.5.6"),
-    "pathhash",
-    3,
-    2,
+    1,
     b64u("https://example.com/ok"),
-    b64u("/__pow"),
     b64u(makeModuleUrl("https://example.com/worker.js")),
     b64u("{}"),
     "0",
   ];
 
   await glue.default(...args);
-  const logHtml = globalThis.document.getElementById("log").innerHTML;
-  assert.equal(logHtml.includes("Screening hash"), true);
+  assert.equal(initPayloads.length, 1);
+  assert.equal(solvePayloads.length, 1);
+  assert.equal(initPayloads[0].n, 96);
+  assert.equal(initPayloads[0].k, 3);
+  assert.equal(solvePayloads[0].n, 96);
+  assert.equal(solvePayloads[0].k, 3);
+});
+
+test("client rejects bootstrap with unsupported equihash params", async () => {
+  const glue = await importGlue();
+  let fetchCalls = 0;
+  globalThis.fetch = async () => {
+    fetchCalls += 1;
+    return { ok: true, status: 200, json: async () => ({ ok: true, mode: "proof" }) };
+  };
+
+  const args = [
+    makeBootstrapB64({
+      ticketB64: b64u("4.1700000600.3.1700000000.mactag"),
+      pathHash: "pathhash",
+      n: 96,
+      k: 8,
+    }),
+    b64u("binding"),
+    1,
+    b64u("https://example.com/ok"),
+    b64u(makeModuleUrl("https://example.com/worker.js")),
+    b64u("{}"),
+    "0",
+  ];
+
+  await glue.default(...args);
+  assert.equal(fetchCalls, 0);
+  assert.equal(globalThis.document.getElementById("t").textContent, "Failed");
 });

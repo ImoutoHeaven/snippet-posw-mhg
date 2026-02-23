@@ -58,31 +58,21 @@ test("README removes stale fields and documents whitepaper knobs", async () => {
   assert.equal(readme.includes("POW_SPINE_K"), false);
   assert.equal(readme.includes("POW_FORCE_EDGE_1"), false);
   assert.equal(readme.includes("POW_FORCE_EDGE_LAST"), false);
-  assert.equal(readme.includes('digest = SHA256("hashcash|v4|"'), true);
+  assert.equal(readme.includes('digest = SHA256("hashcash|v4|"'), false);
   assert.equal(readme.includes("__Host-pow_commit` (v4)"), false);
 
-  assert.match(
-    readme,
-    /\| `POW_PAGE_BYTES` \| `number` \| `16384` \|[^\n]*multiple of 16[^\n]*\|/u
-  );
-  assert.match(
-    readme,
-    /\| `POW_MIX_ROUNDS` \| `number` \| `2` \|[^\n]*`1\.\.4`[^\n]*\|/u
-  );
-  assert.match(
-    readme,
-    /\| `POW_OPEN_BATCH` \| `number` \| `4` \|[^\n]*`1\.\.256`[^\n]*\|/u
-  );
-  assert.match(readme, /\| `POW_MAX_GEN_TIME_SEC` \| `number` \| `300` \|/u);
-});
-
-test("README documents MHG mix implementation-only optimizations", async () => {
-  const readme = await readFile("README.md", "utf8");
-
-  assert.match(readme, /implementation-level optimization/u);
-  assert.match(readme, /does not change protocol semantics/u);
-  assert.match(readme, /derive per-index PA\/PB once and reuse across mix rounds/u);
-  assert.match(readme, /AES-CBC trim uses `subarray\(0, pageBytes\)` view-based slicing/u);
+  assert.equal(readme.includes("POW_PAGE_BYTES"), false);
+  assert.equal(readme.includes("POW_MIX_ROUNDS"), false);
+  assert.equal(readme.includes("POW_SEGMENT_LEN"), false);
+  assert.equal(readme.includes("POW_SAMPLE_K"), false);
+  assert.equal(readme.includes("POW_CHAL_ROUNDS"), false);
+  assert.equal(readme.includes("POW_OPEN_BATCH"), false);
+  assert.equal(readme.includes("POW_HASHCASH_BITS"), false);
+  assert.equal(readme.includes("POW_COMMIT_TTL_SEC"), false);
+  assert.equal(readme.includes("POW_MAX_GEN_TIME_SEC"), false);
+  assert.equal(readme.includes("POW_COMMIT_COOKIE"), false);
+  assert.match(readme, /\| `POW_EQ_N` \| `number` \| `90` \|/u);
+  assert.match(readme, /\| `POW_EQ_K` \| `number` \| `5` \|/u);
 });
 
 test("README documents siteverify aggregator contract and removes preflight model", async () => {
@@ -99,4 +89,12 @@ test("README documents siteverify aggregator contract and removes preflight mode
     readme.includes("Turnstile preflight + forwarding the request to `pow-core-1`"),
     false
   );
+});
+
+test("README removes legacy MHG optimization section in hard-cut mode", async () => {
+  const readme = await readFile("README.md", "utf8");
+
+  assert.equal(readme.includes("### MHG mix hot-path optimizations"), false);
+  assert.equal(readme.includes("pageBytes"), false);
+  assert.equal(readme.includes("mix rounds"), false);
 });

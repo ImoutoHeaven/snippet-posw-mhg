@@ -110,15 +110,19 @@ const importGlue = async (domOptions) => {
 const makeRunPowArgs = (overrides = {}) => {
   const workerUrl = overrides.workerUrl || "https://example.com/worker.js";
   const moduleUrl = overrides.moduleUrl || makeModuleUrl(workerUrl);
+  const ticketB64 = overrides.ticketB64 || base64Url("4.1700000600.7.1700000000.ticket-mac");
+  const pathHash = overrides.pathHash || "pathhash";
+  const apiPrefix = overrides.apiPrefix || "/__pow";
+  const eqN = Number.isInteger(overrides.eqN) ? overrides.eqN : 90;
+  const eqK = Number.isInteger(overrides.eqK) ? overrides.eqK : 5;
+  const bootstrapB64 =
+    overrides.bootstrapB64 ||
+    base64Url(JSON.stringify({ ticketB64, pathHash, eq: { n: eqN, k: eqK }, apiPrefix }));
   const params = {
+    bootstrapB64,
     bindingB64: base64Url("binding"),
     steps: 1,
-    ticketB64: base64Url("a.b.c.d.e.f.g"),
-    pathHash: "pathhash",
-    hashcashBits: 1,
-    segmentLen: 1,
     reloadUrlB64: base64Url("https://example.com/"),
-    apiPrefixB64: base64Url("/__pow"),
     esmUrlB64: base64Url(moduleUrl),
     captchaCfgB64: encodeCaptchaCfg({}),
     atomicCfg: "0",
@@ -126,14 +130,10 @@ const makeRunPowArgs = (overrides = {}) => {
   Object.assign(params, overrides);
   if (!params.esmUrlB64) params.esmUrlB64 = base64Url(moduleUrl);
   return [
+    params.bootstrapB64,
     params.bindingB64,
     params.steps,
-    params.ticketB64,
-    params.pathHash,
-    params.hashcashBits,
-    params.segmentLen,
     params.reloadUrlB64,
-    params.apiPrefixB64,
     params.esmUrlB64,
     params.captchaCfgB64,
     params.atomicCfg,
@@ -227,10 +227,37 @@ test("glue hardening", { concurrency: 1 }, async (t) => {
     solveTurnstile("turn-token");
     await runPromise;
     assert.equal(fetchCalls.length, 1);
-    assert.equal(fetchCalls[0].url, "/__pow/cap");
+    assert.equal(fetchCalls[0].url, "/__pow/verify");
     assert.deepEqual(JSON.parse(fetchCalls[0].body.captchaToken), {
       turnstile: "turn-token",
     });
+  });
+
+  await t.test("runCaptcha uses v4 ticket mac for turnstile cData", async () => {
+    let capturedCData = null;
+    let fetchCalls = 0;
+    const glue = await importGlue();
+    globalThis.window.turnstile = {
+      render: (_el, opts) => {
+        capturedCData = opts.cData;
+        queueMicrotask(() => opts.callback("turn-token"));
+        return 1;
+      },
+      reset() {},
+      remove() {},
+    };
+    globalThis.fetch = async () => {
+      fetchCalls += 1;
+      return { ok: true, status: 200, json: async () => ({ ok: true, mode: "proof" }) };
+    };
+    const args = makeRunPowArgs({
+      steps: 0,
+      ticketB64: base64Url("4.1700000600.7.1700000000.ticket-mac-v4"),
+      captchaCfgB64: encodeCaptchaCfg({ turnstile: { sitekey: "ts-v4" } }),
+    });
+    await glue.default(...args);
+    assert.equal(capturedCData, "ticket-mac-v4");
+    assert.equal(fetchCalls, 1);
   });
 
   await t.test("turnstile stays hidden until interaction is required", async () => {
@@ -569,6 +596,36 @@ test("glue hardening", { concurrency: 1 }, async (t) => {
     assert.equal(globalThis.document.getElementById("t").textContent, "Failed");
   });
 
+  await t.test("200 verify deny response fails closed", async () => {
+    let redirects = 0;
+    const glue = await importGlue();
+    globalThis.window.location.replace = () => {
+      redirects += 1;
+    };
+    globalThis.window.turnstile = {
+      render: (_el, opts) => {
+        queueMicrotask(() => opts.callback("turn-token"));
+        return 1;
+      },
+      reset() {},
+      remove() {},
+    };
+    globalThis.fetch = async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ ok: false, reason: "cheat" }),
+    });
+    const args = makeRunPowArgs({
+      steps: 0,
+      captchaCfgB64: encodeCaptchaCfg({ turnstile: { sitekey: "ts-1" } }),
+    });
+
+    await glue.default(...args);
+
+    assert.equal(redirects, 0);
+    assert.equal(globalThis.document.getElementById("t").textContent, "Failed");
+  });
+
   await t.test("turnstile submit 403 does not loop submit callback", async () => {
     const calls = [];
     const headers = new Map([["x-pow-h", "cheat"]]);
@@ -596,7 +653,7 @@ test("glue hardening", { concurrency: 1 }, async (t) => {
     });
     await glue.default(...args);
     assert.equal(calls.length, 1);
-    assert.equal(calls[0].url, "/__pow/cap");
+    assert.equal(calls[0].url, "/__pow/verify");
     assert.equal(globalThis.document.getElementById("t").textContent, "Failed");
   });
 
@@ -628,10 +685,29 @@ test("glue hardening", { concurrency: 1 }, async (t) => {
 
   await t.test("error messages are escaped in logs", async () => {
     const glue = await importGlue();
+    globalThis.Worker = class FakeWorker {
+      constructor() {
+        this.listeners = new Map();
+      }
+      addEventListener(type, cb) {
+        const list = this.listeners.get(type) || [];
+        list.push(cb);
+        this.listeners.set(type, list);
+      }
+      postMessage(msg) {
+        const emit = (data) => {
+          const list = this.listeners.get("message") || [];
+          for (const cb of list) cb({ data });
+        };
+        if (msg.type === "INIT") emit({ rid: msg.rid, type: "OK" });
+        if (msg.type === "SOLVE") emit({ rid: msg.rid, type: "OK", nonceB64: "nonce", proofB64: "proof" });
+      }
+      terminate() {}
+    };
     globalThis.fetch = async () => {
       throw new Error('<img src="x" onerror="alert(1)">');
     };
-    const args = makeRunPowArgs();
+    const args = makeRunPowArgs({ steps: 1, captchaCfgB64: encodeCaptchaCfg({}) });
     await glue.default(...args);
     const logEl = globalThis.document.getElementById("log");
     assert.ok(logEl.innerHTML.includes("&lt;img"));
@@ -660,6 +736,7 @@ test("glue hardening", { concurrency: 1 }, async (t) => {
       reset() {},
       remove() {},
     };
+    globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => ({ ok: true, consume: "c1" }) });
     const args = makeRunPowArgs({
       steps: 0,
       captchaCfgB64: encodeCaptchaCfg({ turnstile: { sitekey: "sitekey" } }),
@@ -700,34 +777,19 @@ test("glue hardening", { concurrency: 1 }, async (t) => {
           for (const cb of list) cb({ data });
         };
         if (msg.type === "INIT") emit({ rid: msg.rid, type: "OK" });
-        if (msg.type === "COMMIT") {
-          emit({ rid: msg.rid, type: "OK", rootB64: "root", nonce: 1 });
-        }
-        if (msg.type === "OPEN") {
-          emit({ rid: msg.rid, type: "OK", opens: ["open-1"] });
+        if (msg.type === "SOLVE") {
+          emit({ rid: msg.rid, type: "OK", nonceB64: "nonce", proofB64: "proof" });
         }
       }
       terminate() {}
     };
     globalThis.fetch = async (url, init) => {
       const textUrl = String(url);
-      if (textUrl === "https://example.com/worker.js") {
-        return { text: async () => "self.onmessage = () => {};" };
-      }
-      if (textUrl === "/__pow/commit") {
-        return { ok: true, status: 200, json: async () => ({}) };
-      }
-      if (textUrl === "/__pow/challenge") {
-        return {
-          ok: true,
-          status: 200,
-          json: async () => ({ sid: "sid-1", cursor: 0, token: "tok-1", indices: [0], segs: ["seg-0"] }),
-        };
-      }
-      if (textUrl === "/__pow/open") {
+      if (textUrl === "/__pow/verify") {
         const body = init && init.body ? JSON.parse(init.body) : {};
-        assert.equal(body.sid, "sid-1");
-        return { ok: true, status: 200, json: async () => ({ done: true, consume }) };
+        assert.equal(typeof body.pow.nonceB64, "string");
+        assert.equal(typeof body.pow.proofB64, "string");
+        return { ok: true, status: 200, json: async () => ({ ok: true, mode: "consume", consume }) };
       }
       throw new Error(`unexpected fetch ${textUrl}`);
     };
@@ -770,32 +832,16 @@ test("glue hardening", { concurrency: 1 }, async (t) => {
           for (const cb of list) cb({ data });
         };
         if (msg.type === "INIT") emit({ rid: msg.rid, type: "OK" });
-        if (msg.type === "COMMIT") {
-          emit({ rid: msg.rid, type: "OK", rootB64: "root", nonce: 1 });
-        }
-        if (msg.type === "OPEN") {
-          emit({ rid: msg.rid, type: "OK", opens: ["open-1"] });
+        if (msg.type === "SOLVE") {
+          emit({ rid: msg.rid, type: "OK", nonceB64: "nonce", proofB64: "proof" });
         }
       }
       terminate() {}
     };
     globalThis.fetch = async (url) => {
       const textUrl = String(url);
-      if (textUrl === "https://example.com/worker.js") {
-        return { text: async () => "self.onmessage = () => {};" };
-      }
-      if (textUrl === "/__pow/commit") {
-        return { ok: true, status: 200, json: async () => ({}) };
-      }
-      if (textUrl === "/__pow/challenge") {
-        return {
-          ok: true,
-          status: 200,
-          json: async () => ({ sid: "sid-1", cursor: 0, token: "tok-1", indices: [0], segs: ["seg-0"] }),
-        };
-      }
-      if (textUrl === "/__pow/open") {
-        return { ok: true, status: 200, json: async () => ({ done: true }) };
+      if (textUrl === "/__pow/verify") {
+        return { ok: true, status: 200, json: async () => ({ ok: true, mode: "proof" }) };
       }
       throw new Error(`unexpected fetch ${textUrl}`);
     };
@@ -835,32 +881,16 @@ test("glue hardening", { concurrency: 1 }, async (t) => {
           for (const cb of list) cb({ data });
         };
         if (msg.type === "INIT") emit({ rid: msg.rid, type: "OK" });
-        if (msg.type === "COMMIT") {
-          emit({ rid: msg.rid, type: "OK", rootB64: "root", nonce: 1 });
-        }
-        if (msg.type === "OPEN") {
-          emit({ rid: msg.rid, type: "OK", opens: ["open-1"] });
+        if (msg.type === "SOLVE") {
+          emit({ rid: msg.rid, type: "OK", nonceB64: "nonce", proofB64: "proof" });
         }
       }
       terminate() {}
     };
     globalThis.fetch = async (url) => {
       const textUrl = String(url);
-      if (textUrl === "https://example.com/worker.js") {
-        return { text: async () => "self.onmessage = () => {};" };
-      }
-      if (textUrl === "/__pow/commit") {
-        return { ok: true, status: 200, json: async () => ({}) };
-      }
-      if (textUrl === "/__pow/challenge") {
-        return {
-          ok: true,
-          status: 200,
-          json: async () => ({ sid: "sid-1", cursor: 0, token: "tok-1", indices: [0], segs: ["seg-0"] }),
-        };
-      }
-      if (textUrl === "/__pow/open") {
-        return { ok: true, status: 200, json: async () => ({ done: true, consume }) };
+      if (textUrl === "/__pow/verify") {
+        return { ok: true, status: 200, json: async () => ({ ok: true, mode: "consume", consume }) };
       }
       throw new Error(`unexpected fetch ${textUrl}`);
     };

@@ -38,8 +38,6 @@ const I18N = {
     screening_hash_attempt: "Screening hash (attempt {n})...",
     screening_hash_done: "Screening hash... {done}",
     computing_hash_chain_done: "Computing hash chain... {done}",
-    submitting_commit: "Submitting commit...",
-    requesting_challenge: "Requesting challenge...",
     challenge_failed: "Challenge Failed",
     verifying_batch: "Verifying #{round} ({count})...",
     verifying_done: "Verifying... {done}",
@@ -55,7 +53,6 @@ const I18N = {
     redirecting: "Redirecting...",
     failed: "Failed",
     no_workers: "No workers",
-    commit_failed: "Commit failed",
     worker_error: "Worker error",
     worker_message_error: "Worker message error",
   },
@@ -87,8 +84,6 @@ const I18N = {
     screening_hash_attempt: "筛选哈希（第 {n} 次）...",
     screening_hash_done: "筛选哈希... {done}",
     computing_hash_chain_done: "计算哈希链... {done}",
-    submitting_commit: "提交 commit...",
-    requesting_challenge: "请求 challenge...",
     challenge_failed: "Challenge 失败",
     verifying_batch: "校验第 {round} 轮（{count}）...",
     verifying_done: "校验中... {done}",
@@ -104,7 +99,6 @@ const I18N = {
     redirecting: "正在跳转...",
     failed: "失败",
     no_workers: "没有可用的 worker",
-    commit_failed: "Commit 失败",
     worker_error: "Worker 错误",
     worker_message_error: "Worker 消息错误",
   },
@@ -136,8 +130,6 @@ const I18N = {
     screening_hash_attempt: "ハッシュを選別中（{n} 回目）...",
     screening_hash_done: "ハッシュ選別... {done}",
     computing_hash_chain_done: "ハッシュチェーン... {done}",
-    submitting_commit: "commit を送信中...",
-    requesting_challenge: "チャレンジを要求中...",
     challenge_failed: "チャレンジ失敗",
     verifying_batch: "検証 #{round}（{count}）...",
     verifying_done: "検証中... {done}",
@@ -153,7 +145,6 @@ const I18N = {
     redirecting: "リダイレクト中...",
     failed: "失敗",
     no_workers: "利用可能な worker がありません",
-    commit_failed: "commit 失敗",
     worker_error: "Worker エラー",
     worker_message_error: "Worker メッセージエラー",
   },
@@ -226,7 +217,6 @@ const ERROR_KEY_BY_MESSAGE = {
   "No Challenge": "no_challenge",
   "Consume Missing": "consume_missing",
   "No workers": "no_workers",
-  "Commit failed": "commit_failed",
   "Worker error": "worker_error",
   "Worker message error": "worker_message_error",
 };
@@ -372,6 +362,61 @@ const routeHintAction = ({ status, hint }) => {
     return { action: "reload", bounded: true };
   }
   return { action: "hard_fail", bounded: false };
+};
+
+const asIntOrNull = (value) => {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return null;
+  const int = Math.floor(num);
+  return int === num ? int : null;
+};
+
+const parseBootstrapEq = (eqN, eqK) => {
+  const n = asIntOrNull(eqN);
+  const k = asIntOrNull(eqK);
+  if (n === null || k === null) return null;
+  if (n < 8 || n > 256 || n % 2 !== 0) return null;
+  if (k < 2 || k > 8) return null;
+  if (n % (k + 1) !== 0) return null;
+  return { n, k };
+};
+
+const parseBootstrap = (bootstrapB64) => {
+  const raw = decodeB64Url(String(bootstrapB64 || ""));
+  if (!raw) return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const ticketB64 = typeof parsed.ticketB64 === "string" ? parsed.ticketB64 : "";
+  const pathHash = typeof parsed.pathHash === "string" ? parsed.pathHash : "";
+  const apiPrefix = normalizeApiPrefix(parsed.apiPrefix);
+  const eq = parseBootstrapEq(parsed && parsed.eq && parsed.eq.n, parsed && parsed.eq && parsed.eq.k);
+  if (!ticketB64 || !pathHash || !eq) return null;
+  return { ticketB64, pathHash, apiPrefix, eq };
+};
+
+const throwVerifyDeny = (reason) => {
+  const hint = String(reason || "stale").trim().toLowerCase() || "stale";
+  const err = new Error(`verify denied: ${hint}`);
+  err.name = "ApiError";
+  err.status = 403;
+  err.hint = hint;
+  throw err;
+};
+
+const postVerify = async (url, body) => {
+  const out = await postJson(url, body);
+  if (!out || typeof out !== "object" || Array.isArray(out)) {
+    throwVerifyDeny("stale");
+  }
+  if (out.ok !== true) {
+    throwVerifyDeny(out.reason);
+  }
+  return out;
 };
 
 const isNetworkTransportError = (err) => {
@@ -1077,8 +1122,8 @@ const getTicketMac = (ticketB64) => {
   const raw = decodeB64Url(String(ticketB64 || ""));
   if (!raw) return null;
   const parts = raw.split(".");
-  if (parts.length !== 7) return null;
-  return parts[6] || null;
+  if (parts.length !== 5) return null;
+  return parts[4] || null;
 };
 
 let turnstilePromise;
@@ -1236,10 +1281,8 @@ const runPowFlow = async (
   steps,
   ticketB64,
   pathHash,
-  hashcashBits,
-  segmentLen,
-  pageBytes,
-  mixRounds,
+  eqN,
+  eqK,
   esmUrlB64,
   captchaToken
 ) => {
@@ -1262,26 +1305,14 @@ const runPowFlow = async (
     powBinding = `${authBinding}|${captchaTag}`;
   }
 
-  const workerCode = await fetch(workerUrl).then((r) => r.text());
-  const blob = new Blob([workerCode], { type: "application/javascript" });
-  const blobUrl = URL.createObjectURL(blob);
   let spinTimer;
-  let verifySpinTimer;
+  let spinIndex = -1;
+  let spinFrame = 0;
+  const spinChars = "|/-\\";
+  let attemptCount = 0;
   let worker = null;
   let rpc = null;
-  let rpcs = [];
-  let extraWorkers = [];
-  let didCommit = false;
   try {
-    let spinIndex = -1;
-    let spinFrame = 0;
-    const spinChars = "|/-\\";
-    let attemptCount = 0;
-    let verifyLine = -1;
-    let verifySpinFrame = 0;
-    const verifySpinChars = "|/-\\";
-    let verifyBaseMsg = "";
-
     const ensureHashingLine = () => {
       if (spinIndex !== -1) return;
       spinIndex = log(t("computing_hash_chain"));
@@ -1296,97 +1327,34 @@ const runPowFlow = async (
       }, 120);
     };
 
-    let activeWorker = null;
-    const onProgress = (source, progress) => {
-      if (source !== activeWorker) return;
-      if (progress.phase === "chain" || progress.phase === "hashcash") {
+    worker = new Worker(workerUrl, { type: "module" });
+    rpc = createWorkerRpc(worker, (progress) => {
+      if (progress.phase === "solve") {
         ensureHashingLine();
       }
-      if (progress.phase === "hashcash" && typeof progress.attempt === "number") {
-        attemptCount = progress.attempt;
+      if (typeof progress.attempt === "number") {
+        attemptCount = Math.max(attemptCount, progress.attempt);
       }
-    };
+    });
 
-    const makeWorkerRpc = () => {
-      const workerInstance = new Worker(blobUrl, { type: "module" });
-      const workerRpc = createWorkerRpc(workerInstance, (progress) =>
-        onProgress(workerInstance, progress)
-      );
-      workerRpc.worker = workerInstance;
-      return workerRpc;
-    };
-
-    const raceFirstSuccess = (promises) =>
-      new Promise((resolve, reject) => {
-        let pending = promises.length;
-        if (pending === 0) {
-          reject(new Error("No workers"));
-          return;
-        }
-        let lastError;
-        for (const promise of promises) {
-          Promise.resolve(promise)
-            .then(resolve)
-            .catch((err) => {
-              lastError = err;
-              pending -= 1;
-              if (pending === 0) {
-                reject(lastError || new Error("Commit failed"));
-              }
-            });
-        }
-      });
-
-    const initPayload = {
+    await rpc.call("INIT", {
+      n: eqN,
+      k: eqK,
+      rows: 1 << 16,
+      maxAttempts: 24,
       bindingString: powBinding,
-      ticketB64,
       steps,
-      hashcashBits,
-      segmentLen,
-      pageBytes,
-      mixRounds,
-      yieldEvery: 1024,
-      progressEvery: 1024,
-    };
+      ticketB64,
+    });
 
-    const workerCount = Number(hashcashBits) >= 2 ? 4 : 1;
-    rpcs = [];
-    for (let i = 0; i < workerCount; i++) {
-      const wRpc = makeWorkerRpc();
-      try {
-        await wRpc.call("INIT", initPayload);
-      } catch (err) {
-        try {
-          wRpc.dispose();
-        } catch {}
-        throw err;
-      }
-      rpcs.push(wRpc);
-    }
-
-    const raceRpcs = workerCount > 1 ? rpcs : rpcs.slice(0, 1);
-    if (raceRpcs.length === 0) throw new Error("Worker Missing");
-
-    activeWorker = raceRpcs[0].worker;
     ensureHashingLine();
-
-    const commitRes = await raceFirstSuccess(
-      raceRpcs.map((entry, index) =>
-        entry
-          .call("COMMIT")
-          .then((result) => ({ result, index }))
-      )
-    );
-
-    didCommit = true;
-    const winner = raceRpcs[commitRes.index];
-    worker = winner.worker;
-    rpc = winner;
-    activeWorker = winner.worker;
-
-    extraWorkers = raceRpcs.filter((entry, idx) => idx !== commitRes.index);
-    for (const extra of extraWorkers) {
-      extra.dispose();
+    const solveRes = await rpc.call("SOLVE", {
+      seed: String(pathHash || ""),
+      n: eqN,
+      k: eqK,
+    });
+    if (!solveRes || typeof solveRes.nonceB64 !== "string" || typeof solveRes.proofB64 !== "string") {
+      throw new Error("Challenge Failed");
     }
 
     if (spinTimer) clearInterval(spinTimer);
@@ -1398,118 +1366,43 @@ const runPowFlow = async (
       update(spinIndex, doneText);
     }
 
-    log(t("submitting_commit"));
-    const commitBody = {
+    const verifyBody = {
       ticketB64,
-      rootB64: commitRes.result.rootB64,
       pathHash,
-      nonce: commitRes.result.nonce,
+      pow: {
+        nonceB64: solveRes.nonceB64,
+        proofB64: solveRes.proofB64,
+      },
     };
-    if (captchaToken) commitBody.captchaToken = captchaToken;
-    await postJson(apiPrefix + "/commit", commitBody);
-
-    log(t("requesting_challenge"));
-    let state = await postJson(apiPrefix + "/challenge", {});
-    if (
-      !state ||
-      !Array.isArray(state.indices) ||
-      typeof state.sid !== "string" ||
-      typeof state.cursor !== "number" ||
-      typeof state.token !== "string"
-    ) {
-      throw new Error("Challenge Failed");
-    }
-
-    let round = 0;
-    while (state && state.done !== true) {
-      round++;
-      if (!Array.isArray(state.indices) || state.indices.length === 0) {
-        throw new Error("Challenge Failed");
-      }
-      verifyBaseMsg = t("verifying_batch", { round, count: state.indices.length });
-      if (verifyLine === -1) {
-        verifyLine = log(verifyBaseMsg);
-        verifySpinTimer = setInterval(() => {
-          const spinner =
-            '<span class="yellow">' + verifySpinChars[verifySpinFrame++ % verifySpinChars.length] + "</span>";
-          update(verifyLine, verifyBaseMsg + " " + spinner);
-        }, 120);
-      }
-      const indices = state.indices;
-      const segs =
-        Array.isArray(state.segs) && state.segs.length === indices.length
-          ? state.segs
-          : null;
-      if (!segs) {
-        throw new Error("Challenge Failed");
-      }
-      const openRes = await rpc.call("OPEN", { indices, segs });
-      const openBody = {
-        sid: state.sid,
-        cursor: state.cursor,
-        token: state.token,
-        opens: openRes.opens,
-      };
-      if (captchaToken) openBody.captchaToken = captchaToken;
-      state = await postJson(apiPrefix + "/open", openBody);
-      if (state && state.done === true) break;
-      if (
-        !state ||
-        !Array.isArray(state.indices) ||
-        typeof state.sid !== "string" ||
-        typeof state.cursor !== "number" ||
-        typeof state.token !== "string"
-      ) {
-        throw new Error("Challenge Failed");
-      }
-    }
-    if (verifySpinTimer) clearInterval(verifySpinTimer);
-    if (verifyLine !== -1) update(verifyLine, t("verifying_done", { done: doneMark() }));
+    if (captchaToken) verifyBody.captchaToken = captchaToken;
+    const verifyRes = await postVerify(apiPrefix + "/verify", verifyBody);
     log(t("pow_done", { done: doneMark() }));
-    return state;
+    return verifyRes;
   } finally {
     if (spinTimer) clearInterval(spinTimer);
-    if (verifySpinTimer) clearInterval(verifySpinTimer);
-    for (const extra of extraWorkers) {
-      try {
-        extra.dispose();
-      } catch {}
-    }
     if (rpc) {
       try {
         rpc.dispose();
       } catch {}
     }
     if (worker) worker.terminate();
-    for (const entry of rpcs) {
-      if (entry && entry.worker && entry.worker !== worker) {
-        try {
-          entry.worker.terminate();
-        } catch {}
-      }
-    }
-    URL.revokeObjectURL(blobUrl);
   }
 
 };
 
 export default async function runPow(
+  bootstrapB64,
   bindingB64,
   steps,
-  ticketB64,
-  pathHash,
-  hashcashBits,
-  segmentLen,
   reloadUrlB64,
-  apiPrefixB64,
   esmUrlB64,
   captchaCfgB64,
-  atomicCfg,
-  pageBytes = 64,
-  mixRounds = 2
+  atomicCfg
 ) {
   try {
-    const apiPrefix = normalizeApiPrefix(decodeB64Url(String(apiPrefixB64 || "")));
+    const bootstrap = parseBootstrap(bootstrapB64);
+    if (!bootstrap) throw new Error("Bad Binding");
+    const { ticketB64, pathHash, apiPrefix, eq } = bootstrap;
     const target = decodeB64Url(String(reloadUrlB64 || "")) || "/";
 
     const needPow = Number(steps) > 0;
@@ -1545,18 +1438,24 @@ export default async function runPow(
     const embedded = window.parent !== window;
 
     if (!needPow && needCaptcha) {
+      const captchaToken = await runCaptcha(ticketB64, captchaCfg);
+      const verifyRes = await postVerify(apiPrefix + "/verify", { ticketB64, pathHash, captchaToken });
       if (atomicEnabled) {
-        const captchaToken = await runCaptcha(ticketB64, captchaCfg);
+        const consume = verifyRes && typeof verifyRes.consume === "string" ? verifyRes.consume : "";
         const query = { [Q_CAPTCHA]: captchaToken, [Q_TICKET]: ticketB64 };
         const headers = { [H_CAPTCHA]: captchaToken, [H_TICKET]: ticketB64 };
+        if (consume) {
+          query[Q_CONSUME] = consume;
+          headers[H_CONSUME] = consume;
+        }
         if (embedded) {
-          postAtomicMessage({ mode: "turn", captchaToken, ticketB64, headers, query });
+          postAtomicMessage({ mode: "turn", captchaToken, ticketB64, consume, headers, query });
           log(t("access_granted_close"));
           setStatus(true);
           document.title = t("title_done");
           return;
         }
-        const cookieValue = `1|t|${captchaToken}|${ticketB64}`;
+        const cookieValue = consume ? `1|c|${captchaToken}|${consume}` : `1|t|${captchaToken}|${ticketB64}`;
         const cookiePath = cookiePathForTarget(target);
         if (
           canUseCookie(C_NAME, cookieValue) &&
@@ -1574,9 +1473,6 @@ export default async function runPow(
         window.location.replace(addQuery(target, query));
         return;
       }
-      await runCaptcha(ticketB64, captchaCfg, async (captchaToken) => {
-        await postJson(apiPrefix + "/cap", { ticketB64, pathHash, captchaToken });
-      });
     } else if (needPow && !needCaptcha) {
       const state = await runPowFlow(
         apiPrefix,
@@ -1584,10 +1480,8 @@ export default async function runPow(
         steps,
         ticketB64,
         pathHash,
-        hashcashBits,
-        segmentLen,
-        pageBytes,
-        mixRounds,
+        eq.n,
+        eq.k,
         esmUrlB64,
         ""
       );
@@ -1621,7 +1515,7 @@ export default async function runPow(
           window.location.replace(addQuery(target, query));
           return;
         }
-        if (!state || state.done !== true) throw new Error("Consume Missing");
+        if (!state || state.ok !== true) throw new Error("Consume Missing");
       }
     } else {
       const captchaToken = await runCaptcha(ticketB64, captchaCfg);
@@ -1634,10 +1528,8 @@ export default async function runPow(
         steps,
         ticketB64,
         pathHash,
-        hashcashBits,
-        segmentLen,
-        pageBytes,
-        mixRounds,
+        eq.n,
+        eq.k,
         esmUrlB64,
         captchaToken
       );

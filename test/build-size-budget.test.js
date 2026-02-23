@@ -20,7 +20,7 @@ const findTelemetryLine = (stdout, snippetName) =>
     .split(/\r?\n/u)
     .find((line) => line.includes("Built snippet:") && line.includes(snippetName));
 
-test("split snippets enforce 32KiB and report 23KiB telemetry", async () => {
+test("verify-only snippets enforce 32KiB and report 23KiB telemetry", async () => {
   const buildResult = await runBuild({ cleanDist: true });
   const snippetInfos = await Promise.all(
     snippets.map(async ({ name, path, includeBestEffort }) => ({
@@ -47,5 +47,5 @@ test("split snippets enforce 32KiB and report 23KiB telemetry", async () => {
   assert.match(buildResult.stdout, /pow_config_snippet\.js/);
   assert.match(buildResult.stdout, /pow_core1_snippet\.js/);
   assert.match(buildResult.stdout, /pow_core2_snippet\.js/);
-  assert.match(buildResult.stdout, /23KiB best-effort/);
+  assert.match(buildResult.stdout, /Verify-only Equihash snippet budget: 23KiB best-effort; 32KiB hard limit\./);
 });

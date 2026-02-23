@@ -149,7 +149,7 @@ await buildSnippet({
   },
 });
 
-console.log("Core target policy: 23KiB best-effort; 32KiB hard limit.");
+console.log("Verify-only Equihash snippet budget: 23KiB best-effort; 32KiB hard limit.");
 await minifyAndCheck({ path: powConfigOutfile });
 await minifyAndCheck({ path: powCore1Outfile, includeBestEffort23: true });
 await minifyAndCheck({ path: powCore2Outfile, includeBestEffort23: true });

@@ -20,7 +20,7 @@ const normalizePath = (pathname) => {
 
 const isApiPath = (pathname, apiPrefix) => {
   if (apiPrefix === "/") return false;
-  return pathname.startsWith(`${apiPrefix}/`);
+  return pathname === `${apiPrefix}/verify`;
 };
 
 const normalizeApiPrefix = (value) => {
