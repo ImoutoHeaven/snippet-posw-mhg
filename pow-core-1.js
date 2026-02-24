@@ -8,6 +8,7 @@ import {
 } from "./lib/pow/transit-auth.js";
 import { readInnerPayload } from "./lib/pow/inner-auth.js";
 import { handleBusinessGate } from "./lib/pow/business-gate.js";
+import { handlePowApiFront } from "./lib/pow/api-core1-front.js";
 
 const CONFIG_SECRET = "replace-me";
 const DEFAULT_API_PREFIX = "/__pow";
@@ -37,6 +38,11 @@ const normalizeApiPrefix = (value) => {
 const isApiPath = (pathname, apiPrefix) => {
   if (apiPrefix === "/") return false;
   return pathname.startsWith(`${apiPrefix}/`);
+};
+
+const getApiAction = (pathname, apiPrefix) => {
+  if (!isApiPath(pathname, apiPrefix)) return "";
+  return pathname.slice(apiPrefix.length);
 };
 
 const copyPowInnerHeaders = (sourceRequest, headers) => {
@@ -90,6 +96,18 @@ export default {
           return fetch(new Request(stripped, { headers }));
         },
       });
+    }
+
+    const action = getApiAction(pathname, apiPrefix);
+    if (kind === "api" && action !== "/open") {
+      const innerCtx = {
+        config: inner.c,
+        powSecret: inner.c?.POW_TOKEN,
+        derived: inner.d,
+        cfgId: inner.id,
+        strategy: inner.s,
+      };
+      return handlePowApiFront(request, url, Math.floor(Date.now() / 1000), innerCtx);
     }
 
     const transit = await issueTransit({

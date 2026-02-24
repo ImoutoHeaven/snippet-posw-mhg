@@ -5,6 +5,7 @@ import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { createPowRuntimeFixture } from "./helpers/pow-runtime-fixture.js";
 
 const ensureGlobals = () => {
   const priorCrypto = globalThis.crypto;
@@ -65,76 +66,10 @@ const replaceConfigSecret = (source, secret) =>
   source.replace(/const CONFIG_SECRET = "[^"]*";/u, `const CONFIG_SECRET = "${secret}";`);
 
 const buildSplitHarnessModule = async (secret = "config-secret") => {
-  const repoRoot = fileURLToPath(new URL("..", import.meta.url));
-  const [
-    core1SourceRaw,
-    core2SourceRaw,
-    transitSource,
-    innerAuthSource,
-    internalHeadersSource,
-    apiEngineSource,
-    businessGateSource,
-    siteverifyClientSource,
-    templateSource,
-    mhgGraphSource,
-    mhgHashSource,
-    mhgMixSource,
-    mhgMerkleSource,
-    mhgVerifySource,
-    mhgConstantsSource,
-  ] = await Promise.all([
-    readFile(join(repoRoot, "pow-core-1.js"), "utf8"),
-    readFile(join(repoRoot, "pow-core-2.js"), "utf8"),
-    readFile(join(repoRoot, "lib", "pow", "transit-auth.js"), "utf8"),
-    readOptionalFile(join(repoRoot, "lib", "pow", "inner-auth.js")),
-    readOptionalFile(join(repoRoot, "lib", "pow", "internal-headers.js")),
-    readOptionalFile(join(repoRoot, "lib", "pow", "api-engine.js")),
-    readOptionalFile(join(repoRoot, "lib", "pow", "business-gate.js")),
-    readOptionalFile(join(repoRoot, "lib", "pow", "siteverify-client.js")),
-    readFile(join(repoRoot, "template.html"), "utf8"),
-    readFile(join(repoRoot, "lib", "mhg", "graph.js"), "utf8"),
-    readFile(join(repoRoot, "lib", "mhg", "hash.js"), "utf8"),
-    readFile(join(repoRoot, "lib", "mhg", "mix-aes.js"), "utf8"),
-    readFile(join(repoRoot, "lib", "mhg", "merkle.js"), "utf8"),
-    readFile(join(repoRoot, "lib", "mhg", "verify.js"), "utf8"),
-    readFile(join(repoRoot, "lib", "mhg", "constants.js"), "utf8"),
-  ]);
-
-  const core1Source = replaceConfigSecret(core1SourceRaw, secret);
-  const core2Source = replaceConfigSecret(core2SourceRaw, secret);
-  const tmpDir = await mkdtemp(join(tmpdir(), "pow-test-"));
-  await mkdir(join(tmpDir, "lib", "pow"), { recursive: true });
-  await mkdir(join(tmpDir, "lib", "mhg"), { recursive: true });
-  const writes = [
-    writeFile(join(tmpDir, "pow-core-1.js"), core1Source),
-    writeFile(join(tmpDir, "pow-core-2.js"), core2Source),
-    writeFile(join(tmpDir, "lib", "pow", "transit-auth.js"), transitSource),
-    writeFile(join(tmpDir, "lib", "mhg", "graph.js"), mhgGraphSource),
-    writeFile(join(tmpDir, "lib", "mhg", "hash.js"), mhgHashSource),
-    writeFile(join(tmpDir, "lib", "mhg", "mix-aes.js"), mhgMixSource),
-    writeFile(join(tmpDir, "lib", "mhg", "merkle.js"), mhgMerkleSource),
-    writeFile(join(tmpDir, "lib", "mhg", "verify.js"), mhgVerifySource),
-    writeFile(join(tmpDir, "lib", "mhg", "constants.js"), mhgConstantsSource),
-  ];
-  if (innerAuthSource !== null) {
-    writes.push(writeFile(join(tmpDir, "lib", "pow", "inner-auth.js"), innerAuthSource));
-  }
-  if (internalHeadersSource !== null) {
-    writes.push(writeFile(join(tmpDir, "lib", "pow", "internal-headers.js"), internalHeadersSource));
-  }
-  if (apiEngineSource !== null) {
-    writes.push(writeFile(join(tmpDir, "lib", "pow", "api-engine.js"), apiEngineSource));
-  }
-  if (businessGateSource !== null) {
-    const businessGateInjected = businessGateSource.replace(
-      /__HTML_TEMPLATE__/gu,
-      JSON.stringify(templateSource),
-    );
-    writes.push(writeFile(join(tmpDir, "lib", "pow", "business-gate.js"), businessGateInjected));
-  }
-  if (siteverifyClientSource !== null) {
-    writes.push(writeFile(join(tmpDir, "lib", "pow", "siteverify-client.js"), siteverifyClientSource));
-  }
+  const { tmpDir } = await createPowRuntimeFixture({
+    secret,
+    tmpPrefix: "pow-test-",
+  });
 
 const harnessSource = `
 import core1 from "./pow-core-1.js";
@@ -176,9 +111,7 @@ export default {
 export const __splitTrace = splitTrace;
 `;
   const splitHarnessPath = join(tmpDir, "split-core-harness.js");
-  writes.push(writeFile(splitHarnessPath, harnessSource));
-
-  await Promise.all(writes);
+  await writeFile(splitHarnessPath, harnessSource);
   return splitHarnessPath;
 };
 
@@ -239,59 +172,10 @@ const readOptionalFile = async (filePath) => {
 };
 
 const buildCore2Module = async (secret = "config-secret") => {
-  const repoRoot = fileURLToPath(new URL("..", import.meta.url));
-  const [
-    core2SourceRaw,
-    transitSource,
-    innerAuthSource,
-    internalHeadersSource,
-    apiEngineSource,
-    siteverifyClientSource,
-    mhgGraphSource,
-    mhgHashSource,
-    mhgMixSource,
-    mhgMerkleSource,
-    mhgVerifySource,
-    mhgConstantsSource,
-  ] =
-    await Promise.all([
-      readFile(join(repoRoot, "pow-core-2.js"), "utf8"),
-      readFile(join(repoRoot, "lib", "pow", "transit-auth.js"), "utf8"),
-      readFile(join(repoRoot, "lib", "pow", "inner-auth.js"), "utf8"),
-      readFile(join(repoRoot, "lib", "pow", "internal-headers.js"), "utf8"),
-      readOptionalFile(join(repoRoot, "lib", "pow", "api-engine.js")),
-      readOptionalFile(join(repoRoot, "lib", "pow", "siteverify-client.js")),
-      readFile(join(repoRoot, "lib", "mhg", "graph.js"), "utf8"),
-      readFile(join(repoRoot, "lib", "mhg", "hash.js"), "utf8"),
-      readFile(join(repoRoot, "lib", "mhg", "mix-aes.js"), "utf8"),
-      readFile(join(repoRoot, "lib", "mhg", "merkle.js"), "utf8"),
-      readFile(join(repoRoot, "lib", "mhg", "verify.js"), "utf8"),
-      readFile(join(repoRoot, "lib", "mhg", "constants.js"), "utf8"),
-    ]);
-
-  const core2Source = replaceConfigSecret(core2SourceRaw, secret);
-  const tmpDir = await mkdtemp(join(tmpdir(), "pow-core2-binding-test-"));
-  await mkdir(join(tmpDir, "lib", "pow"), { recursive: true });
-  await mkdir(join(tmpDir, "lib", "mhg"), { recursive: true });
-  const writes = [
-    writeFile(join(tmpDir, "pow-core-2.js"), core2Source),
-    writeFile(join(tmpDir, "lib", "pow", "transit-auth.js"), transitSource),
-    writeFile(join(tmpDir, "lib", "pow", "inner-auth.js"), innerAuthSource),
-    writeFile(join(tmpDir, "lib", "pow", "internal-headers.js"), internalHeadersSource),
-    writeFile(join(tmpDir, "lib", "mhg", "graph.js"), mhgGraphSource),
-    writeFile(join(tmpDir, "lib", "mhg", "hash.js"), mhgHashSource),
-    writeFile(join(tmpDir, "lib", "mhg", "mix-aes.js"), mhgMixSource),
-    writeFile(join(tmpDir, "lib", "mhg", "merkle.js"), mhgMerkleSource),
-    writeFile(join(tmpDir, "lib", "mhg", "verify.js"), mhgVerifySource),
-    writeFile(join(tmpDir, "lib", "mhg", "constants.js"), mhgConstantsSource),
-  ];
-  if (apiEngineSource !== null) {
-    writes.push(writeFile(join(tmpDir, "lib", "pow", "api-engine.js"), apiEngineSource));
-  }
-  if (siteverifyClientSource !== null) {
-    writes.push(writeFile(join(tmpDir, "lib", "pow", "siteverify-client.js"), siteverifyClientSource));
-  }
-  await Promise.all(writes);
+  const { tmpDir } = await createPowRuntimeFixture({
+    secret,
+    tmpPrefix: "pow-core2-binding-test-",
+  });
 
   const core2Mod = await import(`${pathToFileURL(join(tmpDir, "pow-core-2.js")).href}?v=${Date.now()}`);
   return core2Mod.default.fetch;
@@ -543,7 +427,7 @@ test("challenge rejects binding mismatch after commit via split core harness", a
     assert.equal(challengeRes.status, 403);
     assert.ok(core1Mod.__splitTrace, "split trace is exposed");
     assert.ok(core1Mod.__splitTrace.core1Calls >= 4);
-    assert.ok(core1Mod.__splitTrace.core2Calls >= 3);
+    assert.ok(core1Mod.__splitTrace.core2Calls <= 1);
   } finally {
     globalThis.fetch = originalFetch;
     restoreGlobals();
@@ -576,7 +460,7 @@ test("core-2 open final step uses provider-aware captcha verification", async ()
   assert.doesNotMatch(openBlock, /verifyTurnstileForTicket\(/u);
 });
 
-test("split core-2 challenge rejects commit cookie tamper after commit", async () => {
+test("split core-2 hard-cutoff rejects removed API routes", async () => {
   const restoreGlobals = ensureGlobals();
   const core2Fetch = await buildCore2Module();
   const originalFetch = globalThis.fetch;
@@ -610,19 +494,16 @@ test("split core-2 challenge rejects commit cookie tamper after commit", async (
       ATOMIC_CONSUME: false,
       POW_TICKET_TTL_SEC: 180,
     };
-    const derived = {
-      ipScope: "1.2.3.4/32",
-      country: "any",
-      asn: "any",
-      tlsFingerprint: "any",
-    };
-    const pathHash = sha256Base64Url("/protected");
-
     const payloadObj = {
       v: 1,
       id: 7,
       c: config,
-      d: derived,
+      d: {
+        ipScope: "1.2.3.4/32",
+        country: "any",
+        asn: "any",
+        tlsFingerprint: "any",
+      },
       s: {
         nav: {},
         bypass: { bypass: false },
@@ -637,8 +518,6 @@ test("split core-2 challenge rejects commit cookie tamper after commit", async (
         },
       },
     };
-    const { ticketB64 } = makeTicketFromPayload({ payloadObj, pathHash });
-
     const commitHeaders = makeSplitApiHeaders({
       payloadObj,
       configSecret: "config-secret",
@@ -647,25 +526,14 @@ test("split core-2 challenge rejects commit cookie tamper after commit", async (
       apiPrefix: config.POW_API_PREFIX,
     });
     commitHeaders.set("Content-Type", "application/json");
-    commitHeaders.set("CF-Connecting-IP", "1.2.3.4");
-    const rootB64 = base64Url(crypto.randomBytes(32));
-    const nonce = base64Url(crypto.randomBytes(16));
     const commitRes = await core2Fetch(
       new Request("https://example.com/__pow/commit", {
         method: "POST",
         headers: commitHeaders,
-        body: JSON.stringify({
-          ticketB64,
-          rootB64,
-          pathHash,
-          nonce,
-        }),
+        body: JSON.stringify({}),
       }),
     );
-    assert.equal(commitRes.status, 200);
-    const setCookie = commitRes.headers.get("Set-Cookie");
-    assert.ok(setCookie, "commit sets cookie");
-    const commitCookie = setCookie.split(";")[0];
+    assert.equal(commitRes.status, 404);
 
     const challengeHeadersPrimary = makeSplitApiHeaders({
       payloadObj,
@@ -675,8 +543,6 @@ test("split core-2 challenge rejects commit cookie tamper after commit", async (
       apiPrefix: config.POW_API_PREFIX,
     });
     challengeHeadersPrimary.set("Content-Type", "application/json");
-    challengeHeadersPrimary.set("CF-Connecting-IP", "1.2.3.4");
-    challengeHeadersPrimary.set("Cookie", commitCookie);
     const challengeResPrimary = await core2Fetch(
       new Request("https://example.com/__pow/challenge", {
         method: "POST",
@@ -684,14 +550,7 @@ test("split core-2 challenge rejects commit cookie tamper after commit", async (
         body: JSON.stringify({}),
       }),
     );
-    assert.equal(challengeResPrimary.status, 200);
-
-    const commitValue = decodeURIComponent(commitCookie.split("=")[1] || "");
-    const commitParts = commitValue.split(".");
-    assert.equal(commitParts.length, 8);
-    const tamperedNonce = base64Url(crypto.randomBytes(16));
-    commitParts[5] = tamperedNonce;
-    const tamperedCookie = `${commitCookie.split("=")[0]}=${encodeURIComponent(commitParts.join("."))}`;
+    assert.equal(challengeResPrimary.status, 404);
 
     const challengeHeadersSecondary = makeSplitApiHeaders({
       payloadObj,
@@ -701,16 +560,13 @@ test("split core-2 challenge rejects commit cookie tamper after commit", async (
       apiPrefix: config.POW_API_PREFIX,
     });
     challengeHeadersSecondary.set("Content-Type", "application/json");
-    challengeHeadersSecondary.set("CF-Connecting-IP", "1.2.3.4");
-    challengeHeadersSecondary.set("Cookie", tamperedCookie);
     const challengeResSecondary = await core2Fetch(
       new Request("https://example.com/__pow/challenge", {
-        method: "POST",
+        method: "GET",
         headers: challengeHeadersSecondary,
-        body: JSON.stringify({}),
       }),
     );
-    assert.equal(challengeResSecondary.status, 403);
+    assert.equal(challengeResSecondary.status, 404);
   } finally {
     globalThis.fetch = originalFetch;
     restoreGlobals();

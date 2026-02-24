@@ -18,7 +18,6 @@ const powConfigOutfile = resolve(outdir, "pow_config_snippet.js");
 const powCore1Outfile = resolve(outdir, "pow_core1_snippet.js");
 const powCore2Outfile = resolve(outdir, "pow_core2_snippet.js");
 const HARD_LIMIT = 32 * 1024;
-const CORE_TARGET = 23 * 1024;
 
 
 console.log("Reading HTML template...");
@@ -84,7 +83,7 @@ const buildSnippet = async ({ entryPoints, outfile, define }) => {
   });
 };
 
-const minifyAndCheck = async ({ path, includeBestEffort23 = false }) => {
+const minifyAndCheck = async ({ path }) => {
   const built = await readFile(path, "utf-8");
   const terserResult = await minifyJs(built, {
     ecma: 2022,
@@ -118,11 +117,6 @@ const minifyAndCheck = async ({ path, includeBestEffort23 = false }) => {
     `size=${size}B`,
     `hard32KiB=${hardStatus} (${hardRemaining}B remaining)`,
   ];
-  if (includeBestEffort23) {
-    const bestEffortRemaining = CORE_TARGET - size;
-    const bestEffortStatus = bestEffortRemaining >= 0 ? "OK" : "MISS";
-    parts.push(`best-effort23KiB=${bestEffortStatus} (${bestEffortRemaining}B remaining)`);
-  }
   console.log(parts.join(" | "));
   if (size > HARD_LIMIT) process.exitCode = 1;
 };
@@ -149,7 +143,7 @@ await buildSnippet({
   },
 });
 
-console.log("Core target policy: 23KiB best-effort; 32KiB hard limit.");
+console.log("Core target policy: 32KiB hard limit.");
 await minifyAndCheck({ path: powConfigOutfile });
-await minifyAndCheck({ path: powCore1Outfile, includeBestEffort23: true });
-await minifyAndCheck({ path: powCore2Outfile, includeBestEffort23: true });
+await minifyAndCheck({ path: powCore1Outfile });
+await minifyAndCheck({ path: powCore2Outfile });

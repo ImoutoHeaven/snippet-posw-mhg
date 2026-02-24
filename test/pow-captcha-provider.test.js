@@ -1,10 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
-import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { createPowRuntimeFixture } from "./helpers/pow-runtime-fixture.js";
 
 const ensureGlobals = () => {
   const priorCrypto = globalThis.crypto;
@@ -52,64 +52,51 @@ const ensureGlobals = () => {
   };
 };
 
-const buildApiEngineTestModule = async () => {
-  const repoRoot = fileURLToPath(new URL("..", import.meta.url));
-  const [apiEngineSource, siteverifyClientSource, mhgVerifySource, mhgConstantsSource, mhgGraphSource, mhgHashSource, mhgMixSource, mhgMerkleSource] =
-    await Promise.all([
-      readFile(join(repoRoot, "lib", "pow", "api-engine.js"), "utf8"),
-      readFile(join(repoRoot, "lib", "pow", "siteverify-client.js"), "utf8"),
-      readFile(join(repoRoot, "lib", "mhg", "verify.js"), "utf8"),
-      readFile(join(repoRoot, "lib", "mhg", "constants.js"), "utf8"),
-      readFile(join(repoRoot, "lib", "mhg", "graph.js"), "utf8"),
-      readFile(join(repoRoot, "lib", "mhg", "hash.js"), "utf8"),
-      readFile(join(repoRoot, "lib", "mhg", "mix-aes.js"), "utf8"),
-      readFile(join(repoRoot, "lib", "mhg", "merkle.js"), "utf8"),
-    ]);
-
-  const tmpDir = await mkdtemp(join(tmpdir(), "pow-api-engine-test-"));
-  await mkdir(join(tmpDir, "lib", "pow"), { recursive: true });
-  await mkdir(join(tmpDir, "lib", "mhg"), { recursive: true });
-
-  const apiEngineInjected = `${apiEngineSource}\nexport const __captchaTesting = { verifyRequiredCaptchaForTicket, captchaTagV1 };\n`;
-
-  await Promise.all([
-    writeFile(join(tmpDir, "lib", "pow", "api-engine.js"), apiEngineInjected),
-    writeFile(join(tmpDir, "lib", "pow", "siteverify-client.js"), siteverifyClientSource),
-    writeFile(join(tmpDir, "lib", "mhg", "verify.js"), mhgVerifySource),
-    writeFile(join(tmpDir, "lib", "mhg", "constants.js"), mhgConstantsSource),
-    writeFile(join(tmpDir, "lib", "mhg", "graph.js"), mhgGraphSource),
-    writeFile(join(tmpDir, "lib", "mhg", "hash.js"), mhgHashSource),
-    writeFile(join(tmpDir, "lib", "mhg", "mix-aes.js"), mhgMixSource),
-    writeFile(join(tmpDir, "lib", "mhg", "merkle.js"), mhgMerkleSource),
-  ]);
-
-  return join(tmpDir, "lib", "pow", "api-engine.js");
+const buildCore1FrontTestModule = async () => {
+  const { tmpDir } = await createPowRuntimeFixture({
+    secret: "config-secret",
+    tmpPrefix: "pow-core1-front-test-",
+  });
+  const core1FrontPath = join(tmpDir, "lib", "pow", "api-core1-front.js");
+  const core1FrontSource = await readFile(core1FrontPath, "utf8");
+  const core1FrontInjected = `${core1FrontSource}\nexport const __captchaTesting = { verifyRequiredCaptchaForTicket, captchaTagV1 };\n`;
+  await writeFile(core1FrontPath, core1FrontInjected);
+  return core1FrontPath;
 };
 
 const loadCaptchaTesting = async () => {
-  const modulePath = await buildApiEngineTestModule();
+  const modulePath = await buildCore1FrontTestModule();
   const mod = await import(`${pathToFileURL(modulePath).href}?v=${Date.now()}`);
   return mod.__captchaTesting;
 };
 
-const getApiEngineSource = async () => {
+const readPowSource = async (fileName) => {
   const repoRoot = fileURLToPath(new URL("..", import.meta.url));
-  return readFile(join(repoRoot, "lib", "pow", "api-engine.js"), "utf8");
+  try {
+    return await readFile(join(repoRoot, "lib", "pow", fileName), "utf8");
+  } catch (error) {
+    if (error && typeof error === "object" && error.code === "ENOENT") return "";
+    throw error;
+  }
 };
 
 test("cap endpoint is turnstile-only and non-atomic", async () => {
-  const source = await getApiEngineSource();
+  const source = await readPowSource("api-core1-front.js");
   assert.match(source, /if \(needPow \|\| !needTurn \|\| config\.ATOMIC_CONSUME === true\) return S\(404\);/u);
 });
 
 test("canonical captcha parser only accepts turnstile token", async () => {
-  const source = await getApiEngineSource();
-  assert.match(source, /const resolveCaptchaRequirements = \(config\) => \{\s*const needTurn = config\.turncheck === true;\s*return \{ needTurn \};\s*\};/u);
-  assert.match(source, /const parseCanonicalCaptchaTokens = \(captchaToken, needTurn\) =>/u);
-  assert.match(source, /if \(!needTurn\) \{\s*return \{ ok: true, malformed: false, tokens: \{ turnstile: "" \} \};/u);
-  assert.doesNotMatch(source, /recaptcha_v3/u);
-  assert.doesNotMatch(source, /needRecaptcha/u);
-  assert.doesNotMatch(source, /const providersRaw = typeof config\.providers === "string"/u);
+  const sharedSource = await readPowSource("api-protocol-shared.js");
+  const apiEngineSource = await readPowSource("api-engine.js");
+
+  assert.match(sharedSource, /const resolveCaptchaRequirements = \(config\) => \{\s*const needTurn = config\.turncheck === true;\s*return \{ needTurn \};\s*\};/u);
+  assert.match(sharedSource, /const parseCanonicalCaptchaTokens = \(captchaToken, needTurn\) =>/u);
+  assert.match(sharedSource, /if \(!needTurn\) \{\s*return \{ ok: true, malformed: false, tokens: \{ turnstile: "" \} \};/u);
+  assert.doesNotMatch(sharedSource, /recaptcha_v3/u);
+  assert.doesNotMatch(sharedSource, /needRecaptcha/u);
+  assert.doesNotMatch(sharedSource, /const providersRaw = typeof config\.providers === "string"/u);
+
+  assert.doesNotMatch(apiEngineSource, /const parseCanonicalCaptchaTokens = \(captchaToken, needTurn\) =>/u);
 });
 
 test("turnstile-required flow rejects malformed envelope before aggregator call", async () => {

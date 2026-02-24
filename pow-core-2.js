@@ -32,6 +32,11 @@ const normalizeApiPrefix = (value) => {
   return normalized || DEFAULT_API_PREFIX;
 };
 
+const getApiAction = (pathname, apiPrefix) => {
+  if (!isApiPath(pathname, apiPrefix)) return "";
+  return pathname.slice(apiPrefix.length);
+};
+
 export default {
   async fetch(request) {
     const url = new URL(request.url);
@@ -42,7 +47,12 @@ export default {
     const nowSeconds = Math.floor(Date.now() / 1000);
     const inner = await readInnerPayload(request, CONFIG_SECRET);
     const routingApiPrefix = normalizeApiPrefix(inner?.c?.POW_API_PREFIX);
-    const allowedKind = isApiPath(pathname, routingApiPrefix) ? "api" : "biz";
+    const isPowApiRequest = isApiPath(pathname, routingApiPrefix);
+    const apiAction = isPowApiRequest ? getApiAction(pathname, routingApiPrefix) : "";
+    if (isPowApiRequest && apiAction !== "/open") {
+      return new Response(null, { status: 404 });
+    }
+    const allowedKind = isPowApiRequest ? "api" : "biz";
 
     const transit = await verifyTransit({
       request,

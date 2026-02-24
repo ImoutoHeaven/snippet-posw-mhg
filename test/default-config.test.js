@@ -1,11 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
-import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { __testNormalizeConfig } from "../pow-config.js";
+import { createPowRuntimeFixture } from "./helpers/pow-runtime-fixture.js";
 
 const ensureGlobals = () => {
   const priorCrypto = globalThis.crypto;
@@ -179,95 +180,40 @@ const buildInnerHeaders = (payloadObj, secret, expOverride) => {
   return { payload, mac, exp };
 };
 
-const replaceConfigSecret = (source, secret) =>
-  source.replace(/const CONFIG_SECRET = "[^"]*";/u, `const CONFIG_SECRET = "${secret}";`);
-
-const readOptionalFile = async (filePath) => {
+const readPowSource = async (fileName) => {
+  const repoRoot = fileURLToPath(new URL("..", import.meta.url));
   try {
-    return await readFile(filePath, "utf8");
+    return await readFile(join(repoRoot, "lib", "pow", fileName), "utf8");
   } catch (error) {
-    if (error && typeof error === "object" && error.code === "ENOENT") return null;
+    if (error && typeof error === "object" && error.code === "ENOENT") return "";
     throw error;
   }
 };
 
 const buildTestModule = async (secret = "config-secret") => {
-  const repoRoot = fileURLToPath(new URL("..", import.meta.url));
-  const [
-    core1Raw,
-    core2Raw,
-    transitSource,
-    innerAuthSource,
-    internalHeadersSource,
-    apiEngineSource,
-    businessGateSource,
-    siteverifyClientSource,
-    templateSource,
-    mhgGraphSource,
-    mhgHashSource,
-    mhgMixSource,
-    mhgMerkleSource,
-    mhgVerifySource,
-    mhgConstantsSource,
-  ] = await Promise.all([
-    readFile(join(repoRoot, "pow-core-1.js"), "utf8"),
-    readFile(join(repoRoot, "pow-core-2.js"), "utf8"),
-    readFile(join(repoRoot, "lib", "pow", "transit-auth.js"), "utf8"),
-    readOptionalFile(join(repoRoot, "lib", "pow", "inner-auth.js")),
-    readOptionalFile(join(repoRoot, "lib", "pow", "internal-headers.js")),
-    readOptionalFile(join(repoRoot, "lib", "pow", "api-engine.js")),
-    readOptionalFile(join(repoRoot, "lib", "pow", "business-gate.js")),
-    readOptionalFile(join(repoRoot, "lib", "pow", "siteverify-client.js")),
-    readFile(join(repoRoot, "template.html"), "utf8"),
-    readFile(join(repoRoot, "lib", "mhg", "graph.js"), "utf8"),
-    readFile(join(repoRoot, "lib", "mhg", "hash.js"), "utf8"),
-    readFile(join(repoRoot, "lib", "mhg", "mix-aes.js"), "utf8"),
-    readFile(join(repoRoot, "lib", "mhg", "merkle.js"), "utf8"),
-    readFile(join(repoRoot, "lib", "mhg", "verify.js"), "utf8"),
-    readFile(join(repoRoot, "lib", "mhg", "constants.js"), "utf8"),
-  ]);
-
-  const core1Source = replaceConfigSecret(core1Raw, secret);
-  const core2Source = replaceConfigSecret(core2Raw, secret);
-  const businessGateInjected =
-    businessGateSource === null
-      ? null
-      : businessGateSource.replace(/__HTML_TEMPLATE__/gu, JSON.stringify(templateSource));
-
-  const tmpDir = await mkdtemp(join(tmpdir(), "pow-split-test-"));
-  await mkdir(join(tmpDir, "lib", "pow"), { recursive: true });
-  await mkdir(join(tmpDir, "lib", "mhg"), { recursive: true });
-  const writes = [
-    writeFile(join(tmpDir, "pow-core-1.js"), core1Source),
-    writeFile(join(tmpDir, "pow-core-2.js"), core2Source),
-    writeFile(join(tmpDir, "lib", "pow", "transit-auth.js"), transitSource),
-    writeFile(join(tmpDir, "lib", "mhg", "graph.js"), mhgGraphSource),
-    writeFile(join(tmpDir, "lib", "mhg", "hash.js"), mhgHashSource),
-    writeFile(join(tmpDir, "lib", "mhg", "mix-aes.js"), mhgMixSource),
-    writeFile(join(tmpDir, "lib", "mhg", "merkle.js"), mhgMerkleSource),
-    writeFile(join(tmpDir, "lib", "mhg", "verify.js"), mhgVerifySource),
-    writeFile(join(tmpDir, "lib", "mhg", "constants.js"), mhgConstantsSource),
-  ];
-  if (innerAuthSource !== null) writes.push(writeFile(join(tmpDir, "lib", "pow", "inner-auth.js"), innerAuthSource));
-  if (internalHeadersSource !== null) {
-    writes.push(writeFile(join(tmpDir, "lib", "pow", "internal-headers.js"), internalHeadersSource));
-  }
-  if (apiEngineSource !== null) writes.push(writeFile(join(tmpDir, "lib", "pow", "api-engine.js"), apiEngineSource));
-  if (businessGateInjected !== null) {
-    writes.push(writeFile(join(tmpDir, "lib", "pow", "business-gate.js"), businessGateInjected));
-  }
-  if (siteverifyClientSource !== null) {
-    writes.push(writeFile(join(tmpDir, "lib", "pow", "siteverify-client.js"), siteverifyClientSource));
-  }
+  const { tmpDir } = await createPowRuntimeFixture({
+    secret,
+    tmpPrefix: "pow-split-test-",
+  });
 
   const secretLiteral = JSON.stringify(secret);
-  const bridgeSource = `
+const bridgeSource = `
 import core1 from "./pow-core-1.js";
 import core2 from "./pow-core-2.js";
 import { issueTransit } from "./lib/pow/transit-auth.js";
 
 const CONFIG_SECRET = ${secretLiteral};
 const API_PREFIX = "/__pow";
+
+const apiAction = (pathname) => {
+  const normalized = typeof pathname === "string" ? pathname : "/";
+  if (!normalized.startsWith(API_PREFIX + "/")) return "";
+  const suffix = normalized.slice(API_PREFIX.length + 1);
+  return suffix.split("/")[0] || "";
+};
+
+const handledByCore1 = (action) =>
+  action === "commit" || action === "cap" || action === "challenge";
 
 const stripPowHeaders = (request) => {
   const headers = new Headers(request.headers);
@@ -283,7 +229,11 @@ const stripPowHeaders = (request) => {
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
-    if (url.pathname.startsWith(API_PREFIX + "/")) {
+    const action = apiAction(url.pathname);
+    if (handledByCore1(action)) {
+      return core1.fetch(request, env, ctx);
+    }
+    if (action === "open") {
       const transit = await issueTransit({
         secret: CONFIG_SECRET,
         method: request.method,
@@ -301,7 +251,9 @@ export default {
     try {
       globalThis.fetch = async (input, init) => {
         const req = input instanceof Request ? input : new Request(input, init);
-        if (req.headers.has("X-Pow-Transit")) return core2.fetch(req, env, ctx);
+        if (req.headers.has("X-Pow-Transit")) {
+          return core2.fetch(req, env, ctx);
+        }
         if (typeof upstreamFetch === "function") return upstreamFetch(stripPowHeaders(req), init);
         return new Response(null, { status: 500 });
       };
@@ -312,8 +264,7 @@ export default {
   },
 };
 `;
-  writes.push(writeFile(join(tmpDir, "pow-test.js"), bridgeSource));
-  await Promise.all(writes);
+  await writeFile(join(tmpDir, "pow-test.js"), bridgeSource);
 
   return join(tmpDir, "pow-test.js");
 };
@@ -678,22 +629,30 @@ test("split core bridge bypasses directly when inner.s.bypass.bypass is true", a
 });
 
 test("requiredMask only uses pow+turn bits", async () => {
-  const repoRoot = fileURLToPath(new URL("..", import.meta.url));
-  const apiEngineSource = await readFile(join(repoRoot, "lib", "pow", "api-engine.js"), "utf8");
-  assert.match(apiEngineSource, /const requiredMask = \(needPow \? 1 : 0\) \| \(needTurn \? 2 : 0\);/u);
-  assert.doesNotMatch(apiEngineSource, /needRecaptcha/u);
-  assert.doesNotMatch(apiEngineSource, /const providersRaw = typeof config\.providers === "string"/u);
+  const core1FrontSource = await readPowSource("api-core1-front.js");
+  assert.match(core1FrontSource, /const requiredMask = \(needPow \? 1 : 0\) \| \(needTurn \? 2 : 0\);/u);
+  assert.doesNotMatch(core1FrontSource, /needRecaptcha/u);
+  assert.doesNotMatch(core1FrontSource, /const providersRaw = typeof config\.providers === "string"/u);
 });
 
-test("cap proof issuance uses computed requiredMask", async () => {
-  const repoRoot = fileURLToPath(new URL("..", import.meta.url));
-  const apiEngineSource = await readFile(join(repoRoot, "lib", "pow", "api-engine.js"), "utf8");
-  assert.match(apiEngineSource, /const handleCap = async \(/u);
-  assert.match(apiEngineSource, /const requiredMask = \(needPow \? 1 : 0\) \| \(needTurn \? 2 : 0\);/u);
-  assert.match(apiEngineSource, /if \(needPow \|\| !needTurn \|\| config\.ATOMIC_CONSUME === true\) return S\(404\);/u);
-  assert.match(apiEngineSource, /await issueProofCookie\([\s\S]*requiredMask/u);
+test("core2 api engine is open-only while core1-front owns cap", async () => {
+  const apiEngineSource = await readPowSource("api-engine.js");
+  const core1FrontSource = await readPowSource("api-core1-front.js");
+
+  assert.match(apiEngineSource, /if \(action === "\/open"\)/u);
+  assert.doesNotMatch(apiEngineSource, /if \(action === "\/commit"\)/u);
+  assert.doesNotMatch(apiEngineSource, /if \(action === "\/challenge"\)/u);
+  assert.doesNotMatch(apiEngineSource, /if \(action === "\/cap"\)/u);
+  assert.doesNotMatch(apiEngineSource, /const handlePowCommit = async \(/u);
+  assert.doesNotMatch(apiEngineSource, /const handlePowChallenge = async \(/u);
+  assert.doesNotMatch(apiEngineSource, /const handleCap = async \(/u);
+
+  assert.match(core1FrontSource, /const handleCap = async \(/u);
+  assert.match(core1FrontSource, /const requiredMask = \(needPow \? 1 : 0\) \| \(needTurn \? 2 : 0\);/u);
+  assert.match(core1FrontSource, /if \(needPow \|\| !needTurn \|\| config\.ATOMIC_CONSUME === true\) return S\(404\);/u);
+  assert.match(core1FrontSource, /await issueProofCookie\([\s\S]*requiredMask/u);
   assert.doesNotMatch(
-    apiEngineSource,
+    core1FrontSource,
     /const handleCap = async \([\s\S]*?await issueProofCookie\([\s\S]*?\n\s*2\s*\n\s*\);/u
   );
 });
@@ -718,7 +677,10 @@ test("README documents split-chain deployment and snippet contracts", async () =
   assert.match(readme, /fail-closed/u);
   assert.match(readme, /no compat/u);
   assert.match(readme, /32\s*KiB.*hard/u);
-  assert.match(readme, /23\s*KiB.*best-effort/u);
+  assert.doesNotMatch(readme, /23\s*KiB/u);
+  assert.doesNotMatch(readme, /best-effort/u);
+  assert.match(readme, /pow-core-1[\s\S]*\/__pow\/commit[\s\S]*\/__pow\/cap[\s\S]*\/__pow\/challenge/u);
+  assert.match(readme, /pow-core-2[\s\S]*\/__pow\/open[\s\S]*404/u);
   assert.match(
     readme,
     /Subrequest matrix \(API \+ business paths\):[\s\S]*\| Flow \| `pow-config` subrequests \| `pow-core-1` subrequests \| `pow-core-2` subrequests \| Total \|/u

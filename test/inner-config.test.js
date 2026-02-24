@@ -5,6 +5,7 @@ import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { createPowRuntimeFixture } from "./helpers/pow-runtime-fixture.js";
 
 const ensureGlobals = () => {
   const priorCrypto = globalThis.crypto;
@@ -184,88 +185,11 @@ const buildConfigModule = async (secret = "config-secret", options = {}) => {
   return tmpPath;
 };
 
-const readOptionalFile = async (filePath) => {
-  try {
-    return await readFile(filePath, "utf8");
-  } catch (error) {
-    if (error && typeof error === "object" && error.code === "ENOENT") {
-      return null;
-    }
-    throw error;
-  }
-};
-
 const buildCoreModules = async (secret = "config-secret") => {
-  const repoRoot = fileURLToPath(new URL("..", import.meta.url));
-  const [
-    core1SourceRaw,
-    core2SourceRaw,
-    transitSource,
-    innerAuthSource,
-    internalHeadersSource,
-    apiEngineSource,
-    businessGateSource,
-    siteverifyClientSource,
-    mhgGraphSource,
-    mhgHashSource,
-    mhgMixSource,
-    mhgMerkleSource,
-    mhgVerifySource,
-    mhgConstantsSource,
-  ] = await Promise.all([
-    readFile(join(repoRoot, "pow-core-1.js"), "utf8"),
-    readFile(join(repoRoot, "pow-core-2.js"), "utf8"),
-    readFile(join(repoRoot, "lib", "pow", "transit-auth.js"), "utf8"),
-    readOptionalFile(join(repoRoot, "lib", "pow", "inner-auth.js")),
-    readOptionalFile(join(repoRoot, "lib", "pow", "internal-headers.js")),
-    readOptionalFile(join(repoRoot, "lib", "pow", "api-engine.js")),
-    readOptionalFile(join(repoRoot, "lib", "pow", "business-gate.js")),
-    readOptionalFile(join(repoRoot, "lib", "pow", "siteverify-client.js")),
-    readFile(join(repoRoot, "lib", "mhg", "graph.js"), "utf8"),
-    readFile(join(repoRoot, "lib", "mhg", "hash.js"), "utf8"),
-    readFile(join(repoRoot, "lib", "mhg", "mix-aes.js"), "utf8"),
-    readFile(join(repoRoot, "lib", "mhg", "merkle.js"), "utf8"),
-    readFile(join(repoRoot, "lib", "mhg", "verify.js"), "utf8"),
-    readFile(join(repoRoot, "lib", "mhg", "constants.js"), "utf8"),
-  ]);
-
-  const core1Source = replaceConfigSecret(core1SourceRaw, secret);
-  const core2Source = replaceConfigSecret(core2SourceRaw, secret);
-
-  const tmpDir = await mkdtemp(join(tmpdir(), "pow-core-inner-test-"));
-  await mkdir(join(tmpDir, "lib", "pow"), { recursive: true });
-  await mkdir(join(tmpDir, "lib", "mhg"), { recursive: true });
-  const writes = [
-    writeFile(join(tmpDir, "pow-core-1.js"), core1Source),
-    writeFile(join(tmpDir, "pow-core-2.js"), core2Source),
-    writeFile(join(tmpDir, "lib", "pow", "transit-auth.js"), transitSource),
-    writeFile(join(tmpDir, "lib", "mhg", "graph.js"), mhgGraphSource),
-    writeFile(join(tmpDir, "lib", "mhg", "hash.js"), mhgHashSource),
-    writeFile(join(tmpDir, "lib", "mhg", "mix-aes.js"), mhgMixSource),
-    writeFile(join(tmpDir, "lib", "mhg", "merkle.js"), mhgMerkleSource),
-    writeFile(join(tmpDir, "lib", "mhg", "verify.js"), mhgVerifySource),
-    writeFile(join(tmpDir, "lib", "mhg", "constants.js"), mhgConstantsSource),
-  ];
-  if (innerAuthSource !== null) {
-    writes.push(writeFile(join(tmpDir, "lib", "pow", "inner-auth.js"), innerAuthSource));
-  }
-  if (internalHeadersSource !== null) {
-    writes.push(
-      writeFile(join(tmpDir, "lib", "pow", "internal-headers.js"), internalHeadersSource)
-    );
-  }
-  if (apiEngineSource !== null) {
-    writes.push(writeFile(join(tmpDir, "lib", "pow", "api-engine.js"), apiEngineSource));
-  }
-  if (businessGateSource !== null) {
-    writes.push(writeFile(join(tmpDir, "lib", "pow", "business-gate.js"), businessGateSource));
-  }
-  if (siteverifyClientSource !== null) {
-    writes.push(
-      writeFile(join(tmpDir, "lib", "pow", "siteverify-client.js"), siteverifyClientSource)
-    );
-  }
-  await Promise.all(writes);
+  const { tmpDir } = await createPowRuntimeFixture({
+    secret,
+    tmpPrefix: "pow-core-inner-test-",
+  });
 
   const nonce = `${Date.now()}-${Math.random()}`;
   const [core1Module, core2Module] = await Promise.all([

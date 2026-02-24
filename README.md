@@ -13,7 +13,7 @@ This project provides a self-contained L7 front gate that:
 
 - `pow-config.js`: policy frontload layer (rule match + bypass/bindPath/atomic derivation + signed inner snapshot).
 - `pow-core-1.js`: business-path gate execution layer (proof/challenge/atomic decisions), consumes `inner.s`, and forwards with transit.
-- `pow-core-2.js`: PoW API + verification engine (`/__pow/*` + validated business passthrough), requires valid transit plus signed inner metadata.
+- `pow-core-2.js`: PoW API `/__pow/open` + verification engine for transit-authenticated requests; removed API endpoints (`/__pow/commit`, `/__pow/cap`, `/__pow/challenge`) hard-return `404`.
 - `glue.js`: browser-side UI + protocol orchestration for `/commit -> /challenge -> /open`.
 - `esm/esm.js`: ESM entry that exports the worker URL used by `glue.js`.
 - `esm/mhg-worker.js`: deterministic MHG compute worker (WebCrypto SHA-256 only; no wasm compat path).
@@ -64,8 +64,8 @@ Notes:
 ## Architecture split
 
 - `pow-config` is the only policy decision point.
-- `pow-core-1` is business-path execution and transit issuer.
-- `pow-core-2` is PoW API and verification endpoint.
+- `pow-core-1` is business-path execution and transit issuer, and owns `/__pow/commit`, `/__pow/cap`, and `/__pow/challenge`.
+- `pow-core-2` is `/__pow/open`-only for PoW API traffic; removed API endpoints return `404`.
 - No-compat policy is strict: no compat, no migrate, no dead code branches.
 
 ### MHG client hard-cutoff notes
@@ -292,7 +292,7 @@ npm run build
 
 Snippet output is written to `dist/`.
 
-Budget policy: `32 KiB` is a hard limit for each snippet. `23 KiB` is the best-effort target for `pow_core1_snippet.js` and `pow_core2_snippet.js`.
+Budget policy: `32 KiB` is the only enforced hard limit for each snippet.
 
 ## MHG guardrail tests
 

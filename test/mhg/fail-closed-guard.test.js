@@ -5,6 +5,7 @@ import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { createPowRuntimeFixture } from "../helpers/pow-runtime-fixture.js";
 
 const CONFIG_SECRET = "config-secret";
 const POW_SECRET = "pow-secret";
@@ -68,19 +69,7 @@ const buildSplitBridgeFetch = async (secret = CONFIG_SECRET) => {
     }
     return new Request(request, { headers });
   };
-  return async (request, env = {}, ctx = {}) => {
-    const url = new URL(request.url);
-    if (url.pathname.startsWith(`${apiPrefix}/`)) {
-      const exp = Math.floor(Date.now() / 1000) + 3;
-      const macInput = `v1|${exp}|api|${request.method.toUpperCase()}|${url.pathname}|${apiPrefix}`;
-      const mac = base64Url(crypto.createHmac("sha256", secret).update(macInput).digest());
-      const headers = new Headers(request.headers);
-      headers.set("X-Pow-Transit", "api");
-      headers.set("X-Pow-Transit-Mac", mac);
-      headers.set("X-Pow-Transit-Expire", String(exp));
-      headers.set("X-Pow-Transit-Api-Prefix", apiPrefix);
-      return core2Fetch(new Request(request, { headers }), env, ctx);
-    }
+  const runCore1WithTransitBridge = async (request, env, ctx) => {
     const upstreamFetch = globalThis.fetch;
     try {
       globalThis.fetch = async (input, init) => {
@@ -93,6 +82,35 @@ const buildSplitBridgeFetch = async (secret = CONFIG_SECRET) => {
     } finally {
       globalThis.fetch = upstreamFetch;
     }
+  };
+  return async (request, env = {}, ctx = {}) => {
+    const url = new URL(request.url);
+    if (url.pathname.startsWith(`${apiPrefix}/`)) {
+      const decodedPath = (() => {
+        try {
+          return decodeURIComponent(url.pathname);
+        } catch {
+          return null;
+        }
+      })();
+      if (!decodedPath || !decodedPath.startsWith(`${apiPrefix}/`)) {
+        return new Response(null, { status: 400 });
+      }
+      const action = decodedPath.slice(apiPrefix.length);
+      if (action !== "/open") {
+        return runCore1WithTransitBridge(request, env, ctx);
+      }
+      const exp = Math.floor(Date.now() / 1000) + 3;
+      const macInput = `v1|${exp}|api|${request.method.toUpperCase()}|${decodedPath}|${apiPrefix}`;
+      const mac = base64Url(crypto.createHmac("sha256", secret).update(macInput).digest());
+      const headers = new Headers(request.headers);
+      headers.set("X-Pow-Transit", "api");
+      headers.set("X-Pow-Transit-Mac", mac);
+      headers.set("X-Pow-Transit-Expire", String(exp));
+      headers.set("X-Pow-Transit-Api-Prefix", apiPrefix);
+      return core2Fetch(new Request(request, { headers }), env, ctx);
+    }
+    return runCore1WithTransitBridge(request, env, ctx);
   };
 };
 
@@ -108,79 +126,10 @@ const readOptionalFile = async (filePath) => {
 };
 
 const buildCoreModules = async (secret = CONFIG_SECRET) => {
-  const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
-  const [
-    core1SourceRaw,
-    core2SourceRaw,
-    transitSource,
-    innerAuthSource,
-    internalHeadersSource,
-    apiEngineSource,
-    businessGateSource,
-    siteverifyClientSource,
-    templateSource,
-    mhgGraphSource,
-    mhgHashSource,
-    mhgMixSource,
-    mhgMerkleSource,
-    mhgVerifySource,
-    mhgConstantsSource,
-  ] = await Promise.all([
-    readFile(join(repoRoot, "pow-core-1.js"), "utf8"),
-    readFile(join(repoRoot, "pow-core-2.js"), "utf8"),
-    readFile(join(repoRoot, "lib", "pow", "transit-auth.js"), "utf8"),
-    readOptionalFile(join(repoRoot, "lib", "pow", "inner-auth.js")),
-    readOptionalFile(join(repoRoot, "lib", "pow", "internal-headers.js")),
-    readOptionalFile(join(repoRoot, "lib", "pow", "api-engine.js")),
-    readOptionalFile(join(repoRoot, "lib", "pow", "business-gate.js")),
-    readOptionalFile(join(repoRoot, "lib", "pow", "siteverify-client.js")),
-    readFile(join(repoRoot, "template.html"), "utf8"),
-    readFile(join(repoRoot, "lib", "mhg", "graph.js"), "utf8"),
-    readFile(join(repoRoot, "lib", "mhg", "hash.js"), "utf8"),
-    readFile(join(repoRoot, "lib", "mhg", "mix-aes.js"), "utf8"),
-    readFile(join(repoRoot, "lib", "mhg", "merkle.js"), "utf8"),
-    readFile(join(repoRoot, "lib", "mhg", "verify.js"), "utf8"),
-    readFile(join(repoRoot, "lib", "mhg", "constants.js"), "utf8"),
-  ]);
-
-  const core1Source = replaceConfigSecret(core1SourceRaw, secret);
-  const core2Source = replaceConfigSecret(core2SourceRaw, secret);
-  const tmpDir = await mkdtemp(join(tmpdir(), "pow-split-fail-closed-"));
-  await mkdir(join(tmpDir, "lib", "pow"), { recursive: true });
-  await mkdir(join(tmpDir, "lib", "mhg"), { recursive: true });
-  const writes = [
-    writeFile(join(tmpDir, "pow-core-1.js"), core1Source),
-    writeFile(join(tmpDir, "pow-core-2.js"), core2Source),
-    writeFile(join(tmpDir, "lib", "pow", "transit-auth.js"), transitSource),
-    writeFile(join(tmpDir, "lib", "mhg", "graph.js"), mhgGraphSource),
-    writeFile(join(tmpDir, "lib", "mhg", "hash.js"), mhgHashSource),
-    writeFile(join(tmpDir, "lib", "mhg", "mix-aes.js"), mhgMixSource),
-    writeFile(join(tmpDir, "lib", "mhg", "merkle.js"), mhgMerkleSource),
-    writeFile(join(tmpDir, "lib", "mhg", "verify.js"), mhgVerifySource),
-    writeFile(join(tmpDir, "lib", "mhg", "constants.js"), mhgConstantsSource),
-  ];
-  if (innerAuthSource !== null) {
-    writes.push(writeFile(join(tmpDir, "lib", "pow", "inner-auth.js"), innerAuthSource));
-  }
-  if (internalHeadersSource !== null) {
-    writes.push(
-      writeFile(join(tmpDir, "lib", "pow", "internal-headers.js"), internalHeadersSource)
-    );
-  }
-  if (apiEngineSource !== null) {
-    writes.push(writeFile(join(tmpDir, "lib", "pow", "api-engine.js"), apiEngineSource));
-  }
-  if (businessGateSource !== null) {
-    const businessGateInjected = businessGateSource.replace(
-      /__HTML_TEMPLATE__/gu,
-      JSON.stringify(templateSource)
-    );
-    writes.push(writeFile(join(tmpDir, "lib", "pow", "business-gate.js"), businessGateInjected));
-  }
-  if (siteverifyClientSource !== null) {
-    writes.push(writeFile(join(tmpDir, "lib", "pow", "siteverify-client.js"), siteverifyClientSource));
-  }
-  await Promise.all(writes);
+  const { tmpDir } = await createPowRuntimeFixture({
+    secret,
+    tmpPrefix: "pow-split-fail-closed-",
+  });
 
   const nonce = `${Date.now()}-${Math.random()}`;
   const [core1Module, core2Module] = await Promise.all([
