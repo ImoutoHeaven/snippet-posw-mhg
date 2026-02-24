@@ -14,8 +14,9 @@ This project provides a self-contained L7 front gate that:
 - `pow-config.js`: policy frontload layer (rule match + bypass/bindPath/atomic derivation + signed inner snapshot).
 - `pow-core-1.js`: business-path gate execution layer (proof/challenge/atomic decisions), consumes `inner.s`, and forwards with transit.
 - `pow-core-2.js`: PoW API + verification engine (`/__pow/*` + validated business passthrough), requires valid transit plus signed inner metadata.
-- `glue.js`: browser-side UI + orchestration loaded by challenge pages.
-- `esm/esm.js`: browser-side PoW solver (`computePoswCommit`).
+- `glue.js`: browser-side UI + protocol orchestration for `/commit -> /challenge -> /open`.
+- `esm/esm.js`: ESM entry that exports the worker URL used by `glue.js`.
+- `esm/mhg-worker.js`: deterministic MHG compute worker (WebCrypto SHA-256 only; no wasm compat path).
 - `siteverify_provider/src/worker.js`: siteverify aggregator worker with optional D1 consume ledger.
 - `dist/pow_config_snippet.js`: config snippet build output.
 - `dist/pow_core1_snippet.js`: core-1 snippet build output.
@@ -66,6 +67,12 @@ Notes:
 - `pow-core-1` is business-path execution and transit issuer.
 - `pow-core-2` is PoW API and verification endpoint.
 - No-compat policy is strict: no compat, no migrate, no dead code branches.
+
+### MHG client hard-cutoff notes
+
+- Worker hashing is hard-cutoff WebCrypto (`crypto.subtle.digest("SHA-256", ...)`) only.
+- No client-side wasm hash fallback/injection path is retained.
+- Client protocol flow keeps server-provided fields as-is at the transport boundary.
 
 Deployment chain is strict: `pow-config -> pow-core-1 -> pow-core-2`.
 
@@ -286,6 +293,31 @@ npm run build
 Snippet output is written to `dist/`.
 
 Budget policy: `32 KiB` is a hard limit for each snippet. `23 KiB` is the best-effort target for `pow_core1_snippet.js` and `pow_core2_snippet.js`.
+
+## MHG guardrail tests
+
+Run the fast MHG guardrail lane:
+
+```bash
+npm run test:mhg-guards
+```
+
+Lane scope and positioning:
+
+- `L0`: low-difficulty worker correctness guarded by server verification oracle checks.
+- `L1`: protocol/transport pass-through invariants (`/commit -> /challenge -> /open`).
+- `L2`: scheduler concurrency race cleanup and late-message suppression.
+
+Concrete guard files:
+
+- `L0`: `test/mhg/l0-low-difficulty-guard.test.js`
+- `L1`: `test/mhg/l1-protocol-flow-guard.test.js`
+- `L2`: `test/mhg/l2-concurrency-guard.test.js`
+
+Hard-cutoff stance for this lane:
+
+- Legacy compat lanes/tests are removed from the hard-cut path: `client-compat`, `api-compat-cap`, `api-compat-ccr`, `atomic-split-compat`.
+- CI guardrail lane for MHG runs `test:mhg-guards` (L0/L1/L2) for fast validation.
 
 ## Deploy
 

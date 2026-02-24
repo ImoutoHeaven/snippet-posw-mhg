@@ -1,9 +1,19 @@
 const encoder = new TextEncoder();
-
-const HASH_WASM_URL = "https://cdn.jsdelivr.net/npm/hash-wasm@4.12.0/+esm";
-let wasmSha256Promise = null;
-let wasmSha256Failed = false;
-let wasmDigestQueue = Promise.resolve();
+const LABEL = {
+  leaf: encoder.encode("MHG1-LEAF"),
+  node: encoder.encode("MHG1-NODE"),
+  key: encoder.encode("MHG1-KEY"),
+  iv0: encoder.encode("MHG1-IV0"),
+  pa: encoder.encode("MHG1-PA"),
+  pb: encoder.encode("MHG1-PB"),
+  prf: encoder.encode("MHG1-PRF"),
+  p1: encoder.encode("p1"),
+  p2: encoder.encode("p2"),
+  graphPrefix: encoder.encode("mhg|graph|v2|"),
+  bar: encoder.encode("|"),
+  hashcashV4: encoder.encode("hashcash|v4|"),
+  nonceV1: encoder.encode("mhg|commit-nonce|v1|"),
+};
 
 const b64u = (bytes) =>
   btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
@@ -43,79 +53,6 @@ const normalizeHashInput = (data) => {
   return encoder.encode(String(data ?? ""));
 };
 
-const normalizeWasmDigest = (digest) => {
-  if (digest instanceof Uint8Array) return digest;
-  if (ArrayBuffer.isView(digest)) {
-    return new Uint8Array(digest.buffer, digest.byteOffset, digest.byteLength);
-  }
-  if (digest instanceof ArrayBuffer) {
-    return new Uint8Array(digest);
-  }
-  if (typeof digest === "string") {
-    return hexToBytes(digest);
-  }
-  return null;
-};
-
-const getInjectedWasmFactory = () => {
-  const factory = globalThis && globalThis.__MHG_HASH_WASM_FACTORY__;
-  return typeof factory === "function" ? factory : null;
-};
-
-const loadWasmSha256 = async () => {
-  if (wasmSha256Failed) return null;
-  if (!wasmSha256Promise) {
-    wasmSha256Promise = (async () => {
-      const injectedFactory = getInjectedWasmFactory();
-      if (injectedFactory) {
-        const injectedHasher = await injectedFactory();
-        if (
-          injectedHasher &&
-          typeof injectedHasher.init === "function" &&
-          typeof injectedHasher.update === "function" &&
-          typeof injectedHasher.digest === "function"
-        ) {
-          return injectedHasher;
-        }
-        throw new Error("invalid injected hash-wasm hasher");
-      }
-      const mod = await import(HASH_WASM_URL);
-      if (!mod || typeof mod.createSHA256 !== "function") {
-        throw new Error("hash-wasm unavailable");
-      }
-      const hasher = await mod.createSHA256();
-      if (!hasher || typeof hasher.init !== "function" || typeof hasher.update !== "function") {
-        throw new Error("hash-wasm invalid");
-      }
-      return hasher;
-    })();
-  }
-  try {
-    return await wasmSha256Promise;
-  } catch {
-    wasmSha256Failed = true;
-    wasmSha256Promise = null;
-    return null;
-  }
-};
-
-const hashWithWasm = async (hasher, bytes) => {
-  let release;
-  const waitPrev = wasmDigestQueue;
-  wasmDigestQueue = new Promise((resolve) => {
-    release = resolve;
-  });
-  await waitPrev;
-  try {
-    hasher.init();
-    hasher.update(bytes);
-    const digest = await hasher.digest("binary");
-    return normalizeWasmDigest(digest);
-  } finally {
-    release();
-  }
-};
-
 const u32be = (value) => {
   const out = new Uint8Array(4);
   const v = value >>> 0;
@@ -133,9 +70,6 @@ const rotl32 = (value, bits) => ((value << bits) | (value >>> (32 - bits))) >>> 
 
 const bytesToHex = (bytes) => Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 
-const MERKLE_LEAF_PREFIX = "MHG1-LEAF";
-const MERKLE_NODE_PREFIX = "MHG1-NODE";
-
 const concat = (...chunks) => {
   const normalized = chunks.map(normalizeHashInput);
   let total = 0;
@@ -151,23 +85,12 @@ const concat = (...chunks) => {
 
 const sha256 = async (...chunks) => {
   const bytes = concat(...chunks);
-  const hasher = await loadWasmSha256();
-  if (hasher) {
-    try {
-      const digest = await hashWithWasm(hasher, bytes);
-      if (digest) return digest;
-      throw new Error("invalid hash-wasm digest");
-    } catch {
-      wasmSha256Failed = true;
-      wasmSha256Promise = null;
-    }
-  }
   const digest = await crypto.subtle.digest("SHA-256", bytes);
   return new Uint8Array(digest);
 };
 
-const leafHash = async (index, page) => sha256(encoder.encode(MERKLE_LEAF_PREFIX), u32be(index), page);
-const nodeHash = async (left, right) => sha256(encoder.encode(MERKLE_NODE_PREFIX), left, right);
+const leafHash = async (index, page) => sha256(LABEL.leaf, u32be(index), page);
+const nodeHash = async (left, right) => sha256(LABEL.node, left, right);
 
 const keyCache = new Map();
 
@@ -176,7 +99,7 @@ const getImportedKey = async ({ graphSeed, nonce }) => {
   let keyPromise = keyCache.get(keyId);
   if (!keyPromise) {
     keyPromise = (async () => {
-      const keyMaterial = await sha256(encoder.encode("MHG1-KEY"), graphSeed, nonce);
+      const keyMaterial = await sha256(LABEL.key, graphSeed, nonce);
       return crypto.subtle.importKey("raw", keyMaterial.slice(0, 32), { name: "AES-CBC" }, false, ["encrypt"]);
     })();
     keyCache.set(keyId, keyPromise);
@@ -213,14 +136,14 @@ const aesCbcNoPadding = async ({ key, iv, input, pageBytes }) => {
 
 const makeGenesisPage = async ({ graphSeed, nonce, pageBytes }) => {
   const key = await getImportedKey({ graphSeed, nonce });
-  const iv0 = (await sha256(encoder.encode("MHG1-IV0"), graphSeed, nonce)).slice(0, 16);
+  const iv0 = (await sha256(LABEL.iv0, graphSeed, nonce)).slice(0, 16);
   return aesCbcNoPadding({ key, iv: iv0, input: new Uint8Array(pageBytes), pageBytes });
 };
 
 const mixPage = async ({ i, p0, p1, p2, graphSeed, nonce, pageBytes, mixRounds = 2 }) => {
   const key = await getImportedKey({ graphSeed, nonce });
-  const pa = await sha256(encoder.encode("MHG1-PA"), graphSeed, nonce, u32be(i));
-  const pb = await sha256(encoder.encode("MHG1-PB"), graphSeed, nonce, u32be(i));
+  const pa = await sha256(LABEL.pa, graphSeed, nonce, u32be(i));
+  const pb = await sha256(LABEL.pb, graphSeed, nonce, u32be(i));
   const off1 = readU32be(pa, 0) % pageBytes;
   const off2 = readU32be(pa, 4) % pageBytes;
   const off3 = readU32be(pa, 8) % pageBytes;
@@ -252,7 +175,9 @@ const mixPage = async ({ i, p0, p1, p2, graphSeed, nonce, pageBytes, mixRounds =
 };
 
 const draw32 = async ({ seed, label, i, ctr }) => {
-  const digest = await sha256(encoder.encode("MHG1-PRF"), seed, encoder.encode(label), u32be(i), u32be(ctr));
+  const labelBytes = label === "p1" ? LABEL.p1 : label === "p2" ? LABEL.p2 : null;
+  if (!labelBytes) throw new Error("parent label invalid");
+  const digest = await sha256(LABEL.prf, seed, labelBytes, u32be(i), u32be(ctr));
   const view = new DataView(digest.buffer, digest.byteOffset, digest.byteLength);
   return view.getUint32(0, false);
 };
@@ -312,6 +237,16 @@ const parentsOf = async (index, graphSeed) => {
   return { p0, p1, p2 };
 };
 
+const createParentsResolver = (graphSeed) => {
+  const cache = new Map();
+  return async (index) => {
+    if (cache.has(index)) return cache.get(index);
+    const value = await parentsOf(index, graphSeed);
+    cache.set(index, value);
+    return value;
+  };
+};
+
 const buildMerkle = async (pages) => {
   const leaves = await Promise.all(pages.map((page, index) => leafHash(index, page)));
   const levels = [leaves];
@@ -340,17 +275,24 @@ const buildProof = (levels, index) => {
   return out;
 };
 
-const randomNonce = () => {
-  const raw = new Uint8Array(16);
-  crypto.getRandomValues(raw);
-  return b64u(raw);
+const deriveCommitNonce = async ({ ticketB64, steps, pageBytes, mixRounds, hashcashBits, attempt }) => {
+  const raw = await sha256(
+    LABEL.nonceV1,
+    encoder.encode(ticketB64),
+    u32be(steps),
+    u32be(pageBytes),
+    u32be(mixRounds),
+    u32be(hashcashBits),
+    u32be(attempt)
+  );
+  return b64u(raw.slice(0, 16));
 };
 
 const deriveGraphSeed16 = async (ticketB64, nonceString) => {
   const digest = await sha256(
-    encoder.encode("mhg|graph|v2|"),
+    LABEL.graphPrefix,
     encoder.encode(ticketB64),
-    encoder.encode("|"),
+    LABEL.bar,
     encoder.encode(nonceString)
   );
   return digest.slice(0, 16);
@@ -381,23 +323,7 @@ const leadingZeroBits = (bytes) => {
   return count;
 };
 
-const hashcashRootLast = async (root, lastPage) => sha256(encoder.encode("hashcash|v4|"), root, lastPage);
-
-const clampSegmentLen = (value) => Math.max(1, Math.min(16, Math.floor(value)));
-
-const normalizePageBytes = (value, fallback = 64) => {
-  const num = Number(value);
-  if (!Number.isFinite(num)) return fallback;
-  const pageBytes = Math.floor(num);
-  if (pageBytes < 16) return fallback;
-  return Math.floor(pageBytes / 16) * 16;
-};
-
-const normalizeMixRounds = (value, fallback = 2) => {
-  const num = Number(value);
-  if (!Number.isFinite(num)) return fallback;
-  return Math.max(1, Math.min(4, Math.floor(num)));
-};
+const hashcashRootLast = async (root, lastPage) => sha256(LABEL.hashcashV4, root, lastPage);
 
 const shouldYield = (counter, every) =>
   Number.isFinite(every) && every > 0 && counter % every === 0;
@@ -412,7 +338,7 @@ const buildEqSet = (index, segmentLen) => {
 };
 
 const toOpenEntry = async ({ idx, seg, pages, levels, graphSeed }) => {
-  const segmentLen = clampSegmentLen(seg);
+  const segmentLen = seg;
   const eqSet = buildEqSet(idx, segmentLen);
   const need = new Set();
   for (const j of eqSet) {
@@ -446,6 +372,7 @@ const buildGraphPages = async ({
   yieldEvery = 1024,
   onProgress,
   checkCancelled,
+  parentsOfIndex,
 }) => {
   const out = new Array(pages);
   const total = Math.max(0, pages - 1);
@@ -453,7 +380,7 @@ const buildGraphPages = async ({
   if (typeof onProgress === "function") onProgress(0, total);
   for (let i = 1; i < pages; i += 1) {
     if (typeof checkCancelled === "function") checkCancelled();
-    const p = await parentsOf(i, graphSeed);
+    const p = await parentsOfIndex(i);
     out[i] = await mixPage({
       i,
       p0: out[p.p0],
@@ -481,7 +408,8 @@ export const buildCrossEndFixture = async (vector, options = {}) => {
   const mixRounds = Number(vector.mixRounds || 2);
   const pageCount = Number(vector.pages || 128);
   const indices = Array.isArray(vector.indices) ? vector.indices.map((x) => Number(x)) : [];
-  const pages = await buildGraphPages({ graphSeed, nonce, pageBytes, mixRounds, pages: pageCount });
+  const parentsOfIndex = createParentsResolver(graphSeed);
+  const pages = await buildGraphPages({ graphSeed, nonce, pageBytes, mixRounds, pages: pageCount, parentsOfIndex });
   if (typeof options.mutatePages === "function") options.mutatePages(pages);
   const tree = await buildMerkle(pages);
   const segs = Array.isArray(vector.segs) ? vector.segs : [];
@@ -509,12 +437,23 @@ const emitProgress = (phase, done = 0, total = 0, attempt = 0) => {
 const initWorkerState = (payload) => {
   const ticketB64 = typeof payload.ticketB64 === "string" ? payload.ticketB64 : "";
   if (!ticketB64) throw new Error("ticketB64 required");
+
+  const steps = payload.steps;
+  const hashcashBits = payload.hashcashBits;
+  const pageBytes = payload.pageBytes;
+  const mixRounds = payload.mixRounds;
+
+  if (!Number.isInteger(steps) || steps < 1) throw new Error("steps invalid");
+  if (!Number.isInteger(hashcashBits) || hashcashBits < 0) throw new Error("hashcashBits invalid");
+  if (!Number.isInteger(pageBytes) || pageBytes < 16 || pageBytes % 16 !== 0) throw new Error("pageBytes invalid");
+  if (!Number.isInteger(mixRounds) || mixRounds < 0) throw new Error("mixRounds invalid");
+
   state = {
     ticketB64,
-    steps: Math.max(1, Math.floor(Number(payload.steps) || 1)),
-    hashcashBits: Math.max(0, Math.floor(Number(payload.hashcashBits) || 0)),
-    pageBytes: normalizePageBytes(payload.pageBytes, 64),
-    mixRounds: normalizeMixRounds(payload.mixRounds, 2),
+    steps,
+    hashcashBits,
+    pageBytes,
+    mixRounds,
     yieldEvery: Math.max(1, Math.floor(Number(payload.yieldEvery) || 1024)),
     progressEvery: Math.max(1, Math.floor(Number(payload.progressEvery) || 1024)),
     nonce: "",
@@ -539,9 +478,17 @@ const computeCommit = async () => {
   while (true) {
     checkCancelled();
     attempt += 1;
-    const nonce = randomNonce();
+    const nonce = await deriveCommitNonce({
+      ticketB64: state.ticketB64,
+      steps: state.steps,
+      pageBytes: state.pageBytes,
+      mixRounds: state.mixRounds,
+      hashcashBits: state.hashcashBits,
+      attempt,
+    });
     const graphSeed = await deriveGraphSeed16(state.ticketB64, nonce);
     const nonce16 = await deriveNonce16(nonce);
+    const parentsOfIndex = createParentsResolver(graphSeed);
     const pages = await buildGraphPages({
       graphSeed,
       nonce: nonce16,
@@ -550,6 +497,7 @@ const computeCommit = async () => {
       pages: state.steps + 1,
       yieldEvery: state.yieldEvery,
       checkCancelled,
+      parentsOfIndex,
       onProgress: (done, total) => {
         if (done === 0 || done === total || done % progressEvery === 0) {
           emitProgress("chain", done, total, attempt - 1);
@@ -577,17 +525,19 @@ const computeCommit = async () => {
 
 const computeOpen = async (payload) => {
   if (!state || !state.ready) throw new Error("commit missing");
-  const indices = Array.isArray(payload.indices) ? payload.indices : [];
-  const segs = Array.isArray(payload.segs) ? payload.segs : [];
+  const indices = payload.indices;
+  const segs = payload.segs;
+  if (!Array.isArray(indices)) throw new Error("indices required");
+  if (!Array.isArray(segs)) throw new Error("segs required");
   if (!indices.length) throw new Error("indices required");
   if (segs.length !== indices.length) throw new Error("segs required");
   const opens = [];
   for (let i = 0; i < indices.length; i += 1) {
     checkCancelled();
-    const idx = Math.floor(Number(indices[i]));
-    const seg = Math.floor(Number(segs[i]));
-    if (!Number.isFinite(idx) || idx < 1 || idx > state.steps) throw new Error("indices invalid");
-    if (!Number.isFinite(seg)) throw new Error("segs invalid");
+    const idx = indices[i];
+    const seg = segs[i];
+    if (!Number.isInteger(idx) || idx < 1 || idx > state.steps) throw new Error("indices invalid");
+    if (!Number.isInteger(seg) || seg < 1) throw new Error("segs invalid");
     opens.push(
       await toOpenEntry({
         idx,

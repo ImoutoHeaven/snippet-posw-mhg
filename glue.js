@@ -1267,11 +1267,9 @@ const runPowFlow = async (
   const blobUrl = URL.createObjectURL(blob);
   let spinTimer;
   let verifySpinTimer;
-  let worker = null;
   let rpc = null;
   let rpcs = [];
-  let extraWorkers = [];
-  let didCommit = false;
+  const disposedRpcs = new Set();
   try {
     let spinIndex = -1;
     let spinFrame = 0;
@@ -1316,25 +1314,40 @@ const runPowFlow = async (
       return workerRpc;
     };
 
-    const raceFirstSuccess = (promises) =>
+    const disposeRpc = (entry) => {
+      if (!entry || disposedRpcs.has(entry)) return;
+      disposedRpcs.add(entry);
+      try {
+        entry.dispose();
+      } catch {}
+    };
+
+    const raceFirstCommit = (entries) =>
       new Promise((resolve, reject) => {
-        let pending = promises.length;
+        let pending = entries.length;
         if (pending === 0) {
           reject(new Error("No workers"));
           return;
         }
-        let lastError;
-        for (const promise of promises) {
-          Promise.resolve(promise)
-            .then(resolve)
+        let settled = false;
+        let lastError = null;
+        entries.forEach((entry, index) => {
+          entry
+            .call("COMMIT")
+            .then((result) => {
+              if (settled) return;
+              settled = true;
+              resolve({ result, index });
+            })
             .catch((err) => {
+              if (settled) return;
               lastError = err;
               pending -= 1;
               if (pending === 0) {
                 reject(lastError || new Error("Commit failed"));
               }
             });
-        }
+        });
       });
 
     const initPayload = {
@@ -1350,18 +1363,14 @@ const runPowFlow = async (
     };
 
     const workerCount = Number(hashcashBits) >= 2 ? 4 : 1;
-    rpcs = [];
-    for (let i = 0; i < workerCount; i++) {
-      const wRpc = makeWorkerRpc();
-      try {
-        await wRpc.call("INIT", initPayload);
-      } catch (err) {
-        try {
-          wRpc.dispose();
-        } catch {}
-        throw err;
+    rpcs = Array.from({ length: workerCount }, () => makeWorkerRpc());
+    try {
+      await Promise.all(rpcs.map((entry) => entry.call("INIT", initPayload)));
+    } catch (err) {
+      for (const entry of rpcs) {
+        disposeRpc(entry);
       }
-      rpcs.push(wRpc);
+      throw err;
     }
 
     const raceRpcs = workerCount > 1 ? rpcs : rpcs.slice(0, 1);
@@ -1370,23 +1379,14 @@ const runPowFlow = async (
     activeWorker = raceRpcs[0].worker;
     ensureHashingLine();
 
-    const commitRes = await raceFirstSuccess(
-      raceRpcs.map((entry, index) =>
-        entry
-          .call("COMMIT")
-          .then((result) => ({ result, index }))
-      )
-    );
-
-    didCommit = true;
+    const commitRes = await raceFirstCommit(raceRpcs);
     const winner = raceRpcs[commitRes.index];
-    worker = winner.worker;
     rpc = winner;
     activeWorker = winner.worker;
 
-    extraWorkers = raceRpcs.filter((entry, idx) => idx !== commitRes.index);
-    for (const extra of extraWorkers) {
-      extra.dispose();
+    const loserRpcs = raceRpcs.filter((entry, idx) => idx !== commitRes.index);
+    for (const loser of loserRpcs) {
+      disposeRpc(loser);
     }
 
     if (spinTimer) clearInterval(spinTimer);
@@ -1470,23 +1470,11 @@ const runPowFlow = async (
   } finally {
     if (spinTimer) clearInterval(spinTimer);
     if (verifySpinTimer) clearInterval(verifySpinTimer);
-    for (const extra of extraWorkers) {
-      try {
-        extra.dispose();
-      } catch {}
+    for (const entry of rpcs) {
+      disposeRpc(entry);
     }
     if (rpc) {
-      try {
-        rpc.dispose();
-      } catch {}
-    }
-    if (worker) worker.terminate();
-    for (const entry of rpcs) {
-      if (entry && entry.worker && entry.worker !== worker) {
-        try {
-          entry.worker.terminate();
-        } catch {}
-      }
+      disposeRpc(rpc);
     }
     URL.revokeObjectURL(blobUrl);
   }

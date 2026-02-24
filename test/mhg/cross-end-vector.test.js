@@ -45,7 +45,7 @@ const deriveNonce16 = async (nonceString) => {
   return (await digest(raw)).slice(0, 16);
 };
 
-const runWorkerFlow = async ({ ticketB64, steps, indices, segs }) => {
+const runWorkerFlow = async ({ ticketB64, steps, pageBytes = 64, mixRounds = 2, hashcashBits = 0, indices, segs }) => {
   const prevSelf = globalThis.self;
   const prevPostMessage = globalThis.postMessage;
   const prevAtob = globalThis.atob;
@@ -90,7 +90,7 @@ const runWorkerFlow = async ({ ticketB64, steps, indices, segs }) => {
     });
 
   try {
-    await call("INIT", { ticketB64, steps, hashcashBits: 0 });
+    await call("INIT", { ticketB64, steps, pageBytes, mixRounds, hashcashBits });
     const commit = await call("COMMIT");
     const open = await call("OPEN", { indices, segs });
     return { commit, open };
@@ -106,6 +106,16 @@ const runWorkerFlow = async ({ ticketB64, steps, indices, segs }) => {
     }
   }
 };
+
+const openWitnessShape = (opens) =>
+  opens.map((entry) => ({
+    i: entry.i,
+    seg: entry.seg,
+    nodeKeys: Object.keys(entry.nodes || {}).sort(),
+    proofLens: Object.values(entry.nodes || {}).map((node) =>
+      Array.isArray(node && node.proof) ? node.proof.length : -1
+    ),
+  }));
 
 test("fixed vectors produce cross-end consistent verification", async () => {
   const ticketB64 = "dGVzdC10aWNrZXQ";
@@ -125,6 +135,21 @@ test("fixed vectors produce cross-end consistent verification", async () => {
   };
   const out = await verifyOpenBatchVector(fixture);
   assert.equal(out.ok, true);
+});
+
+test("repeated identical worker flow yields same root and OPEN witness shape", async () => {
+  const fixture = {
+    ticketB64: "dGVzdC10aWNrZXQ",
+    steps: 127,
+    indices: [1, 64, 127],
+    segs: [2, 2, 2],
+  };
+
+  const first = await runWorkerFlow(fixture);
+  const second = await runWorkerFlow(fixture);
+
+  assert.equal(first.commit.rootB64, second.commit.rootB64);
+  assert.deepEqual(openWitnessShape(first.open.opens), openWitnessShape(second.open.opens));
 });
 
 test("1-bit tamper is rejected by server verification", async () => {

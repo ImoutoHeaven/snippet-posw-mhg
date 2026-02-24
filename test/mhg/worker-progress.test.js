@@ -8,21 +8,10 @@ import { buildCrossEndFixture } from "../../esm/mhg-worker.js";
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 const encoder = new TextEncoder();
 
-const digest = async (...chunks) => {
-  let total = 0;
-  for (const chunk of chunks) total += chunk.length;
-  const out = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    out.set(chunk, offset);
-    offset += chunk.length;
-  }
-  return new Uint8Array(await webcrypto.subtle.digest("SHA-256", out));
-};
-
 const runWorkerCommit = async ({
   ticketB64 = "dGVzdC10aWNrZXQ",
   steps = 8,
+  pageBytes = 64,
   mixRounds = 2,
   hashcashBits = 0,
   progressEvery = 1,
@@ -82,7 +71,7 @@ const runWorkerCommit = async ({
     });
 
   try {
-    await call("INIT", { ticketB64, steps, mixRounds, hashcashBits, progressEvery });
+    await call("INIT", { ticketB64, steps, pageBytes, mixRounds, hashcashBits, progressEvery });
     const commit = await call("COMMIT");
     return { progress, commit };
   } finally {
@@ -115,27 +104,9 @@ test("mhg worker emits chain progress during commit", async () => {
   );
 });
 
-test("mhg worker uses injected wasm hasher when available", async () => {
+test("worker hash path is WebCrypto-only", async () => {
   let factoryCalls = 0;
-  let digestCalls = 0;
-
-  const makeHasher = () => {
-    let chunks = [];
-    return {
-      init() {
-        chunks = [];
-      },
-      update(input) {
-        chunks.push(Buffer.from(input));
-      },
-      async digest(format = "binary") {
-        digestCalls += 1;
-        const bytes = await digest(...chunks.map((part) => new Uint8Array(part)));
-        if (format === "binary") return bytes;
-        return Buffer.from(bytes).toString("hex");
-      },
-    };
-  };
+  const digestAlgorithms = [];
 
   const { commit } = await runWorkerCommit({
     steps: 4,
@@ -144,15 +115,34 @@ test("mhg worker uses injected wasm hasher when available", async () => {
     beforeImport() {
       globalThis.__MHG_HASH_WASM_FACTORY__ = async () => {
         factoryCalls += 1;
-        return makeHasher();
+        throw new Error("wasm factory must not run");
       };
+
+      const baseCrypto = globalThis.crypto || webcrypto;
+      const wrappedSubtle = {
+        digest: async (algorithm, data) => {
+          digestAlgorithms.push(algorithm);
+          return baseCrypto.subtle.digest.call(baseCrypto.subtle, algorithm, data);
+        },
+        importKey: (...args) => baseCrypto.subtle.importKey.call(baseCrypto.subtle, ...args),
+        encrypt: (...args) => baseCrypto.subtle.encrypt.call(baseCrypto.subtle, ...args),
+      };
+      Object.defineProperty(globalThis, "crypto", {
+        value: {
+          ...baseCrypto,
+          subtle: wrappedSubtle,
+          getRandomValues: (...args) => baseCrypto.getRandomValues(...args),
+        },
+        configurable: true,
+      });
     },
   });
 
+  assert.equal(factoryCalls, 0);
+  assert.equal(digestAlgorithms.length > 0, true);
+  assert.equal(digestAlgorithms.every((algorithm) => algorithm === "SHA-256"), true);
   assert.equal(typeof commit.rootB64, "string");
   assert.equal(commit.rootB64.length > 0, true);
-  assert.equal(factoryCalls > 0, true);
-  assert.equal(digestCalls > 0, true);
   assert.equal(typeof commit.nonce, "string");
   assert.equal(commit.nonce.length > 0, true);
   assert.equal(encoder.encode(commit.nonce).length > 0, true);
@@ -169,23 +159,26 @@ test("worker derives PA/PB once per page index", async () => {
     hashcashBits: 0,
     progressEvery: 1,
     beforeImport() {
-      globalThis.__MHG_HASH_WASM_FACTORY__ = async () => {
-        let buffer = new Uint8Array(0);
-        return {
-          init() {
-            buffer = new Uint8Array(0);
-          },
-          update(input) {
-            buffer = new Uint8Array(input);
-          },
-          async digest() {
-            const head = decoder.decode(buffer.subarray(0, 7));
-            if (head === "MHG1-PA") paCalls += 1;
-            if (head === "MHG1-PB") pbCalls += 1;
-            return new Uint8Array(await webcrypto.subtle.digest("SHA-256", buffer));
-          },
-        };
+      const baseCrypto = globalThis.crypto || webcrypto;
+      const wrappedSubtle = {
+        digest: async (algorithm, data) => {
+          const buffer = new Uint8Array(data);
+          const head = decoder.decode(buffer.subarray(0, 7));
+          if (head === "MHG1-PA") paCalls += 1;
+          if (head === "MHG1-PB") pbCalls += 1;
+          return baseCrypto.subtle.digest.call(baseCrypto.subtle, algorithm, data);
+        },
+        importKey: (...args) => baseCrypto.subtle.importKey.call(baseCrypto.subtle, ...args),
+        encrypt: (...args) => baseCrypto.subtle.encrypt.call(baseCrypto.subtle, ...args),
       };
+      Object.defineProperty(globalThis, "crypto", {
+        value: {
+          ...baseCrypto,
+          subtle: wrappedSubtle,
+          getRandomValues: (...args) => baseCrypto.getRandomValues(...args),
+        },
+        configurable: true,
+      });
     },
   });
 
