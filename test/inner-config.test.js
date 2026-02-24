@@ -641,6 +641,41 @@ test("pow-config preserves numeric POW_SEGMENT_LEN", async () => {
   }
 });
 
+test("pow-config hard-cuts POW_VERSION to 4 in forwarded config", async () => {
+  const restoreGlobals = ensureGlobals();
+  const modulePath = await buildConfigModule("config-secret", {
+    configOverrides: { POW_VERSION: 3 },
+  });
+  const mod = await import(`${pathToFileURL(modulePath).href}?v=${Date.now()}`);
+  const handler = mod.default.fetch;
+  let forwarded = null;
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async (request) => {
+      forwarded = request;
+      return new Response("ok", { status: 200 });
+    };
+
+    const req = new Request("https://example.com/protected", {
+      headers: {
+        "CF-Connecting-IP": "1.2.3.4",
+      },
+    });
+    const res = await handler(req);
+    assert.equal(res.status, 200);
+    assert.ok(forwarded, "fetch called with modified request");
+
+    const { payload } = readInnerPayload(forwarded.headers);
+    const decoded = base64UrlDecode(payload);
+    assert.ok(decoded, "payload decodes");
+    const parsed = JSON.parse(decoded);
+    assert.equal(parsed.c.POW_VERSION, 4);
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreGlobals();
+  }
+});
+
 test("pow-config preserves turnstile keys for turncheck", async () => {
   const restoreGlobals = ensureGlobals();
   const secret = "config-secret";
@@ -866,6 +901,41 @@ test("pow-config normalizes range string POW_SEGMENT_LEN for split core", async 
       powRes.status === 204 || powRes.status === 403,
       `expected fail-closed guard or preflight status, got ${powRes.status}`
     );
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreGlobals();
+  }
+});
+
+test("pow-config never forwards POW_SEGMENT_LEN as 1", async () => {
+  const restoreGlobals = ensureGlobals();
+  const modulePath = await buildConfigModule("config-secret", {
+    configOverrides: { POW_SEGMENT_LEN: "1-1" },
+  });
+  const mod = await import(`${pathToFileURL(modulePath).href}?v=${Date.now()}`);
+  const handler = mod.default.fetch;
+  let forwarded = null;
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async (request) => {
+      forwarded = request;
+      return new Response("ok", { status: 200 });
+    };
+
+    const req = new Request("https://example.com/protected", {
+      headers: {
+        "CF-Connecting-IP": "1.2.3.4",
+      },
+    });
+    const res = await handler(req);
+    assert.equal(res.status, 200);
+    assert.ok(forwarded, "fetch called with modified request");
+
+    const { payload } = readInnerPayload(forwarded.headers);
+    const decoded = base64UrlDecode(payload);
+    assert.ok(decoded, "payload decodes");
+    const parsed = JSON.parse(decoded);
+    assert.equal(parsed.c.POW_SEGMENT_LEN, "2-2");
   } finally {
     globalThis.fetch = originalFetch;
     restoreGlobals();

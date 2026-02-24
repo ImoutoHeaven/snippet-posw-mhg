@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createPowRuntimeFixture } from "../helpers/pow-runtime-fixture.js";
+import { __testNormalizeConfig as normalizePowConfig } from "../../pow-config.js";
 
 const CONFIG_SECRET = "config-secret";
 const POW_SECRET = "pow-secret";
@@ -154,9 +155,12 @@ const parseTicket = (ticketB64) => {
   const raw = fromBase64Url(ticketB64).toString("utf8");
   const parts = raw.split(".");
   if (parts.length !== 7) return null;
+  const v = Number.parseInt(parts[0], 10);
   const issuedAt = Number.parseInt(parts[5], 10);
+  if (!Number.isFinite(v) || v <= 0) return null;
   if (!Number.isFinite(issuedAt) || issuedAt <= 0) return null;
   return {
+    v,
     L: Number.parseInt(parts[2], 10),
     cfgId: Number.parseInt(parts[4], 10),
     issuedAt,
@@ -164,15 +168,23 @@ const parseTicket = (ticketB64) => {
   };
 };
 
-const makeInnerPayload = ({ atomic = false } = {}) => ({
+const rewriteTicketVersion = (ticketB64, nextVersion) => {
+  const raw = fromBase64Url(ticketB64).toString("utf8");
+  const parts = raw.split(".");
+  if (parts.length !== 7) throw new Error("invalid ticket parts");
+  parts[0] = String(nextVersion);
+  return base64Url(Buffer.from(parts.join("."), "utf8"));
+};
+
+const makeInnerPayload = ({ atomic = false, turncheck = true, powVersion = 4 } = {}) => ({
   v: 1,
   id: 77,
-  c: {
+  c: normalizePowConfig({
     POW_TOKEN: POW_SECRET,
     powcheck: true,
-    turncheck: true,
+    turncheck,
     recaptchaEnabled: false,
-    POW_VERSION: 3,
+    POW_VERSION: powVersion,
     POW_API_PREFIX: "/__pow",
     POW_DIFFICULTY_BASE: 16,
     POW_DIFFICULTY_COEFF: 1,
@@ -206,7 +218,7 @@ const makeInnerPayload = ({ atomic = false } = {}) => ({
     TURNSTILE_SECRET: "turn-secret",
     POW_ESM_URL: "https://cdn.example/esm.js",
     POW_GLUE_URL: "https://cdn.example/glue.js",
-  },
+  }),
   d: { ipScope: "1.2.3.4/32", country: "", asn: "", tlsFingerprint: "" },
   s: {
     nav: {},
@@ -262,7 +274,7 @@ const buildMhgWitnessBundle = async ({ ticketB64, nonce }) => {
   pages[0] = await makeGenesisPage({ graphSeed, nonce: nonce16, pageBytes });
   const parentByIndex = new Map();
   for (let i = 1; i <= ticket.L; i += 1) {
-    const parents = await parentsOf(i, graphSeed);
+    const parents = await parentsOf(i, graphSeed, i >= 3 ? pages[i - 1] : undefined);
     parentByIndex.set(i, parents);
     pages[i] = await mixPage({
       i,
@@ -508,6 +520,108 @@ test("split core1 denies unauthorized non-navigation fail-closed", async () => {
     assert.deepEqual(await res.json(), { code: "pow_required" });
   } finally {
     globalThis.fetch = originalFetch;
+    restoreGlobals();
+  }
+});
+
+test("challenge issues only POW_VERSION=4 tickets", async () => {
+  const restoreGlobals = ensureGlobals();
+  try {
+    const bridgeFetch = await buildSplitBridgeFetch();
+    const payload = makeInnerPayload();
+    const res = await bridgeFetch(
+      new Request("https://example.com/protected", {
+        headers: {
+          ...makeInnerHeaders(payload),
+          Accept: "text/html",
+          "CF-Connecting-IP": "1.2.3.4",
+        },
+      }),
+      {},
+      {}
+    );
+    assert.equal(res.status, 200);
+    const args = extractChallengeArgs(await res.text());
+    assert.ok(args);
+    const ticket = parseTicket(args.ticketB64);
+    assert.ok(ticket);
+    assert.equal(ticket.v, 4);
+  } finally {
+    restoreGlobals();
+  }
+});
+
+test("challenge ignores non-4 POW_VERSION config input", async () => {
+  const restoreGlobals = ensureGlobals();
+  try {
+    const bridgeFetch = await buildSplitBridgeFetch();
+    const payload = makeInnerPayload({ powVersion: 9 });
+    const res = await bridgeFetch(
+      new Request("https://example.com/protected", {
+        headers: {
+          ...makeInnerHeaders(payload),
+          Accept: "text/html",
+          "CF-Connecting-IP": "1.2.3.4",
+        },
+      }),
+      {},
+      {}
+    );
+    assert.equal(res.status, 200);
+    const args = extractChallengeArgs(await res.text());
+    assert.ok(args);
+    const ticket = parseTicket(args.ticketB64);
+    assert.ok(ticket);
+    assert.equal(ticket.v, 4);
+  } finally {
+    restoreGlobals();
+  }
+});
+
+test("old-version tickets are rejected fail-closed", async () => {
+  const restoreGlobals = ensureGlobals();
+  try {
+    const bridgeFetch = await buildSplitBridgeFetch();
+    const payload = makeInnerPayload({ turncheck: false });
+    const pageRes = await bridgeFetch(
+      new Request("https://example.com/protected", {
+        headers: {
+          ...makeInnerHeaders(payload),
+          Accept: "text/html",
+          "CF-Connecting-IP": "1.2.3.4",
+        },
+      }),
+      {},
+      {}
+    );
+    assert.equal(pageRes.status, 200);
+    const args = extractChallengeArgs(await pageRes.text());
+    assert.ok(args);
+    const staleTicketB64 = rewriteTicketVersion(args.ticketB64, 3);
+
+    const commitRes = await bridgeFetch(
+      new Request("https://example.com/__pow/commit", {
+        method: "POST",
+        headers: {
+          ...makeInnerHeaders(payload),
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          ticketB64: staleTicketB64,
+          rootB64: base64Url(crypto.randomBytes(32)),
+          pathHash: args.pathHash,
+          nonce: base64Url(crypto.randomBytes(16)),
+          captchaToken: "",
+        }),
+      }),
+      {},
+      {}
+    );
+
+    assert.equal(commitRes.status, 403);
+    assert.equal(commitRes.headers.get("x-pow-h"), "stale");
+    assert.equal(await commitRes.text(), "");
+  } finally {
     restoreGlobals();
   }
 });

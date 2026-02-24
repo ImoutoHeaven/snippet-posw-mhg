@@ -1262,9 +1262,6 @@ const runPowFlow = async (
     powBinding = `${authBinding}|${captchaTag}`;
   }
 
-  const workerCode = await fetch(workerUrl).then((r) => r.text());
-  const blob = new Blob([workerCode], { type: "application/javascript" });
-  const blobUrl = URL.createObjectURL(blob);
   let spinTimer;
   let verifySpinTimer;
   let rpc = null;
@@ -1313,7 +1310,7 @@ const runPowFlow = async (
     };
 
     const makeWorkerRpc = () => {
-      const workerInstance = new Worker(blobUrl, { type: "module" });
+      const workerInstance = new Worker(workerUrl, { type: "module" });
       const workerRpc = createWorkerRpc(workerInstance, (progress) =>
         onProgress(workerInstance, progress)
       );
@@ -1354,7 +1351,7 @@ const runPowFlow = async (
       ticketB64,
       steps,
       hashcashBits,
-      segmentLen,
+      segmentLen: Math.max(2, Math.min(16, Math.floor(Number(segmentLen) || 0))),
       pageBytes,
       mixRounds,
       yieldEvery: 1024,
@@ -1475,7 +1472,6 @@ const runPowFlow = async (
     if (rpc) {
       disposeRpc(rpc);
     }
-    URL.revokeObjectURL(blobUrl);
   }
 
 };

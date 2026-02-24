@@ -176,7 +176,7 @@ const buildMhgWitnessBundle = async ({ ticketB64, nonce }) => {
 
   const parentByIndex = new Map();
   for (let i = 1; i <= ticket.L; i += 1) {
-    const parents = await parentsOf(i, graphSeed);
+    const parents = await parentsOf(i, graphSeed, i >= 3 ? pages[i - 1] : undefined);
     parentByIndex.set(i, parents);
     pages[i] = await mixPage({
       i,
@@ -2014,7 +2014,7 @@ test("combined pow+captcha /open returns cheat hint for tampered payload and cap
     assert.equal(challengeRes.status, 200);
     const challenge = await challengeRes.json();
     assert.deepEqual(challenge.indices, [1]);
-    assert.deepEqual(challenge.segs, [1]);
+    assert.deepEqual(challenge.segs, [2]);
     const opens = buildMhgOpensForChallenge({
       indices: challenge.indices,
       segs: challenge.segs,

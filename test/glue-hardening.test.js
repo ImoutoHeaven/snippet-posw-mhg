@@ -141,6 +141,77 @@ const makeRunPowArgs = (overrides = {}) => {
 };
 
 test("glue hardening", { concurrency: 1 }, async (t) => {
+  await t.test("worker bootstrap clamps segmentLen minimum to 2", async () => {
+    let initPayload = null;
+    const glue = await importGlue();
+    globalThis.Worker = class FakeWorker {
+      constructor() {
+        this.listeners = new Map();
+      }
+      addEventListener(type, cb) {
+        const list = this.listeners.get(type) || [];
+        list.push(cb);
+        this.listeners.set(type, list);
+      }
+      postMessage(msg) {
+        if (msg && msg.type === "INIT") {
+          initPayload = msg;
+          const event = { data: { type: "ERROR", rid: msg.rid, message: "init failed" } };
+          const list = this.listeners.get("message") || [];
+          for (const cb of list) cb(event);
+        }
+      }
+      terminate() {}
+    };
+    const args = makeRunPowArgs({ segmentLen: 1 });
+    await glue.default(...args);
+    assert.ok(initPayload);
+    assert.equal(initPayload.segmentLen, 2);
+  });
+
+  await t.test("worker bootstrap launches module worker from workerUrl directly", async () => {
+    const workerCtorCalls = [];
+    let workerSourceFetches = 0;
+    let blobUrlCreations = 0;
+    const glue = await importGlue();
+    globalThis.URL.createObjectURL = () => {
+      blobUrlCreations += 1;
+      return "blob:mock";
+    };
+    globalThis.fetch = async (url) => {
+      if (String(url) === "https://example.com/esm/mhg-worker.js") {
+        workerSourceFetches += 1;
+      }
+      return { text: async () => "self.onmessage = () => {};" };
+    };
+    globalThis.Worker = class FakeWorker {
+      constructor(url, options) {
+        this.listeners = new Map();
+        workerCtorCalls.push({ url: String(url), options });
+      }
+      addEventListener(type, cb) {
+        const list = this.listeners.get(type) || [];
+        list.push(cb);
+        this.listeners.set(type, list);
+      }
+      postMessage(msg) {
+        if (msg && msg.type === "INIT") {
+          const event = { data: { type: "ERROR", rid: msg.rid, message: "init failed" } };
+          const list = this.listeners.get("message") || [];
+          for (const cb of list) cb(event);
+        }
+      }
+      terminate() {}
+    };
+    const args = makeRunPowArgs({ workerUrl: "https://example.com/esm/mhg-worker.js" });
+    await glue.default(...args);
+    assert.equal(workerCtorCalls.length, 1);
+    assert.equal(workerCtorCalls[0].url, "https://example.com/esm/mhg-worker.js");
+    assert.equal(workerCtorCalls[0].options && workerCtorCalls[0].options.type, "module");
+    assert.equal(workerSourceFetches, 0);
+    assert.equal(blobUrlCreations, 0);
+  });
+
   await t.test("worker init failure terminates worker", async () => {
     const createdWorkers = [];
     const glue = await importGlue();
@@ -628,8 +699,24 @@ test("glue hardening", { concurrency: 1 }, async (t) => {
 
   await t.test("error messages are escaped in logs", async () => {
     const glue = await importGlue();
-    globalThis.fetch = async () => {
-      throw new Error('<img src="x" onerror="alert(1)">');
+    globalThis.Worker = class FakeWorker {
+      constructor() {
+        this.listeners = new Map();
+      }
+      addEventListener(type, cb) {
+        const list = this.listeners.get(type) || [];
+        list.push(cb);
+        this.listeners.set(type, list);
+      }
+      postMessage(msg) {
+        if (msg && msg.type === "INIT") {
+          const list = this.listeners.get("message") || [];
+          for (const cb of list) {
+            cb({ data: { type: "ERROR", rid: msg.rid, message: '<img src="x" onerror="alert(1)">' } });
+          }
+        }
+      }
+      terminate() {}
     };
     const args = makeRunPowArgs();
     await glue.default(...args);

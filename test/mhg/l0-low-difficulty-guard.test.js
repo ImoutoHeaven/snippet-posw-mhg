@@ -126,7 +126,7 @@ test("L0 matrix: worker output verifies with verifyOpenBatchVector", async () =>
       mixRounds: 2,
       hashcashBits: LOW_PROFILE.hashcashBits,
       indices: [1, 12],
-      segs: [1, 2],
+      segs: [2, 3],
     },
     {
       ticketB64: "dGVzdC10aWNrZXQ",
@@ -201,7 +201,7 @@ test("L0 deterministic lock: repeated identical flow keeps root and OPEN shape",
     mixRounds: 2,
     hashcashBits: LOW_PROFILE.hashcashBits,
     indices: [1, 12],
-    segs: [1, 2],
+    segs: [2, 3],
   };
 
   const first = await runWorkerFlow(fixture);

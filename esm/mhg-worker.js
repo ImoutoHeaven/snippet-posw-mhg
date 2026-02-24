@@ -1,3 +1,5 @@
+import { parentsOf as canonicalParentsOf } from "../lib/mhg/parent-contract.js";
+
 const encoder = new TextEncoder();
 const LABEL = {
   leaf: encoder.encode("MHG1-LEAF"),
@@ -6,9 +8,6 @@ const LABEL = {
   iv0: encoder.encode("MHG1-IV0"),
   pa: encoder.encode("MHG1-PA"),
   pb: encoder.encode("MHG1-PB"),
-  prf: encoder.encode("MHG1-PRF"),
-  p1: encoder.encode("p1"),
-  p2: encoder.encode("p2"),
   graphPrefix: encoder.encode("mhg|graph|v2|"),
   bar: encoder.encode("|"),
   hashcashV4: encoder.encode("hashcash|v4|"),
@@ -174,74 +173,14 @@ const mixPage = async ({ i, p0, p1, p2, graphSeed, nonce, pageBytes, mixRounds =
   return state;
 };
 
-const draw32 = async ({ seed, label, i, ctr }) => {
-  const labelBytes = label === "p1" ? LABEL.p1 : label === "p2" ? LABEL.p2 : null;
-  if (!labelBytes) throw new Error("parent label invalid");
-  const digest = await sha256(LABEL.prf, seed, labelBytes, u32be(i), u32be(ctr));
-  const view = new DataView(digest.buffer, digest.byteOffset, digest.byteLength);
-  return view.getUint32(0, false);
-};
-
-const uniformMod = async ({ seed, label, i, mod, ctr = 0 }) => {
-  const limit = Math.floor(0x1_0000_0000 / mod) * mod;
-  while (true) {
-    const n = await draw32({ seed, label, i, ctr });
-    ctr += 1;
-    if (n < limit) return { value: n % mod, ctr };
-  }
-};
-
-const pickDistinct = async ({ seed, label, i, count, maxExclusive, exclude = new Set() }) => {
-  const out = [];
-  const seen = new Set(exclude);
-  let ctr = 0;
-  while (out.length < count && seen.size < maxExclusive) {
-    const next = await uniformMod({ seed, label, i, mod: maxExclusive, ctr });
-    ctr = next.ctr;
-    if (seen.has(next.value)) continue;
-    seen.add(next.value);
-    out.push(next.value);
-  }
-  while (out.length < count) {
-    const next = await uniformMod({ seed, label, i, mod: maxExclusive, ctr });
-    ctr = next.ctr;
-    out.push(next.value);
-  }
-  return out;
-};
-
-const parentsOf = async (index, graphSeed) => {
-  if (index === 1) {
-    return { p0: 0, p1: 0, p2: 0 };
-  }
-  if (index === 2) {
-    return { p0: 1, p1: 0, p2: 0 };
-  }
-  const p0 = index - 1;
-  const [p1] = await pickDistinct({
-    seed: graphSeed,
-    label: "p1",
-    i: index,
-    count: 1,
-    maxExclusive: index,
-    exclude: new Set([p0]),
-  });
-  const [p2] = await pickDistinct({
-    seed: graphSeed,
-    label: "p2",
-    i: index,
-    count: 1,
-    maxExclusive: index,
-    exclude: new Set([p0, p1]),
-  });
-  return { p0, p1, p2 };
-};
-
-const createParentsResolver = (graphSeed) => {
+const createParentsResolver = (graphSeed, pages) => {
   const cache = new Map();
   return async (index) => {
     if (cache.has(index)) return cache.get(index);
-    const value = await parentsOf(index, graphSeed);
+    const value =
+      index >= 3
+        ? await canonicalParentsOf(index, graphSeed, pages[index - 1])
+        : await canonicalParentsOf(index, graphSeed);
     cache.set(index, value);
     return value;
   };
@@ -339,10 +278,13 @@ const buildEqSet = (index, segmentLen) => {
 
 const toOpenEntry = async ({ idx, seg, pages, levels, graphSeed }) => {
   const segmentLen = seg;
+  if (!Number.isInteger(segmentLen) || segmentLen < 2 || segmentLen > 16) {
+    throw new Error("segs invalid");
+  }
   const eqSet = buildEqSet(idx, segmentLen);
   const need = new Set();
   for (const j of eqSet) {
-    const p = await parentsOf(j, graphSeed);
+    const p = j >= 3 ? await canonicalParentsOf(j, graphSeed, pages[j - 1]) : await canonicalParentsOf(j, graphSeed);
     need.add(j);
     need.add(p.p0);
     need.add(p.p1);
@@ -372,9 +314,9 @@ const buildGraphPages = async ({
   yieldEvery = 1024,
   onProgress,
   checkCancelled,
-  parentsOfIndex,
 }) => {
   const out = new Array(pages);
+  const parentsOfIndex = createParentsResolver(graphSeed, out);
   const total = Math.max(0, pages - 1);
   out[0] = await makeGenesisPage({ graphSeed, nonce, pageBytes });
   if (typeof onProgress === "function") onProgress(0, total);
@@ -408,8 +350,7 @@ export const buildCrossEndFixture = async (vector, options = {}) => {
   const mixRounds = Number(vector.mixRounds || 2);
   const pageCount = Number(vector.pages || 128);
   const indices = Array.isArray(vector.indices) ? vector.indices.map((x) => Number(x)) : [];
-  const parentsOfIndex = createParentsResolver(graphSeed);
-  const pages = await buildGraphPages({ graphSeed, nonce, pageBytes, mixRounds, pages: pageCount, parentsOfIndex });
+  const pages = await buildGraphPages({ graphSeed, nonce, pageBytes, mixRounds, pages: pageCount });
   if (typeof options.mutatePages === "function") options.mutatePages(pages);
   const tree = await buildMerkle(pages);
   const segs = Array.isArray(vector.segs) ? vector.segs : [];
@@ -488,7 +429,6 @@ const computeCommit = async () => {
     });
     const graphSeed = await deriveGraphSeed16(state.ticketB64, nonce);
     const nonce16 = await deriveNonce16(nonce);
-    const parentsOfIndex = createParentsResolver(graphSeed);
     const pages = await buildGraphPages({
       graphSeed,
       nonce: nonce16,
@@ -497,7 +437,6 @@ const computeCommit = async () => {
       pages: state.steps + 1,
       yieldEvery: state.yieldEvery,
       checkCancelled,
-      parentsOfIndex,
       onProgress: (done, total) => {
         if (done === 0 || done === total || done % progressEvery === 0) {
           emitProgress("chain", done, total, attempt - 1);
@@ -537,7 +476,7 @@ const computeOpen = async (payload) => {
     const idx = indices[i];
     const seg = segs[i];
     if (!Number.isInteger(idx) || idx < 1 || idx > state.steps) throw new Error("indices invalid");
-    if (!Number.isInteger(seg) || seg < 1) throw new Error("segs invalid");
+    if (!Number.isInteger(seg) || seg < 2 || seg > 16) throw new Error("segs invalid");
     opens.push(
       await toOpenEntry({
         idx,

@@ -298,13 +298,17 @@ const makeSplitApiHeaders = ({ payloadObj, configSecret, method, pathname, apiPr
 };
 
 const extractChallengeArgs = (html) => {
-  const match = html.match(/g\("([^"]+)",\s*(\d+),\s*"([^"]+)",\s*"([^"]+)"/u);
+  const match = html.match(
+    /g\("([^"]+)",\s*(\d+),\s*"([^"]+)",\s*"([^"]+)",\s*(\d+),\s*(\d+)/u,
+  );
   if (!match) return null;
   return {
     bindingB64: match[1],
     steps: Number.parseInt(match[2], 10),
     ticketB64: match[3],
     pathHash: match[4],
+    hashcashBits: Number.parseInt(match[5], 10),
+    segmentLen: Number.parseInt(match[6], 10),
   };
 };
 
@@ -348,6 +352,7 @@ test("challenge rejects binding mismatch after commit via split core harness", a
     const html = await pageRes.text();
     const args = extractChallengeArgs(html);
     assert.ok(args, "challenge html includes args");
+    assert.ok(args.segmentLen >= 2 && args.segmentLen <= 16, "challenge html clamps segment length to 2..16");
     const ticketRaw = Buffer.from(
       String(args.ticketB64).replace(/-/g, "+").replace(/_/g, "/"),
       "base64",
@@ -406,11 +411,60 @@ test("challenge rejects binding mismatch after commit via split core harness", a
     assert.ok(Array.isArray(challengePayload.segs));
     assert.equal(challengePayload.segs.length, challengePayload.indices.length);
     assert.ok(challengePayload.segs.every((value) => Number.isInteger(value)));
+    assert.ok(challengePayload.segs.every((value) => value >= 2 && value <= 16));
+    assert.equal(challengePayload.segs.includes(1), false);
     assert.ok(typeof challengePayload.token === "string");
     assert.ok(challengePayload.token.length > 0);
     assert.ok(typeof challengePayload.sid === "string");
     assert.ok(challengePayload.sid.length > 0);
     assert.equal(Object.hasOwn(challengePayload, "spinePos"), false);
+
+    const malformedOpens = challengePayload.indices.map((indexValue, idx) => ({
+      i: indexValue,
+      seg: idx === 0 ? `${challengePayload.segs[idx]}.5` : challengePayload.segs[idx],
+      nodes: {},
+    }));
+    const malformedOpenRes = await configHandler(
+      new Request("https://example.com/__pow/open", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "CF-Connecting-IP": ipPrimary,
+          Cookie: commitCookie,
+        },
+        body: JSON.stringify({
+          sid: challengePayload.sid,
+          cursor: challengePayload.cursor,
+          token: challengePayload.token,
+          opens: malformedOpens,
+        }),
+      }),
+    );
+    assert.equal(malformedOpenRes.status, 400);
+
+    const staleContractOpens = challengePayload.indices.map((indexValue, idx) => ({
+      i: indexValue,
+      seg: idx === 0 ? 1 : challengePayload.segs[idx],
+      nodes: {},
+    }));
+    const staleContractRes = await configHandler(
+      new Request("https://example.com/__pow/open", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "CF-Connecting-IP": ipPrimary,
+          Cookie: commitCookie,
+        },
+        body: JSON.stringify({
+          sid: challengePayload.sid,
+          cursor: challengePayload.cursor,
+          token: challengePayload.token,
+          opens: staleContractOpens,
+        }),
+      }),
+    );
+    assert.equal(staleContractRes.status, 403);
+    assert.equal(staleContractRes.headers.get("x-pow-h"), "cheat");
 
     const ipSecondary = "5.6.7.8";
     const challengeRes = await configHandler(
@@ -427,7 +481,7 @@ test("challenge rejects binding mismatch after commit via split core harness", a
     assert.equal(challengeRes.status, 403);
     assert.ok(core1Mod.__splitTrace, "split trace is exposed");
     assert.ok(core1Mod.__splitTrace.core1Calls >= 4);
-    assert.ok(core1Mod.__splitTrace.core2Calls <= 1);
+    assert.ok(core1Mod.__splitTrace.core2Calls >= 1);
   } finally {
     globalThis.fetch = originalFetch;
     restoreGlobals();

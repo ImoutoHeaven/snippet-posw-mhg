@@ -73,6 +73,9 @@ Notes:
 - Worker hashing is hard-cutoff WebCrypto (`crypto.subtle.digest("SHA-256", ...)`) only.
 - No client-side wasm hash fallback/injection path is retained.
 - Client protocol flow keeps server-provided fields as-is at the transport boundary.
+- Segment length contract is hard-cut to `2..16` across challenge issue, worker open construction, and server open verification.
+- Parent derivation is hybrid and canonical: `p0/p1` are static from seed+index, `p2` is data-dependent from predecessor page bytes, and worker/server share the same parent contract implementation.
+- Worker bootstrap is import-safe for direct module URLs: `glue.js` imports `POW_ESM_URL`, reads exported `workerUrl`, and creates module workers with `new Worker(workerUrl, { type: "module" })`.
 
 Deployment chain is strict: `pow-config -> pow-core-1 -> pow-core-2`.
 
@@ -142,7 +145,7 @@ Logic matchers in `when`:
 | `bindPathQueryName` | `string` | `"path"` | Query key used when `bindPathMode: "query"`. |
 | `bindPathHeaderName` | `string` | `""` | Header key used when `bindPathMode: "header"`. |
 | `stripBindPathHeader` | `boolean` | `false` | Remove bind-path header before origin proxy when enabled. |
-| `POW_VERSION` | `number` | `3` | Ticket version. |
+| `POW_VERSION` | `number` | `4` | Hard-cut ticket version; this refactor always normalizes to `4` (operator input ignored). |
 | `POW_API_PREFIX` | `string` | `"/__pow"` | Global API prefix for PoW endpoints. |
 | `POW_DIFFICULTY_BASE` | `number` | `8192` | Base step count. |
 | `POW_DIFFICULTY_COEFF` | `number` | `1.0` | Difficulty multiplier (steps ~= base * coeff). |
@@ -151,7 +154,7 @@ Logic matchers in `when`:
 | `POW_HASHCASH_BITS` | `number` | `0` | Root-bound hashcash bits (`0` disables). |
 | `POW_PAGE_BYTES` | `number` | `16384` | MHG page size; normalized to a multiple of 16 (minimum 16). |
 | `POW_MIX_ROUNDS` | `number` | `2` | MHG AES mix rounds per page (`1..4`, clamped). |
-| `POW_SEGMENT_LEN` | `string, number` | `2` | Segment length as fixed `N` or range `"min-max"` (`1..16`). |
+| `POW_SEGMENT_LEN` | `string, number` | `2` | Segment length as fixed `N` or range `"min-max"`; normalized and enforced end-to-end as `2..16`. |
 | `POW_SAMPLE_K` | `number` | `4` | Extra sampled indices per round. |
 | `POW_CHAL_ROUNDS` | `number` | `10` | Challenge rounds. |
 | `POW_OPEN_BATCH` | `number` | `4` | Indices per `/open` batch (`1..256`, clamped). |

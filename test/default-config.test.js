@@ -170,6 +170,32 @@ test("normalizeConfig exposes turnstile-only captcha surface", () => {
   assert.equal(cfg.AGGREGATOR_POW_ATOMIC_CONSUME, false);
 });
 
+test("normalizeConfig hard-cuts POW_VERSION to 4 regardless input", () => {
+  const cases = [undefined, 3, 4, 5, "3", "4", "9", -1, 100, "oops"];
+  for (const value of cases) {
+    const cfg = __testNormalizeConfig({ POW_VERSION: value });
+    assert.equal(cfg.POW_VERSION, 4);
+  }
+});
+
+test("normalizeConfig clamps POW_SEGMENT_LEN fixed values to 2..16", () => {
+  assert.equal(__testNormalizeConfig({ POW_SEGMENT_LEN: 1 }).POW_SEGMENT_LEN, 2);
+  assert.equal(__testNormalizeConfig({ POW_SEGMENT_LEN: 2 }).POW_SEGMENT_LEN, 2);
+  assert.equal(__testNormalizeConfig({ POW_SEGMENT_LEN: 16 }).POW_SEGMENT_LEN, 16);
+  assert.equal(__testNormalizeConfig({ POW_SEGMENT_LEN: 32 }).POW_SEGMENT_LEN, 16);
+  assert.equal(__testNormalizeConfig({ POW_SEGMENT_LEN: "1" }).POW_SEGMENT_LEN, 2);
+});
+
+test("normalizeConfig never emits segment length 1", () => {
+  const numeric = __testNormalizeConfig({ POW_SEGMENT_LEN: 1 }).POW_SEGMENT_LEN;
+  const numericString = __testNormalizeConfig({ POW_SEGMENT_LEN: "1" }).POW_SEGMENT_LEN;
+  const range = __testNormalizeConfig({ POW_SEGMENT_LEN: "1-1" }).POW_SEGMENT_LEN;
+  assert.notEqual(numeric, 1);
+  assert.notEqual(numericString, 1);
+  assert.notEqual(range, "1-1");
+  assert.equal(range, "2-2");
+});
+
 const buildInnerHeaders = (payloadObj, secret, expOverride) => {
   const payload = base64Url(Buffer.from(JSON.stringify(payloadObj), "utf8"));
   const exp = Number.isFinite(expOverride)

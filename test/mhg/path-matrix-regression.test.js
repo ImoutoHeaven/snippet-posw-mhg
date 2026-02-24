@@ -449,7 +449,7 @@ const buildMhgWitnessBundle = async ({ ticketB64, nonce, pageBytes = 16384, mixR
   pages[0] = await makeGenesisPage({ graphSeed, nonce: nonce16, pageBytes });
   const parentByIndex = new Map();
   for (let i = 1; i <= ticket.L; i += 1) {
-    const parents = await parentsOf(i, graphSeed);
+    const parents = await parentsOf(i, graphSeed, i >= 3 ? pages[i - 1] : undefined);
     parentByIndex.set(i, parents);
     pages[i] = await mixPage({
       i,
@@ -851,6 +851,7 @@ const runSplitLinkedCase = async ({ pathId }) => {
     providers: "",
     atomicState: emptyAtomic,
   });
+  seedPayload.c.POW_VERSION = 4;
   seedPayload.id = 0;
 
   const originalFetch = globalThis.fetch;

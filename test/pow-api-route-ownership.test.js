@@ -327,3 +327,18 @@ test("core2 source excludes removed handlers and routes", async () => {
   assert.doesNotMatch(source, /action === "\/challenge"/u);
   assert.match(source, /action === "\/open"/u);
 });
+
+test("segment spec clamps use hard minimum 2 across pow entrypoints", async () => {
+  const repoRoot = fileURLToPath(new URL("..", import.meta.url));
+  const [businessGateSource, frontSource, engineSource] = await Promise.all([
+    readFile(join(repoRoot, "lib", "pow", "business-gate.js"), "utf8"),
+    readFile(join(repoRoot, "lib", "pow", "api-core1-front.js"), "utf8"),
+    readFile(join(repoRoot, "lib", "pow", "api-engine.js"), "utf8"),
+  ]);
+
+  for (const source of [businessGateSource, frontSource, engineSource]) {
+    assert.match(source, /clampInt\(raw,\s*2,\s*16\)/u);
+    assert.match(source, /clampInt\(match\[1\],\s*2,\s*16\)/u);
+    assert.match(source, /clampInt\(match\[2\],\s*2,\s*16\)/u);
+  }
+});

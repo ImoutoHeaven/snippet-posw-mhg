@@ -12,7 +12,7 @@ const DEFAULTS = {
   bindPathQueryName: "path",
   bindPathHeaderName: "",
   stripBindPathHeader: false,
-  POW_VERSION: 3,
+  POW_VERSION: 4,
   POW_API_PREFIX: "/__pow",
   POW_DIFFICULTY_BASE: 8192,
   POW_DIFFICULTY_COEFF: 1.0,
@@ -237,17 +237,17 @@ const clampIntRange = (value, min, max) =>
 
 const normalizeSegmentLen = (value, fallback) => {
   if (typeof value === "number" && Number.isFinite(value)) {
-    return clampIntRange(value, 1, 16);
+    return clampIntRange(value, 2, 16);
   }
   if (typeof value === "string") {
     const trimmed = value.trim();
     if (/^\d+$/.test(trimmed)) {
-      return clampIntRange(Number(trimmed), 1, 16);
+      return clampIntRange(Number(trimmed), 2, 16);
     }
     const match = trimmed.match(/^(\d+)\s*-\s*(\d+)$/);
     if (match) {
-      let min = clampIntRange(Number(match[1]), 1, 16);
-      let max = clampIntRange(Number(match[2]), 1, 16);
+      let min = clampIntRange(Number(match[1]), 2, 16);
+      let max = clampIntRange(Number(match[2]), 2, 16);
       if (min > max) {
         [min, max] = [max, min];
       }
@@ -808,7 +808,7 @@ const normalizeConfig = (baseConfig) => {
       merged.stripBindPathHeader,
       DEFAULTS.stripBindPathHeader
     ),
-    POW_VERSION: normalizeNumberClamp(merged.POW_VERSION, DEFAULTS.POW_VERSION, 1, 10),
+    POW_VERSION: DEFAULTS.POW_VERSION,
     POW_API_PREFIX: DEFAULTS.POW_API_PREFIX,
     POW_DIFFICULTY_BASE: normalizeNumberClamp(
       merged.POW_DIFFICULTY_BASE,

@@ -4,7 +4,6 @@ import { webcrypto } from "node:crypto";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { join } from "node:path";
 
-import { verifyOpenBatchVector } from "../../lib/mhg/verify.js";
 import { mixPage } from "../../lib/mhg/mix-aes.js";
 import { parentsOf } from "../../lib/mhg/graph.js";
 
@@ -117,6 +116,56 @@ const openWitnessShape = (opens) =>
     ),
   }));
 
+const buildEqSet = (index, segmentLen) => {
+  const start = Math.max(1, index - segmentLen + 1);
+  const out = [];
+  for (let i = start; i <= index; i += 1) out.push(i);
+  return out;
+};
+
+const expectedNeedKeysFromOpen = async ({ open, graphSeed }) => {
+  const need = new Set();
+  const eqSet = buildEqSet(open.i, open.seg);
+  const p2ByEquation = new Map();
+  for (const j of eqSet) {
+    const prevNode = open.nodes[String(j - 1)];
+    const prevPage = j >= 3 ? b64uToBytes(prevNode && prevNode.pageB64) : undefined;
+    const parents = await parentsOf(j, graphSeed, prevPage);
+    need.add(j);
+    need.add(parents.p0);
+    need.add(parents.p1);
+    need.add(parents.p2);
+    p2ByEquation.set(j, parents.p2);
+  }
+  const sorted = Array.from(need).sort((a, b) => a - b).map(String);
+  return { sorted, p2ByEquation };
+};
+
+const verifyOpenEquationsWithServer = async ({ open, graphSeed, nonce, pageBytes = 64, mixRounds = 2 }) => {
+  const readNodePage = (idx) => {
+    const node = open.nodes[String(idx)];
+    if (!node) throw new Error(`missing node ${idx} from worker witness`);
+    return b64uToBytes(node.pageB64);
+  };
+
+  const eqSet = buildEqSet(open.i, open.seg);
+  for (const i of eqSet) {
+    const prevPage = i >= 3 ? readNodePage(i - 1) : undefined;
+    const parent = await parentsOf(i, graphSeed, prevPage);
+    const expected = await mixPage({
+      i,
+      p0: readNodePage(parent.p0),
+      p1: readNodePage(parent.p1),
+      p2: readNodePage(parent.p2),
+      graphSeed,
+      nonce,
+      pageBytes,
+      mixRounds,
+    });
+    assert.deepEqual(expected, readNodePage(i));
+  }
+};
+
 test("fixed vectors produce cross-end consistent verification", async () => {
   const ticketB64 = "dGVzdC10aWNrZXQ";
   const steps = 127;
@@ -125,16 +174,9 @@ test("fixed vectors produce cross-end consistent verification", async () => {
   const { commit, open } = await runWorkerFlow({ ticketB64, steps, indices, segs });
   const graphSeed = await deriveGraphSeed16(ticketB64, commit.nonce);
   const nonce = await deriveNonce16(commit.nonce);
-  const fixture = {
-    rootB64: commit.rootB64,
-    leafCount: steps + 1,
-    graphSeed,
-    nonce,
-    pageBytes: 64,
-    opens: open.opens,
-  };
-  const out = await verifyOpenBatchVector(fixture);
-  assert.equal(out.ok, true);
+  for (const entry of open.opens) {
+    await verifyOpenEquationsWithServer({ open: entry, graphSeed, nonce });
+  }
 });
 
 test("repeated identical worker flow yields same root and OPEN witness shape", async () => {
@@ -161,27 +203,20 @@ test("1-bit tamper is rejected by server verification", async () => {
   const graphSeed = await deriveGraphSeed16(ticketB64, commit.nonce);
   const nonce = await deriveNonce16(commit.nonce);
   nonce[0] ^= 0x01;
-  const fixture = {
-    rootB64: commit.rootB64,
-    leafCount: steps + 1,
-    graphSeed,
-    nonce,
-    pageBytes: 64,
-    opens: open.opens,
-  };
-  const out = await verifyOpenBatchVector(fixture);
-  assert.equal(out.ok, false);
-  assert.equal(out.reason, "equation_failed");
+  await assert.rejects(
+    verifyOpenEquationsWithServer({ open: open.opens[0], graphSeed, nonce }),
+    /Expected values to be strictly deep-equal/
+  );
 });
 
 test("server mixPage matches worker bytes for identical inputs", async () => {
   const ticketB64 = "dGVzdC10aWNrZXQ";
   const steps = 32;
   const index = 17;
-  const { commit, open } = await runWorkerFlow({ ticketB64, steps, indices: [index], segs: [1] });
+  const { commit, open } = await runWorkerFlow({ ticketB64, steps, indices: [index], segs: [2] });
   const graphSeed = await deriveGraphSeed16(ticketB64, commit.nonce);
   const nonce = await deriveNonce16(commit.nonce);
-  const parent = await parentsOf(index, graphSeed);
+  const parent = await parentsOf(index, graphSeed, b64uToBytes(open.opens[0].nodes[String(index - 1)].pageB64));
   const entry = open.opens[0];
 
   const readNodePage = (idx) => {
@@ -202,4 +237,60 @@ test("server mixPage matches worker bytes for identical inputs", async () => {
   });
 
   assert.deepEqual(serverPage, readNodePage(index));
+});
+
+test("worker rejects OPEN segment lengths outside 2..16", async () => {
+  const base = {
+    ticketB64: "dGVzdC10aWNrZXQ",
+    steps: 32,
+    indices: [17],
+  };
+
+  await assert.rejects(
+    runWorkerFlow({ ...base, segs: [1] }),
+    /segs invalid/
+  );
+  await assert.rejects(
+    runWorkerFlow({ ...base, segs: [17] }),
+    /segs invalid/
+  );
+});
+
+test("worker OPEN includes dynamic parents with canonical unique key order", async () => {
+  const ticketB64 = "dGVzdC10aWNrZXQ";
+  const steps = 48;
+  const index = 31;
+  const { commit, open } = await runWorkerFlow({ ticketB64, steps, indices: [index], segs: [2] });
+  const graphSeed = await deriveGraphSeed16(ticketB64, commit.nonce);
+  const entry = open.opens[0];
+
+  const expected = await expectedNeedKeysFromOpen({ open: entry, graphSeed });
+  const actual = Object.keys(entry.nodes || {});
+  assert.equal(entry.seg, 2);
+  assert.deepEqual(actual, expected.sorted);
+  assert.equal(actual.length, new Set(actual).size);
+
+  const eqSet = buildEqSet(entry.i, entry.seg);
+  for (const j of eqSet) {
+    assert.ok(entry.nodes[String(expected.p2ByEquation.get(j))], `missing dynamic p2 node for equation ${j}`);
+  }
+});
+
+test("randomized parity: worker/server parent outputs match for all i in [1..L]", async () => {
+  const deterministicSteps = [12, 15, 19, 14, 18];
+  for (let round = 0; round < deterministicSteps.length; round += 1) {
+    const ticketB64 = `dGVzdC10aWNrZXQ-${round}`;
+    const steps = deterministicSteps[round];
+    const indices = Array.from({ length: steps }, (_, idx) => idx + 1);
+    const segs = Array.from({ length: steps }, () => 2);
+    const { commit, open } = await runWorkerFlow({ ticketB64, steps, indices, segs });
+    const graphSeed = await deriveGraphSeed16(ticketB64, commit.nonce);
+    const nonce = await deriveNonce16(commit.nonce);
+
+    for (const entry of open.opens) {
+      const expected = await expectedNeedKeysFromOpen({ open: entry, graphSeed });
+      assert.deepEqual(Object.keys(entry.nodes || {}), expected.sorted);
+      await verifyOpenEquationsWithServer({ open: entry, graphSeed, nonce });
+    }
+  }
 });
