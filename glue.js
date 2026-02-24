@@ -1270,6 +1270,13 @@ const runPowFlow = async (
   let rpc = null;
   let rpcs = [];
   const disposedRpcs = new Set();
+  const disposeRpc = (entry) => {
+    if (!entry || disposedRpcs.has(entry)) return;
+    disposedRpcs.add(entry);
+    try {
+      entry.dispose();
+    } catch {}
+  };
   try {
     let spinIndex = -1;
     let spinFrame = 0;
@@ -1312,14 +1319,6 @@ const runPowFlow = async (
       );
       workerRpc.worker = workerInstance;
       return workerRpc;
-    };
-
-    const disposeRpc = (entry) => {
-      if (!entry || disposedRpcs.has(entry)) return;
-      disposedRpcs.add(entry);
-      try {
-        entry.dispose();
-      } catch {}
     };
 
     const raceFirstCommit = (entries) =>
