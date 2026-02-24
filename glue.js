@@ -1266,6 +1266,7 @@ const runPowFlow = async (
   let verifySpinTimer;
   let rpc = null;
   let rpcs = [];
+  let workerBlobUrl = "";
   const disposedRpcs = new Set();
   const disposeRpc = (entry) => {
     if (!entry || disposedRpcs.has(entry)) return;
@@ -1309,8 +1310,29 @@ const runPowFlow = async (
       }
     };
 
-    const makeWorkerRpc = () => {
-      const workerInstance = new Worker(workerUrl, { type: "module" });
+    const ensureBlobWorkerUrl = async () => {
+      if (workerBlobUrl) return workerBlobUrl;
+      const response = await fetch(workerUrl);
+      if (!response || typeof response.text !== "function") {
+        throw new Error("Worker Missing");
+      }
+      if (typeof response.ok === "boolean" && !response.ok) {
+        throw new Error("Worker Missing");
+      }
+      const workerCode = await response.text();
+      const blob = new Blob([workerCode], { type: "application/javascript" });
+      workerBlobUrl = URL.createObjectURL(blob);
+      return workerBlobUrl;
+    };
+
+    const makeWorkerRpc = async () => {
+      let workerInstance;
+      try {
+        workerInstance = new Worker(workerUrl, { type: "module" });
+      } catch {
+        const blobUrl = await ensureBlobWorkerUrl();
+        workerInstance = new Worker(blobUrl, { type: "module" });
+      }
       const workerRpc = createWorkerRpc(workerInstance, (progress) =>
         onProgress(workerInstance, progress)
       );
@@ -1359,8 +1381,11 @@ const runPowFlow = async (
     };
 
     const workerCount = Number(hashcashBits) >= 2 ? 4 : 1;
-    rpcs = Array.from({ length: workerCount }, () => makeWorkerRpc());
+    rpcs = [];
     try {
+      for (let i = 0; i < workerCount; i += 1) {
+        rpcs.push(await makeWorkerRpc());
+      }
       await Promise.all(rpcs.map((entry) => entry.call("INIT", initPayload)));
     } catch (err) {
       for (const entry of rpcs) {
@@ -1471,6 +1496,11 @@ const runPowFlow = async (
     }
     if (rpc) {
       disposeRpc(rpc);
+    }
+    if (workerBlobUrl) {
+      try {
+        URL.revokeObjectURL(workerBlobUrl);
+      } catch {}
     }
   }
 

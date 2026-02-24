@@ -212,6 +212,58 @@ test("glue hardening", { concurrency: 1 }, async (t) => {
     assert.equal(blobUrlCreations, 0);
   });
 
+  await t.test("worker bootstrap falls back to blob worker when direct worker URL is blocked", async () => {
+    const workerCtorCalls = [];
+    const fetchCalls = [];
+    let blobUrlCreations = 0;
+    const glue = await importGlue();
+    globalThis.URL.createObjectURL = () => {
+      blobUrlCreations += 1;
+      return "blob:mhg-worker";
+    };
+    globalThis.fetch = async (url) => {
+      const normalized = String(url);
+      fetchCalls.push(normalized);
+      if (normalized === "https://example.com/esm/mhg-worker.js") {
+        return { text: async () => "self.onmessage = () => {};" };
+      }
+      throw new Error(`unexpected fetch ${normalized}`);
+    };
+    globalThis.Worker = class FakeWorker {
+      constructor(url, options) {
+        this.listeners = new Map();
+        const normalized = String(url);
+        workerCtorCalls.push({ url: normalized, options });
+        if (!normalized.startsWith("blob:")) {
+          throw new TypeError(
+            `Failed to construct 'Worker': Script at '${normalized}' cannot be accessed from origin 'https://example.com'.`
+          );
+        }
+      }
+      addEventListener(type, cb) {
+        const list = this.listeners.get(type) || [];
+        list.push(cb);
+        this.listeners.set(type, list);
+      }
+      postMessage(msg) {
+        if (msg && msg.type === "INIT") {
+          const event = { data: { type: "ERROR", rid: msg.rid, message: "init failed" } };
+          const list = this.listeners.get("message") || [];
+          for (const cb of list) cb(event);
+        }
+      }
+      terminate() {}
+    };
+    const args = makeRunPowArgs({ workerUrl: "https://example.com/esm/mhg-worker.js" });
+    await glue.default(...args);
+    assert.equal(workerCtorCalls.length, 2);
+    assert.equal(workerCtorCalls[0].url, "https://example.com/esm/mhg-worker.js");
+    assert.equal(workerCtorCalls[1].url, "blob:mhg-worker");
+    assert.equal(workerCtorCalls[1].options && workerCtorCalls[1].options.type, "module");
+    assert.equal(blobUrlCreations, 1);
+    assert.deepEqual(fetchCalls, ["https://example.com/esm/mhg-worker.js"]);
+  });
+
   await t.test("worker init failure terminates worker", async () => {
     const createdWorkers = [];
     const glue = await importGlue();
