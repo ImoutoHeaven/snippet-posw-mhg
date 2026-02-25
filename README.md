@@ -79,6 +79,9 @@ Notes:
 - Parent API is explicit two-stage only: `staticParentsOf(i, seed)` for `p0/p1`, then `deriveDynamicParent2({ i, seed, pageBytes, p0, p1, p0Page, p1Page })` for `p2`.
 - Parent derivation is hard-cut and canonical: `p0/p1` are static from seed+index, and `p2` is derived from `SHA256("MHG1-P2|v4", seed, i, pageBytes, p0Page, p1Page)`.
 - Dynamic parent sampling uses rejection sampling with exclusion `{p0,p1}`.
+- Worker `mixRounds` contract is strict `1..4` and fails closed outside that range.
+- `uniformMod` rejection sampling is hard-cutoff bounded in both lib and worker paths.
+- `keyCache` growth is bounded in both server (`lib`) and worker (`esm`) implementations.
 - Graph seed derivation is hard-cut to `mhg|graph|v4|`.
 - Worker bootstrap is import-safe for direct module URLs: `glue.js` imports `POW_ESM_URL`, reads exported `workerUrl`, and creates module workers with `new Worker(workerUrl, { type: "module" })`.
 
@@ -158,7 +161,7 @@ Logic matchers in `when`:
 | `POW_MAX_STEPS` | `number` | `8192` | Maximum step clamp. |
 | `POW_HASHCASH_BITS` | `number` | `0` | Root-bound hashcash bits (`0` disables). |
 | `POW_PAGE_BYTES` | `number` | `16384` | MHG page size; normalized to a multiple of 16 (minimum 16). |
-| `POW_MIX_ROUNDS` | `number` | `2` | MHG AES mix rounds per page (`1..4`, clamped). |
+| `POW_MIX_ROUNDS` | `number` | `2` | MHG AES mix rounds per page (config normalizes to `1..4`; worker runtime enforces `1..4` fail-closed). |
 | `POW_SEGMENT_LEN` | `string, number` | `2` | Segment length as fixed `N` or range `"min-max"`; normalized and enforced end-to-end as `2..16`. |
 | `POW_SAMPLE_K` | `number` | `4` | Extra sampled indices per round. |
 | `POW_CHAL_ROUNDS` | `number` | `10` | Challenge rounds. |

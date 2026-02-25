@@ -148,6 +148,53 @@ test("worker hash path is WebCrypto-only", async () => {
   assert.equal(encoder.encode(commit.nonce).length > 0, true);
 });
 
+test("worker fails closed when parent rejection sampling cannot converge", { timeout: 750 }, async () => {
+  await assert.rejects(
+    runWorkerCommit({
+      steps: 4,
+      hashcashBits: 0,
+      beforeImport() {
+        const baseCrypto = globalThis.crypto || webcrypto;
+        const wrappedSubtle = {
+          digest: async () => new Uint8Array(32).fill(0xff),
+          importKey: (...args) => baseCrypto.subtle.importKey.call(baseCrypto.subtle, ...args),
+          encrypt: (...args) => baseCrypto.subtle.encrypt.call(baseCrypto.subtle, ...args),
+        };
+        Object.defineProperty(globalThis, "crypto", {
+          value: {
+            ...baseCrypto,
+            subtle: wrappedSubtle,
+            getRandomValues: (...args) => baseCrypto.getRandomValues(...args),
+          },
+          configurable: true,
+        });
+      },
+    }),
+    /parent invariants violated/,
+  );
+});
+
+test("worker INIT rejects mixRounds outside 1..4", async () => {
+  await assert.rejects(runWorkerCommit({ mixRounds: 0 }), /mixRounds invalid/);
+  await assert.rejects(runWorkerCommit({ mixRounds: 5 }), /mixRounds invalid/);
+});
+
+test("buildCrossEndFixture rejects invalid mixRounds", async () => {
+  const baseVector = {
+    graphSeedHex: "000102030405060708090a0b0c0d0e0f",
+    nonceHex: "0f0e0d0c0b0a09080706050403020100",
+    pageBytes: 64,
+    pages: 4,
+    indices: [],
+    segs: [],
+  };
+
+  await assert.rejects(buildCrossEndFixture(baseVector), /mixRounds invalid/);
+  await assert.rejects(buildCrossEndFixture({ ...baseVector, mixRounds: 0 }), /mixRounds invalid/);
+  await assert.rejects(buildCrossEndFixture({ ...baseVector, mixRounds: 5 }), /mixRounds invalid/);
+  await assert.rejects(buildCrossEndFixture({ ...baseVector, mixRounds: 2.5 }), /mixRounds invalid/);
+});
+
 test("worker derives PA/PB once per page index", async () => {
   let paCalls = 0;
   let pbCalls = 0;

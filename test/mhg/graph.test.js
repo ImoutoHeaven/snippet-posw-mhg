@@ -63,6 +63,105 @@ test("graph parent API no longer exports parentsOf", async () => {
   assert.equal("parentsOf" in parentContract, false);
 });
 
+test("uniformMod fails closed when PRF cannot produce an acceptable sample", async () => {
+  const { uniformMod } = await import("../../lib/mhg/graph.js");
+  const subtleDigest = globalThis.crypto.subtle.digest;
+  let digestCalls = 0;
+  globalThis.crypto.subtle.digest = async () => {
+    digestCalls += 1;
+    if (digestCalls % 128 === 0) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    return new Uint8Array(32).fill(0xff);
+  };
+  const stuckSampling = uniformMod({ seed: new Uint8Array(16), label: "p1", i: 3, mod: 3 })
+    .then(() => "resolved")
+    .catch((err) => `rejected:${err.message}`);
+
+  try {
+    const outcome = await Promise.race([
+      stuckSampling,
+      new Promise((resolve) => setTimeout(() => resolve("timeout"), 300)),
+    ]);
+
+    assert.match(outcome, /^rejected:/);
+  } finally {
+    globalThis.crypto.subtle.digest = async () => {
+      throw new Error("forced-stop");
+    };
+    await Promise.race([
+      stuckSampling.catch(() => undefined),
+      new Promise((resolve) => setTimeout(resolve, 50)),
+    ]);
+    globalThis.crypto.subtle.digest = subtleDigest;
+  }
+});
+
+test("uniformMod rejects mod > 2^32 before sampling", async () => {
+  const { uniformMod } = await import("../../lib/mhg/graph.js");
+  const subtleDigest = globalThis.crypto.subtle.digest;
+  let digestCalls = 0;
+  globalThis.crypto.subtle.digest = async (...args) => {
+    digestCalls += 1;
+    return subtleDigest.call(globalThis.crypto.subtle, ...args);
+  };
+
+  try {
+    await assert.rejects(
+      uniformMod({ seed: new Uint8Array(16), label: "p1", i: 3, mod: U32_MAX_PLUS_ONE + 1 }),
+      {
+        name: "RangeError",
+        message: /mod must be a positive integer <= 4294967296/,
+      }
+    );
+    assert.equal(digestCalls, 0);
+  } finally {
+    globalThis.crypto.subtle.digest = subtleDigest;
+  }
+});
+
+test("deriveDynamicParent2 fast-fails when uniformModExclude mod exceeds 2^32", async () => {
+  const { deriveDynamicParent2 } = await import("../../lib/mhg/graph.js");
+  const subtleDigest = globalThis.crypto.subtle.digest;
+  const decoder = new TextDecoder();
+  let prfCalls = 0;
+  let totalDigestCalls = 0;
+
+  globalThis.crypto.subtle.digest = async (...args) => {
+    totalDigestCalls += 1;
+    const payload = args[1];
+    const bytes = payload instanceof ArrayBuffer
+      ? new Uint8Array(payload)
+      : new Uint8Array(payload.buffer, payload.byteOffset, payload.byteLength);
+    if (decoder.decode(bytes.subarray(0, 8)) === "MHG1-PRF") {
+      prfCalls += 1;
+    }
+    return subtleDigest.call(globalThis.crypto.subtle, ...args);
+  };
+
+  try {
+    await assert.rejects(
+      deriveDynamicParent2({
+        i: U32_MAX_PLUS_ONE + 1,
+        seed: new Uint8Array(16),
+        pageBytes: 64,
+        p0: 1,
+        p1: 2,
+        p0Page: new Uint8Array(64),
+        p1Page: new Uint8Array(64),
+      }),
+      {
+        name: "RangeError",
+        message: /mod must be a positive integer <= 4294967296/,
+      }
+    );
+    assert.equal(prfCalls, 0);
+    assert.equal(totalDigestCalls > 0, true);
+  } finally {
+    globalThis.crypto.subtle.digest = subtleDigest;
+  }
+});
+
 test("staticParentsOf returns p0=i-1 and PRF p1", async () => {
   const { staticParentsOf } = await import("../../lib/mhg/graph.js");
   const seed = Uint8Array.from({ length: 16 }, (_, idx) => idx + 1);

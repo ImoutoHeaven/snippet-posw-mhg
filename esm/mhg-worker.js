@@ -13,6 +13,8 @@ const LABEL = {
 };
 
 const U32_MAX_PLUS_ONE = 0x1_0000_0000;
+const REJECTION_MAX_CTR = 4096;
+const KEY_CACHE_MAX_ENTRIES = 256;
 
 const b64u = (bytes) =>
   btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
@@ -69,6 +71,15 @@ const rotl32 = (value, bits) => ((value << bits) | (value >>> (32 - bits))) >>> 
 
 const bytesToHex = (bytes) => Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 
+const setBounded = (map, key, value, limit) => {
+  if (map.has(key)) map.delete(key);
+  map.set(key, value);
+  if (map.size > limit) {
+    const oldest = map.keys().next().value;
+    map.delete(oldest);
+  }
+};
+
 const concat = (...chunks) => {
   const normalized = chunks.map(normalizeHashInput);
   let total = 0;
@@ -101,7 +112,7 @@ const getImportedKey = async ({ graphSeed, nonce }) => {
       const keyMaterial = await sha256(LABEL.key, graphSeed, nonce);
       return crypto.subtle.importKey("raw", keyMaterial.slice(0, 32), { name: "AES-CBC" }, false, ["encrypt"]);
     })();
-    keyCache.set(keyId, keyPromise);
+    setBounded(keyCache, keyId, keyPromise, KEY_CACHE_MAX_ENTRIES);
   }
   try {
     return await keyPromise;
@@ -179,6 +190,12 @@ const assertPageBytes = (pageBytes) => {
   }
 };
 
+const assertMod = (mod) => {
+  if (!Number.isInteger(mod) || mod <= 0 || mod > U32_MAX_PLUS_ONE) {
+    throw new RangeError("mod must be a positive integer <= 4294967296");
+  }
+};
+
 const requirePage = (name, page, pageBytes) => {
   if (!(page instanceof Uint8Array) || page.length !== pageBytes) {
     throw new TypeError(`${name} must be Uint8Array exactly matching pageBytes`);
@@ -200,17 +217,19 @@ const draw32 = async ({ seed, label, i, ctr }) => {
 };
 
 const uniformMod = async ({ seed, label, i, mod, ctr = 0 }) => {
-  if (!Number.isInteger(mod) || mod <= 0) {
-    throw new RangeError("mod must be a positive integer");
-  }
+  assertMod(mod);
   const limit = Math.floor(U32_MAX_PLUS_ONE / mod) * mod;
-  while (true) {
-    const n = await draw32({ seed, label, i, ctr });
-    ctr += 1;
+  const startCtr = Number.isInteger(ctr) && ctr >= 0 ? ctr : 0;
+  const stopCtr = startCtr + REJECTION_MAX_CTR;
+
+  for (let cursor = startCtr; cursor < stopCtr; cursor += 1) {
+    const n = await draw32({ seed, label, i, ctr: cursor });
     if (n < limit) {
-      return { value: n % mod, ctr };
+      return { value: n % mod, ctr: cursor + 1 };
     }
   }
+
+  throw new Error("parent invariants violated");
 };
 
 const pickDistinct = async ({ seed, label, i, count, maxExclusive, exclude = new Set() }) => {
@@ -256,9 +275,7 @@ const staticParentsOf = async (i, seed) => {
 };
 
 const uniformModExclude = async ({ seed, label, i, mod, exclude, maxCtr }) => {
-  if (!Number.isInteger(mod) || mod <= 0) {
-    throw new RangeError("mod must be a positive integer");
-  }
+  assertMod(mod);
   if (!Number.isInteger(maxCtr) || maxCtr <= 0) {
     throw new RangeError("maxCtr must be a positive integer");
   }
@@ -500,7 +517,8 @@ export const buildCrossEndFixture = async (vector, options = {}) => {
   if (!graphSeed || graphSeed.length !== 16) throw new Error("graphSeedHex invalid");
   if (!nonce || nonce.length !== 16) throw new Error("nonceHex invalid");
   const pageBytes = Number(vector.pageBytes || 64);
-  const mixRounds = Number(vector.mixRounds || 2);
+  const mixRounds = vector.mixRounds;
+  if (!Number.isInteger(mixRounds) || mixRounds < 1 || mixRounds > 4) throw new Error("mixRounds invalid");
   const pageCount = Number(vector.pages || 128);
   const indices = Array.isArray(vector.indices) ? vector.indices.map((x) => Number(x)) : [];
   const pages = await buildGraphPages({ graphSeed, nonce, pageBytes, mixRounds, pages: pageCount });
@@ -540,7 +558,7 @@ const initWorkerState = (payload) => {
   if (!Number.isInteger(steps) || steps < 1) throw new Error("steps invalid");
   if (!Number.isInteger(hashcashBits) || hashcashBits < 0) throw new Error("hashcashBits invalid");
   if (!Number.isInteger(pageBytes) || pageBytes < 16 || pageBytes % 16 !== 0) throw new Error("pageBytes invalid");
-  if (!Number.isInteger(mixRounds) || mixRounds < 0) throw new Error("mixRounds invalid");
+  if (!Number.isInteger(mixRounds) || mixRounds < 1 || mixRounds > 4) throw new Error("mixRounds invalid");
 
   state = {
     ticketB64,
