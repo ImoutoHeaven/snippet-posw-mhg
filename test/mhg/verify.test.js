@@ -107,6 +107,52 @@ const makeDynamicOpenVector = async ({ steps = 40, seg = 4, omit = [] } = {}) =>
   };
 };
 
+const makeMaterializedChain = async ({ steps = 24, genesisPage } = {}) => {
+  const graphSeed = Uint8Array.from({ length: 16 }, (_, i) => i + 1);
+  const nonce = Uint8Array.from({ length: 16 }, (_, i) => 16 - i);
+  const pageBytes = 64;
+
+  const pages = new Array(steps + 1);
+  pages[0] = genesisPage ?? await makeGenesisPage({ graphSeed, nonce, pageBytes });
+  for (let i = 1; i <= steps; i += 1) {
+    const p = await resolveParentsV4({ i, graphSeed, pageBytes, pages });
+    pages[i] = await mixPage({
+      i,
+      p0: pages[p.p0],
+      p1: pages[p.p1],
+      p2: pages[p.p2],
+      graphSeed,
+      nonce,
+      pageBytes,
+    });
+  }
+
+  const tree = await buildMerkle(pages);
+  return { graphSeed, nonce, pageBytes, pages, tree };
+};
+
+const makeOpenFromChain = async ({ i, seg, graphSeed, pageBytes, pages, tree }) => {
+  const need = new Set();
+  const eqStart = Math.max(1, i - seg + 1);
+  for (let j = eqStart; j <= i; j += 1) {
+    const p = await resolveParentsV4({ i: j, graphSeed, pageBytes, pages });
+    need.add(j);
+    need.add(p.p0);
+    need.add(p.p1);
+    need.add(p.p2);
+  }
+
+  const nodes = {};
+  for (const idx of need) {
+    nodes[String(idx)] = {
+      pageB64: b64u(pages[idx]),
+      proof: buildProof(tree, idx).map((x) => b64u(x)),
+    };
+  }
+
+  return { i, seg, nodes };
+};
+
 test("segmentLen=2 verifies equation closure", async () => {
   const { verifyBatch } = await import("../../lib/mhg/verify.js");
   const out = await verifyBatch({ fixture: "valid-seg2" });
@@ -213,6 +259,134 @@ test("rejects wrong node page length before proof verification", async () => {
   const out = await verifyOpenBatchVector(vector);
   assert.equal(out.ok, false);
   assert.equal(out.reason, "bad_open");
+});
+
+test("rejects non-canonical genesis when closure includes node 0", async () => {
+  const { verifyOpenBatchVector } = await import("../../lib/mhg/verify.js");
+
+  const graphSeed = Uint8Array.from({ length: 16 }, (_, i) => i + 1);
+  const nonce = Uint8Array.from({ length: 16 }, (_, i) => 16 - i);
+  const pageBytes = 64;
+
+  const fakeGenesis = Uint8Array.from({ length: pageBytes }, (_, i) => (i * 17 + 3) & 0xff);
+  const p1 = await mixPage({
+    i: 1,
+    p0: fakeGenesis,
+    p1: fakeGenesis,
+    p2: fakeGenesis,
+    graphSeed,
+    nonce,
+    pageBytes,
+  });
+  const p2 = await mixPage({
+    i: 2,
+    p0: p1,
+    p1: fakeGenesis,
+    p2: fakeGenesis,
+    graphSeed,
+    nonce,
+    pageBytes,
+  });
+
+  const pages = [fakeGenesis, p1, p2];
+  const tree = await buildMerkle(pages);
+  const nodes = {
+    "0": { pageB64: b64u(pages[0]), proof: buildProof(tree, 0).map((x) => b64u(x)) },
+    "1": { pageB64: b64u(pages[1]), proof: buildProof(tree, 1).map((x) => b64u(x)) },
+    "2": { pageB64: b64u(pages[2]), proof: buildProof(tree, 2).map((x) => b64u(x)) },
+  };
+
+  const out = await verifyOpenBatchVector({
+    root: tree.root,
+    leafCount: tree.leafCount,
+    graphSeed,
+    nonce,
+    pageBytes,
+    opens: [{ i: 2, seg: 2, nodes }],
+  });
+
+  assert.equal(out.ok, false);
+  assert.equal(out.reason, "equation_failed");
+  assert.equal(out.index, 0);
+});
+
+test("verifies open vectors when closure does not include node 0", async () => {
+  const { verifyOpenBatchVector } = await import("../../lib/mhg/verify.js");
+
+  const vector = await makeDynamicOpenVector({ steps: 24, seg: 2 });
+  assert.equal(Object.prototype.hasOwnProperty.call(vector.opens[0].nodes, "0"), false);
+  const out = await verifyOpenBatchVector(vector);
+  assert.equal(out.ok, true);
+});
+
+test("multi-open batch supports mixed closures with and without node 0", async () => {
+  const { verifyOpenBatchVector } = await import("../../lib/mhg/verify.js");
+
+  const chain = await makeMaterializedChain({ steps: 24 });
+  const withGenesis = await makeOpenFromChain({
+    i: 2,
+    seg: 2,
+    graphSeed: chain.graphSeed,
+    pageBytes: chain.pageBytes,
+    pages: chain.pages,
+    tree: chain.tree,
+  });
+  const withoutGenesis = await makeOpenFromChain({
+    i: 24,
+    seg: 2,
+    graphSeed: chain.graphSeed,
+    pageBytes: chain.pageBytes,
+    pages: chain.pages,
+    tree: chain.tree,
+  });
+
+  assert.equal(Object.prototype.hasOwnProperty.call(withGenesis.nodes, "0"), true);
+  assert.equal(Object.prototype.hasOwnProperty.call(withoutGenesis.nodes, "0"), false);
+
+  const out = await verifyOpenBatchVector({
+    root: chain.tree.root,
+    leafCount: chain.tree.leafCount,
+    graphSeed: chain.graphSeed,
+    nonce: chain.nonce,
+    pageBytes: chain.pageBytes,
+    opens: [withGenesis, withoutGenesis],
+  });
+  assert.equal(out.ok, true);
+});
+
+test("multi-open batch verifies repeated closures that require node 0", async () => {
+  const { verifyOpenBatchVector } = await import("../../lib/mhg/verify.js");
+
+  const chain = await makeMaterializedChain({ steps: 24 });
+  const first = await makeOpenFromChain({
+    i: 1,
+    seg: 2,
+    graphSeed: chain.graphSeed,
+    pageBytes: chain.pageBytes,
+    pages: chain.pages,
+    tree: chain.tree,
+  });
+  const second = await makeOpenFromChain({
+    i: 2,
+    seg: 2,
+    graphSeed: chain.graphSeed,
+    pageBytes: chain.pageBytes,
+    pages: chain.pages,
+    tree: chain.tree,
+  });
+
+  assert.equal(Object.prototype.hasOwnProperty.call(first.nodes, "0"), true);
+  assert.equal(Object.prototype.hasOwnProperty.call(second.nodes, "0"), true);
+
+  const out = await verifyOpenBatchVector({
+    root: chain.tree.root,
+    leafCount: chain.tree.leafCount,
+    graphSeed: chain.graphSeed,
+    nonce: chain.nonce,
+    pageBytes: chain.pageBytes,
+    opens: [first, second],
+  });
+  assert.equal(out.ok, true);
 });
 
 test("present-but-malformed required nodes return bad_open", async () => {

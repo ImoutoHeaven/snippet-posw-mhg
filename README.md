@@ -74,6 +74,8 @@ Notes:
 - No client-side wasm hash fallback/injection path is retained.
 - Client protocol flow keeps server-provided fields as-is at the transport boundary.
 - Segment length contract is hard-cut to `2..16` across challenge issue, worker open construction, and server open verification.
+- Server open verification now enforces a canonical genesis anchor: when an open closure requires node `0`, `verifyOpenBatchVector` compares witnessed `page[0]` against `makeGenesisPage(graphSeed, nonce, pageBytes)` before replaying equations.
+- Anchor mismatch failure shape is `reason: "equation_failed", index: 0`; regression coverage lives in `test/mhg/verify.test.js` with `rejects non-canonical genesis when closure includes node 0` (negative) and `verifies open vectors when closure does not include node 0` (control).
 - Parent API is explicit two-stage only: `staticParentsOf(i, seed)` for `p0/p1`, then `deriveDynamicParent2({ i, seed, pageBytes, p0, p1, p0Page, p1Page })` for `p2`.
 - Parent derivation is hard-cut and canonical: `p0/p1` are static from seed+index, and `p2` is derived from `SHA256("MHG1-P2|v4", seed, i, pageBytes, p0Page, p1Page)`.
 - Dynamic parent sampling uses rejection sampling with exclusion `{p0,p1}`.
