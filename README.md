@@ -74,7 +74,10 @@ Notes:
 - No client-side wasm hash fallback/injection path is retained.
 - Client protocol flow keeps server-provided fields as-is at the transport boundary.
 - Segment length contract is hard-cut to `2..16` across challenge issue, worker open construction, and server open verification.
-- Parent derivation is hybrid and canonical: `p0/p1` are static from seed+index, `p2` is data-dependent from predecessor page bytes, and worker/server share the same parent contract implementation.
+- Parent derivation is hard-cut and canonical: `p0/p1` are static from seed+index, and `p2 = u32(SHA256("MHG1-P2", seed, i, pageBytes, prevPage)) % i` with invariant probing.
+- `p2` derivation is full-page only (`prevPage.length === pageBytes`); the old top32-only (`Top32(prevPage) % i`) contract is removed.
+- Graph seed derivation is hard-cut to `mhg|graph|v3|` with no fallback to earlier labels.
+- No migration or compatibility branch is retained for parent derivation or graph-seed derivation.
 - Worker bootstrap is import-safe for direct module URLs: `glue.js` imports `POW_ESM_URL`, reads exported `workerUrl`, and creates module workers with `new Worker(workerUrl, { type: "module" })`.
 
 Deployment chain is strict: `pow-config -> pow-core-1 -> pow-core-2`.

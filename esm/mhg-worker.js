@@ -6,7 +6,7 @@ const LABEL = {
   iv0: encoder.encode("MHG1-IV0"),
   pa: encoder.encode("MHG1-PA"),
   pb: encoder.encode("MHG1-PB"),
-  graphPrefix: encoder.encode("mhg|graph|v2|"),
+  graphPrefix: encoder.encode("mhg|graph|v3|"),
   bar: encoder.encode("|"),
   hashcashV4: encoder.encode("hashcash|v4|"),
   nonceV1: encoder.encode("mhg|commit-nonce|v1|"),
@@ -173,10 +173,22 @@ const mixPage = async ({ i, p0, p1, p2, graphSeed, nonce, pageBytes, mixRounds =
   return state;
 };
 
-const requirePrevPage = (prevPage) => {
-  if (!(prevPage instanceof Uint8Array) || prevPage.length < 4) {
-    throw new TypeError("prevPage must be Uint8Array with length >= 4 for i >= 3");
+const assertPageBytes = (pageBytes) => {
+  if (!Number.isInteger(pageBytes) || pageBytes < 16 || pageBytes % 16 !== 0) {
+    throw new RangeError("pageBytes must be an integer >= 16 and multiple of 16");
   }
+};
+
+const requirePrevPage = (prevPage, pageBytes) => {
+  if (!(prevPage instanceof Uint8Array) || prevPage.length !== pageBytes) {
+    throw new TypeError("prevPage must be Uint8Array exactly matching pageBytes for full-page p2 derivation");
+  }
+};
+
+const pageBytesFromInputs = (prevPage, pageBytes) => {
+  const normalized = pageBytes ?? (prevPage instanceof Uint8Array ? prevPage.length : undefined);
+  assertPageBytes(normalized);
+  return normalized;
 };
 
 const draw32 = async ({ seed, label, i, ctr }) => {
@@ -240,17 +252,22 @@ const staticParentsOf = async (i, seed) => {
   return { p0, p1 };
 };
 
-const deriveDynamicParent2 = ({ i, prevPage, p0, p1 }) => {
+const deriveDynamicParent2 = async ({ i, seed, prevPage, pageBytes, p0, p1 }) => {
   if (!Number.isInteger(i) || i < 3) {
     throw new RangeError("index i must be an integer >= 3");
   }
-  requirePrevPage(prevPage);
+  if (!(seed instanceof Uint8Array)) {
+    throw new TypeError("seed must be Uint8Array");
+  }
+  assertPageBytes(pageBytes);
+  requirePrevPage(prevPage, pageBytes);
 
   if (!Number.isInteger(p0) || !Number.isInteger(p1) || p0 < 0 || p1 < 0 || p0 >= i || p1 >= i || p0 === p1) {
     throw new Error("parent invariants violated");
   }
 
-  let candidate = readU32be(prevPage, 0) % i;
+  const digest = await sha256("MHG1-P2", seed, u32be(i), u32be(pageBytes), prevPage);
+  let candidate = readU32be(digest, 0) % i;
 
   for (let checks = 0; checks < 3; checks += 1) {
     if (candidate !== p0 && candidate !== p1) {
@@ -262,7 +279,7 @@ const deriveDynamicParent2 = ({ i, prevPage, p0, p1 }) => {
   throw new Error("parent invariants violated");
 };
 
-const canonicalParentsOf = async (i, seed, prevPage) => {
+const canonicalParentsOf = async (i, seed, prevPage, pageBytes) => {
   if (!Number.isInteger(i) || i <= 0) {
     throw new RangeError("index i must be a positive integer");
   }
@@ -277,19 +294,20 @@ const canonicalParentsOf = async (i, seed, prevPage) => {
     return { p0: 1, p1: 0, p2: 0 };
   }
 
-  requirePrevPage(prevPage);
+  const normalizedPageBytes = pageBytesFromInputs(prevPage, pageBytes);
+  requirePrevPage(prevPage, normalizedPageBytes);
   const { p0, p1 } = await staticParentsOf(i, seed);
-  const p2 = deriveDynamicParent2({ i, prevPage, p0, p1 });
+  const p2 = await deriveDynamicParent2({ i, seed, prevPage, pageBytes: normalizedPageBytes, p0, p1 });
   return { p0, p1, p2 };
 };
 
-const createParentsResolver = (graphSeed, pages) => {
+const createParentsResolver = (graphSeed, pages, pageBytes) => {
   const cache = new Map();
   return async (index) => {
     if (cache.has(index)) return cache.get(index);
     const value =
       index >= 3
-        ? await canonicalParentsOf(index, graphSeed, pages[index - 1])
+        ? await canonicalParentsOf(index, graphSeed, pages[index - 1], pageBytes)
         : await canonicalParentsOf(index, graphSeed);
     cache.set(index, value);
     return value;
@@ -386,7 +404,7 @@ const buildEqSet = (index, segmentLen) => {
   return out;
 };
 
-const toOpenEntry = async ({ idx, seg, pages, levels, graphSeed }) => {
+const toOpenEntry = async ({ idx, seg, pages, levels, graphSeed, pageBytes }) => {
   const segmentLen = seg;
   if (!Number.isInteger(segmentLen) || segmentLen < 2 || segmentLen > 16) {
     throw new Error("segs invalid");
@@ -394,7 +412,9 @@ const toOpenEntry = async ({ idx, seg, pages, levels, graphSeed }) => {
   const eqSet = buildEqSet(idx, segmentLen);
   const need = new Set();
   for (const j of eqSet) {
-    const p = j >= 3 ? await canonicalParentsOf(j, graphSeed, pages[j - 1]) : await canonicalParentsOf(j, graphSeed);
+    const p = j >= 3
+      ? await canonicalParentsOf(j, graphSeed, pages[j - 1], pageBytes)
+      : await canonicalParentsOf(j, graphSeed);
     need.add(j);
     need.add(p.p0);
     need.add(p.p1);
@@ -426,18 +446,23 @@ const buildGraphPages = async ({
   checkCancelled,
 }) => {
   const out = new Array(pages);
-  const parentsOfIndex = createParentsResolver(graphSeed, out);
+  const parentsOfIndex = createParentsResolver(graphSeed, out, pageBytes);
   const total = Math.max(0, pages - 1);
   out[0] = await makeGenesisPage({ graphSeed, nonce, pageBytes });
   if (typeof onProgress === "function") onProgress(0, total);
   for (let i = 1; i < pages; i += 1) {
     if (typeof checkCancelled === "function") checkCancelled();
     const p = await parentsOfIndex(i);
+    if (typeof checkCancelled === "function") checkCancelled();
+    const p0 = out[p.p0];
+    const p1 = out[p.p1];
+    const p2 = out[p.p2];
+    if (typeof checkCancelled === "function") checkCancelled();
     out[i] = await mixPage({
       i,
-      p0: out[p.p0],
-      p1: out[p.p1],
-      p2: out[p.p2],
+      p0,
+      p1,
+      p2,
       graphSeed,
       nonce,
       pageBytes,
@@ -464,9 +489,9 @@ export const buildCrossEndFixture = async (vector, options = {}) => {
   if (typeof options.mutatePages === "function") options.mutatePages(pages);
   const tree = await buildMerkle(pages);
   const segs = Array.isArray(vector.segs) ? vector.segs : [];
-  const opens = await Promise.all(
-    indices.map((idx, pos) => toOpenEntry({ idx, seg: segs[pos] ?? 2, pages, levels: tree.levels, graphSeed }))
-  );
+  const opens = await Promise.all(indices.map((idx, pos) =>
+    toOpenEntry({ idx, seg: segs[pos] ?? 2, pages, levels: tree.levels, graphSeed, pageBytes })
+  ));
   return {
     root: tree.root,
     rootB64: b64u(tree.root),
@@ -594,6 +619,7 @@ const computeOpen = async (payload) => {
         pages: state.pages,
         levels: state.levels,
         graphSeed: state.graphSeed,
+        pageBytes: state.pageBytes,
       })
     );
     emitProgress("open", i + 1, indices.length, 0);

@@ -2,8 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { LOW_PROFILE, assertLowProfileFixture } from "./helpers/low-profile.js";
-import { runWorkerFlow } from "./helpers/worker-rpc-harness.js";
+import { cleanupWorkerGlobals, createTestWorker, rpcCall, runWorkerFlow } from "./helpers/worker-rpc-harness.js";
 import { runGlueFlow } from "./helpers/glue-flow-harness.js";
+
+const CANCEL_MAX_MS = Number(process.env.MHG_CANCEL_MAX_MS || 1000);
+const nowMs = () => Date.now();
 
 test("L2 multi-worker race has one winner and disposes losers", async () => {
   const fixture = {
@@ -142,4 +145,33 @@ test("L2 one real-worker smoke remains low-difficulty", async () => {
   assert.equal(typeof out.commit.rootB64, "string");
   assert.equal(typeof out.commit.nonce, "string");
   assert.equal(out.open.opens[0].seg, 4);
+});
+
+test("L2 cancel latency stays bounded while worker is under load", { timeout: 30000 }, async () => {
+  const worker = await createTestWorker();
+  try {
+    await rpcCall(worker, "INIT", {
+      ticketB64: "dGVzdC10aWNrZXQtbDItY2FuY2Vs",
+      steps: 384,
+      pageBytes: 1024,
+      mixRounds: 3,
+      hashcashBits: 8,
+    });
+
+    const commitPromise = rpcCall(worker, "COMMIT");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const cancelStart = nowMs();
+    await rpcCall(worker, "CANCEL");
+    const cancelAckMs = nowMs() - cancelStart;
+    assert.ok(cancelAckMs <= CANCEL_MAX_MS, `cancel ACK took ${cancelAckMs}ms (budget ${CANCEL_MAX_MS}ms)`);
+
+    const commitAbortStart = nowMs();
+    await assert.rejects(commitPromise, /mhg aborted/);
+    const commitAbortMs = nowMs() - commitAbortStart;
+    assert.ok(commitAbortMs <= CANCEL_MAX_MS, `commit abort took ${commitAbortMs}ms (budget ${CANCEL_MAX_MS}ms)`);
+  } finally {
+    worker.terminate();
+    await cleanupWorkerGlobals();
+  }
 });

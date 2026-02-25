@@ -35,7 +35,7 @@ const b64uToBytes = (value) => {
 
 export async function deriveGraphSeed16FromTicketNonce(ticketB64, nonceString) {
   const digest = await sha256(
-    encoder.encode("mhg|graph|v2|"),
+    encoder.encode("mhg|graph|v3|"),
     encoder.encode(ticketB64),
     encoder.encode("|"),
     encoder.encode(nonceString)

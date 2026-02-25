@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createPowRuntimeFixture } from "../helpers/pow-runtime-fixture.js";
 import { __testNormalizeConfig as normalizePowConfig } from "../../pow-config.js";
+import { verifyOpenBatchVector } from "../../lib/mhg/verify.js";
 
 const CONFIG_SECRET = "config-secret";
 const POW_SECRET = "pow-secret";
@@ -252,8 +253,8 @@ const extractChallengeArgs = (html) => {
   return { ticketB64: match[3], pathHash: match[4] };
 };
 
-const deriveMhgGraphSeed = (ticketB64, nonce) =>
-  crypto.createHash("sha256").update(`mhg|graph|v2|${ticketB64}|${nonce}`).digest().subarray(0, 16);
+const deriveMhgGraphSeed = (ticketB64, nonce, graphLabel = "v3") =>
+  crypto.createHash("sha256").update(`mhg|graph|${graphLabel}|${ticketB64}|${nonce}`).digest().subarray(0, 16);
 
 const deriveMhgNonce16 = (nonce) => {
   const raw = fromBase64Url(nonce);
@@ -261,13 +262,13 @@ const deriveMhgNonce16 = (nonce) => {
   return crypto.createHash("sha256").update(raw).digest().subarray(0, 16);
 };
 
-const buildMhgWitnessBundle = async ({ ticketB64, nonce }) => {
+const buildMhgWitnessBundle = async ({ ticketB64, nonce, graphLabel = "v3" }) => {
   const { parentsOf } = await import("../../lib/mhg/graph.js");
   const { makeGenesisPage, mixPage } = await import("../../lib/mhg/mix-aes.js");
   const { buildMerkle, buildProof } = await import("../../lib/mhg/merkle.js");
   const ticket = parseTicket(ticketB64);
   if (!ticket) throw new Error("invalid ticket");
-  const graphSeed = deriveMhgGraphSeed(ticketB64, nonce);
+  const graphSeed = deriveMhgGraphSeed(ticketB64, nonce, graphLabel);
   const nonce16 = deriveMhgNonce16(nonce);
   const pageBytes = 64;
   const pages = new Array(ticket.L + 1);
@@ -621,6 +622,142 @@ test("old-version tickets are rejected fail-closed", async () => {
     assert.equal(commitRes.status, 403);
     assert.equal(commitRes.headers.get("x-pow-h"), "stale");
     assert.equal(await commitRes.text(), "");
+  } finally {
+    restoreGlobals();
+  }
+});
+
+test("v2-derived vector no longer verifies under v3 graph seed contract", async () => {
+  const restoreGlobals = ensureGlobals();
+  try {
+    const bridgeFetch = await buildSplitBridgeFetch();
+    const payload = makeInnerPayload({ turncheck: false });
+    const pageRes = await bridgeFetch(
+      new Request("https://example.com/protected", {
+        headers: {
+          ...makeInnerHeaders(payload),
+          Accept: "text/html",
+          "CF-Connecting-IP": "1.2.3.4",
+        },
+      }),
+      {},
+      {}
+    );
+    assert.equal(pageRes.status, 200);
+    const args = extractChallengeArgs(await pageRes.text());
+    assert.ok(args);
+
+    const nonce = base64Url(crypto.randomBytes(16));
+    const ticket = parseTicket(args.ticketB64);
+    assert.ok(ticket);
+    const witness = await buildMhgWitnessBundle({ ticketB64: args.ticketB64, nonce, graphLabel: "v2" });
+    const graphSeedV3 = deriveMhgGraphSeed(args.ticketB64, nonce, "v3");
+    const nonce16 = deriveMhgNonce16(nonce);
+    const index = Math.min(ticket.L, 3);
+    const open = witness.makeOpenEntry(index, 2);
+
+    const verified = await verifyOpenBatchVector({
+      rootB64: witness.rootB64,
+      leafCount: ticket.L + 1,
+      graphSeed: graphSeedV3,
+      nonce: nonce16,
+      pageBytes: 64,
+      mixRounds: 2,
+      opens: [open],
+    });
+    assert.equal(verified.ok, false);
+    assert.equal(verified.reason, "equation_failed");
+  } finally {
+    restoreGlobals();
+  }
+});
+
+test("/__pow/open rejects v2-derived vectors with cheat hint", async () => {
+  const restoreGlobals = ensureGlobals();
+  try {
+    const bridgeFetch = await buildSplitBridgeFetch();
+    const payload = makeInnerPayload({ turncheck: false });
+    const pageRes = await bridgeFetch(
+      new Request("https://example.com/protected", {
+        headers: {
+          ...makeInnerHeaders(payload),
+          Accept: "text/html",
+          "CF-Connecting-IP": "1.2.3.4",
+        },
+      }),
+      {},
+      {}
+    );
+    assert.equal(pageRes.status, 200);
+    const args = extractChallengeArgs(await pageRes.text());
+    assert.ok(args);
+
+    const nonce = base64Url(crypto.randomBytes(16));
+    const witness = await buildMhgWitnessBundle({ ticketB64: args.ticketB64, nonce, graphLabel: "v2" });
+
+    const commitRes = await bridgeFetch(
+      new Request("https://example.com/__pow/commit", {
+        method: "POST",
+        headers: {
+          ...makeInnerHeaders(payload),
+          "Content-Type": "application/json",
+          "CF-Connecting-IP": "1.2.3.4",
+        },
+        body: JSON.stringify({
+          ticketB64: args.ticketB64,
+          rootB64: witness.rootB64,
+          pathHash: args.pathHash,
+          nonce,
+          captchaToken: "",
+        }),
+      }),
+      {},
+      {}
+    );
+    assert.equal(commitRes.status, 200);
+    const commitCookie = (commitRes.headers.get("set-cookie") || "").split(";")[0];
+    assert.ok(commitCookie);
+
+    const challengeRes = await bridgeFetch(
+      new Request("https://example.com/__pow/challenge", {
+        method: "POST",
+        headers: {
+          ...makeInnerHeaders(payload),
+          "Content-Type": "application/json",
+          Cookie: commitCookie,
+        },
+        body: JSON.stringify({}),
+      }),
+      {},
+      {}
+    );
+    assert.equal(challengeRes.status, 200);
+    const challenge = await challengeRes.json();
+    assert.equal(challenge.done, false);
+
+    const opens = challenge.indices.map((idx, pos) => witness.makeOpenEntry(idx, challenge.segs[pos]));
+    const openRes = await bridgeFetch(
+      new Request("https://example.com/__pow/open", {
+        method: "POST",
+        headers: {
+          ...makeInnerHeaders(payload),
+          "Content-Type": "application/json",
+          Cookie: commitCookie,
+        },
+        body: JSON.stringify({
+          sid: challenge.sid,
+          cursor: challenge.cursor,
+          token: challenge.token,
+          captchaToken: "",
+          opens,
+        }),
+      }),
+      {},
+      {}
+    );
+
+    assert.equal(openRes.status, 403);
+    assert.equal(openRes.headers.get("x-pow-h"), "cheat");
   } finally {
     restoreGlobals();
   }

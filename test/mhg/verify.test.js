@@ -11,6 +11,12 @@ const b64u = (bytes) =>
     .replace(/\//g, "_")
     .replace(/=+$/g, "");
 
+const fromB64u = (value) => {
+  const normalized = String(value || "").replace(/-/g, "+").replace(/_/g, "/");
+  const pad = normalized.length % 4 === 0 ? "" : "=".repeat(4 - (normalized.length % 4));
+  return Buffer.from(normalized + pad, "base64");
+};
+
 const makeOpenVector = async ({ omit = [] } = {}) => {
   const graphSeed = Uint8Array.from({ length: 16 }, (_, i) => i + 1);
   const nonce = Uint8Array.from({ length: 16 }, (_, i) => 16 - i);
@@ -239,4 +245,27 @@ test("present-but-malformed required nodes return bad_open", async () => {
   const badProofOut = await verifyOpenBatchVector(badProof);
   assert.equal(badProofOut.ok, false);
   assert.equal(badProofOut.reason, "bad_open");
+});
+
+test("invalid p0 proof fails before equation evaluation for j>=3", async () => {
+  const { verifyOpenBatchVector } = await import("../../lib/mhg/verify.js");
+  const vector = await makeDynamicOpenVector({ steps: 24, seg: 2 });
+  const j = 24;
+  const p0Idx = vector.parentByIndex[j].p0;
+  const p0Node = vector.opens[0].nodes[String(p0Idx)];
+
+  const p0Proof0 = fromB64u(p0Node.proof[0]);
+  p0Proof0[0] ^= 0xff;
+  p0Node.proof[0] = b64u(p0Proof0);
+
+  // If the verifier ever reaches the equation pass, this tampered page would flip the failure class.
+  const jNode = vector.opens[0].nodes[String(j)];
+  const jPage = fromB64u(jNode.pageB64);
+  jPage[0] ^= 0xff;
+  jNode.pageB64 = b64u(jPage);
+
+  const out = await verifyOpenBatchVector(vector);
+  assert.equal(out.ok, false);
+  assert.equal(out.reason, "proof_failed");
+  assert.equal(out.index, p0Idx);
 });
