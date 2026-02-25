@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parentsOf } from "../../lib/mhg/graph.js";
 import { makeGenesisPage, mixPage } from "../../lib/mhg/mix-aes.js";
 import { buildMerkle, buildProof } from "../../lib/mhg/merkle.js";
+import { resolveParentsV4 } from "./helpers/resolve-parents-v4.js";
 
 const b64u = (bytes) =>
   Buffer.from(bytes)
@@ -30,7 +30,7 @@ const makeOpenVector = async ({ omit = [] } = {}) => {
   const need = new Set([2]);
   const e = [2];
   for (const j of e) {
-    const p = await parentsOf(j, graphSeed);
+    const p = await resolveParentsV4({ i: j, graphSeed, pageBytes, pages });
     need.add(p.p0);
     need.add(p.p1);
     need.add(p.p2);
@@ -63,7 +63,7 @@ const makeDynamicOpenVector = async ({ steps = 40, seg = 4, omit = [] } = {}) =>
   const parentByIndex = {};
   pages[0] = await makeGenesisPage({ graphSeed, nonce, pageBytes });
   for (let i = 1; i <= steps; i += 1) {
-    const p = await parentsOf(i, graphSeed, i >= 3 ? pages[i - 1] : undefined);
+    const p = await resolveParentsV4({ i, graphSeed, pageBytes, pages });
     parentByIndex[i] = p;
     pages[i] = await mixPage({
       i,
@@ -80,7 +80,7 @@ const makeDynamicOpenVector = async ({ steps = 40, seg = 4, omit = [] } = {}) =>
   const need = new Set();
   const eqStart = Math.max(1, steps - seg + 1);
   for (let j = eqStart; j <= steps; j += 1) {
-    const p = await parentsOf(j, graphSeed, j >= 3 ? pages[j - 1] : undefined);
+    const p = await resolveParentsV4({ i: j, graphSeed, pageBytes, pages });
     need.add(j);
     need.add(p.p0);
     need.add(p.p1);

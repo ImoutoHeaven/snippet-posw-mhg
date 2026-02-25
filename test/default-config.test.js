@@ -701,7 +701,7 @@ test("README documents split-chain deployment and snippet contracts", async () =
   assert.match(readme, /pow_core2_snippet\.js/u);
   assert.match(readme, /pow-config\s*->\s*pow-core-1\s*->\s*pow-core-2/u);
   assert.match(readme, /fail-closed/u);
-  assert.match(readme, /no compat/u);
+  assert.match(readme, /no dead code branches/u);
   assert.match(readme, /32\s*KiB.*hard/u);
   assert.doesNotMatch(readme, /23\s*KiB/u);
   assert.doesNotMatch(readme, /best-effort/u);

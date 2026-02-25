@@ -5,7 +5,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { join } from "node:path";
 
 import { mixPage } from "../../lib/mhg/mix-aes.js";
-import { parentsOf } from "../../lib/mhg/graph.js";
+import { deriveDynamicParent2, staticParentsOf } from "../../lib/mhg/graph.js";
 import { verifyOpenBatchVector } from "../../lib/mhg/verify.js";
 
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
@@ -42,24 +42,41 @@ const u32be = (value) => {
 const readU32be = (bytes, offset) =>
   (((bytes[offset] << 24) | (bytes[offset + 1] << 16) | (bytes[offset + 2] << 8) | bytes[offset + 3]) >>> 0);
 
-const resolveP2Candidate = (candidate, i, p0, p1) => {
-  let next = candidate;
-  for (let checks = 0; checks < 3; checks += 1) {
-    if (next !== p0 && next !== p1) return next;
-    next = (next + 1) % i;
+const U32_MAX_PLUS_ONE = 0x1_0000_0000;
+
+const oracleDynamicParent2V4 = async ({ j, seed, pageBytes, p0, p1, p0Page, p1Page }) => {
+  const seedP2 = await digest(encoder.encode("MHG1-P2|v4"), seed, u32be(j), u32be(pageBytes), p0Page, p1Page);
+  const limit = Math.floor(U32_MAX_PLUS_ONE / j) * j;
+  for (let ctr = 0; ctr < (1 << 20); ctr += 1) {
+    const nDigest = await digest(encoder.encode("MHG1-PRF"), seedP2, encoder.encode("p2"), u32be(j), u32be(ctr));
+    const n = readU32be(nDigest, 0);
+    if (n >= limit) continue;
+    const pick = n % j;
+    if (pick === p0 || pick === p1) continue;
+    return pick;
   }
   throw new Error("parent invariants violated");
 };
 
-const oracleDynamicParent2 = async ({ j, seed, pageBytes, prevPage, p0, p1 }) => {
-  const h = await digest(encoder.encode("MHG1-P2"), seed, u32be(j), u32be(pageBytes), prevPage);
-  const candidate = readU32be(h, 0) % j;
-  return resolveP2Candidate(candidate, j, p0, p1);
+const resolveParentsV4 = async ({ i, graphSeed, pageBytes, readNodePage }) => {
+  if (i === 1) return { p0: 0, p1: 0, p2: 0 };
+  if (i === 2) return { p0: 1, p1: 0, p2: 0 };
+  const { p0, p1 } = await staticParentsOf(i, graphSeed);
+  const p2 = await deriveDynamicParent2({
+    i,
+    seed: graphSeed,
+    pageBytes,
+    p0,
+    p1,
+    p0Page: readNodePage(p0),
+    p1Page: readNodePage(p1),
+  });
+  return { p0, p1, p2 };
 };
 
 const deriveGraphSeed16 = async (ticketB64, nonceString) => {
   const d = await digest(
-    encoder.encode("mhg|graph|v3|"),
+    encoder.encode("mhg|graph|v4|"),
     encoder.encode(ticketB64),
     encoder.encode("|"),
     encoder.encode(nonceString),
@@ -67,25 +84,25 @@ const deriveGraphSeed16 = async (ticketB64, nonceString) => {
   return d.slice(0, 16);
 };
 
-test("graph seed derivation uses v3 label contract", async () => {
-  const ticketB64 = "dGVzdC10aWNrZXQtdjM";
-  const nonce = "bm9uY2UtdjMtY29udHJhY3Q";
+test("graph seed derivation uses v4 label contract", async () => {
+  const ticketB64 = "dGVzdC10aWNrZXQtdjQ";
+  const nonce = "bm9uY2UtdjQtY29udHJhY3Q";
+  const expectedV4 = (await digest(
+    encoder.encode("mhg|graph|v4|"),
+    encoder.encode(ticketB64),
+    encoder.encode("|"),
+    encoder.encode(nonce),
+  )).slice(0, 16);
   const expectedV3 = (await digest(
     encoder.encode("mhg|graph|v3|"),
     encoder.encode(ticketB64),
     encoder.encode("|"),
     encoder.encode(nonce),
   )).slice(0, 16);
-  const expectedV2 = (await digest(
-    encoder.encode("mhg|graph|v2|"),
-    encoder.encode(ticketB64),
-    encoder.encode("|"),
-    encoder.encode(nonce),
-  )).slice(0, 16);
   const actual = await deriveGraphSeed16(ticketB64, nonce);
 
-  assert.deepEqual(actual, expectedV3);
-  assert.notDeepEqual(actual, expectedV2);
+  assert.deepEqual(actual, expectedV4);
+  assert.notDeepEqual(actual, expectedV3);
 });
 
 const deriveNonce16 = async (nonceString) => {
@@ -177,10 +194,13 @@ const expectedNeedKeysFromOpen = async ({ open, graphSeed }) => {
   const need = new Set();
   const eqSet = buildEqSet(open.i, open.seg);
   const p2ByEquation = new Map();
+  const readNodePage = (idx) => {
+    const node = open.nodes[String(idx)];
+    if (!node) throw new Error(`missing node ${idx} from worker witness`);
+    return b64uToBytes(node.pageB64);
+  };
   for (const j of eqSet) {
-    const prevNode = open.nodes[String(j - 1)];
-    const prevPage = j >= 3 ? b64uToBytes(prevNode && prevNode.pageB64) : undefined;
-    const parents = await parentsOf(j, graphSeed, prevPage);
+    const parents = await resolveParentsV4({ i: j, graphSeed, pageBytes: readNodePage(j).length, readNodePage });
     need.add(j);
     need.add(parents.p0);
     need.add(parents.p1);
@@ -200,8 +220,7 @@ const verifyOpenEquationsWithServer = async ({ open, graphSeed, nonce, pageBytes
 
   const eqSet = buildEqSet(open.i, open.seg);
   for (const i of eqSet) {
-    const prevPage = i >= 3 ? readNodePage(i - 1) : undefined;
-    const parent = await parentsOf(i, graphSeed, prevPage);
+    const parent = await resolveParentsV4({ i, graphSeed, pageBytes, readNodePage });
     const expected = await mixPage({
       i,
       p0: readNodePage(parent.p0),
@@ -266,7 +285,6 @@ test("server mixPage matches worker bytes for identical inputs", async () => {
   const { commit, open } = await runWorkerFlow({ ticketB64, steps, indices: [index], segs: [2] });
   const graphSeed = await deriveGraphSeed16(ticketB64, commit.nonce);
   const nonce = await deriveNonce16(commit.nonce);
-  const parent = await parentsOf(index, graphSeed, b64uToBytes(open.opens[0].nodes[String(index - 1)].pageB64));
   const entry = open.opens[0];
 
   const readNodePage = (idx) => {
@@ -274,6 +292,8 @@ test("server mixPage matches worker bytes for identical inputs", async () => {
     assert.ok(node, `missing node ${idx} from worker witness`);
     return b64uToBytes(node.pageB64);
   };
+
+  const parent = await resolveParentsV4({ i: index, graphSeed, pageBytes: 64, readNodePage });
 
   const serverPage = await mixPage({
     i: index,
@@ -358,45 +378,71 @@ test("worker/server parity holds with full-page dynamic parent hash", async () =
   const nonce = await deriveNonce16(commit.nonce);
 
   const byIndex = new Map(open.opens.map((entry) => [entry.i, entry]));
-  let sawDivergence = false;
+  let sawP0PageBinding = false;
+  let sawP1PageBinding = false;
   for (const j of indices) {
     const entry = byIndex.get(j);
     assert.ok(entry, `missing OPEN entry for index ${j}`);
-    const prevNode = entry.nodes[String(j - 1)];
-    assert.ok(prevNode, `missing prevPage node for index ${j}`);
-    const prevPage = b64uToBytes(prevNode.pageB64);
+    const readNodePage = (idx) => {
+      const node = entry.nodes[String(idx)];
+      assert.ok(node, `missing node ${idx} from worker witness`);
+      return b64uToBytes(node.pageB64);
+    };
 
-    const serverParents = await parentsOf(j, graphSeed, prevPage, pageBytes);
-    const expectedBase = await oracleDynamicParent2({
+    const serverParents = await resolveParentsV4({ i: j, graphSeed, pageBytes, readNodePage });
+    const p0Page = readNodePage(serverParents.p0);
+    const p1Page = readNodePage(serverParents.p1);
+
+    const expectedBase = await oracleDynamicParent2V4({
       j,
       seed: graphSeed,
       pageBytes,
-      prevPage,
       p0: serverParents.p0,
       p1: serverParents.p1,
+      p0Page,
+      p1Page,
     });
     assert.equal(serverParents.p2, expectedBase);
 
-    const tweaked = prevPage.slice();
-    let tweakedP2 = expectedBase;
+    const tweakedP0 = p0Page.slice();
     for (let x = 1; x <= 255; x += 1) {
-      tweaked[tweaked.length - 1] = x;
-      tweakedP2 = await oracleDynamicParent2({
+      tweakedP0[tweakedP0.length - 1] = p0Page[p0Page.length - 1] ^ x;
+      const tweakedP2 = await oracleDynamicParent2V4({
         j,
         seed: graphSeed,
         pageBytes,
-        prevPage: tweaked,
         p0: serverParents.p0,
         p1: serverParents.p1,
+        p0Page: tweakedP0,
+        p1Page,
       });
       if (tweakedP2 !== expectedBase) {
-        sawDivergence = true;
+        sawP0PageBinding = true;
+        break;
+      }
+    }
+
+    const tweakedP1 = p1Page.slice();
+    for (let x = 1; x <= 255; x += 1) {
+      tweakedP1[tweakedP1.length - 1] = p1Page[p1Page.length - 1] ^ x;
+      const tweakedP2 = await oracleDynamicParent2V4({
+        j,
+        seed: graphSeed,
+        pageBytes,
+        p0: serverParents.p0,
+        p1: serverParents.p1,
+        p0Page,
+        p1Page: tweakedP1,
+      });
+      if (tweakedP2 !== expectedBase) {
+        sawP1PageBinding = true;
         break;
       }
     }
   }
 
-  assert.equal(sawDivergence, true);
+  assert.equal(sawP0PageBinding, true);
+  assert.equal(sawP1PageBinding, true);
 
   const verified = await verifyOpenBatchVector({
     rootB64: commit.rootB64,

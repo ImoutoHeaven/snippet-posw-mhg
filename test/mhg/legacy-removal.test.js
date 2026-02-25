@@ -30,6 +30,12 @@ test("legacy pow chain symbols removed", async () => {
   assert.equal(readmeSource.includes("__Host-pow_commit` (v4)"), false);
   assert.equal(readmeSource.includes("POW_PAGE_BYTES"), true);
   assert.equal(readmeSource.includes("POW_MIX_ROUNDS"), true);
+  assert.equal(readmeSource.includes("MHG1-P2|v4"), true);
+  assert.equal(readmeSource.includes("mhg|graph|v4|"), true);
+  assert.equal(readmeSource.includes("staticParentsOf"), true);
+  assert.equal(readmeSource.includes("deriveDynamicParent2"), true);
+  assert.equal(readmeSource.includes("parentsOf"), false);
+  assert.equal(readmeSource.includes("prevPage"), false);
 });
 
 const collectCodeFiles = async (dir) => {

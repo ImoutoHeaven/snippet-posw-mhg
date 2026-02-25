@@ -6,7 +6,7 @@ const LABEL = {
   iv0: encoder.encode("MHG1-IV0"),
   pa: encoder.encode("MHG1-PA"),
   pb: encoder.encode("MHG1-PB"),
-  graphPrefix: encoder.encode("mhg|graph|v3|"),
+  graphPrefix: encoder.encode("mhg|graph|v4|"),
   bar: encoder.encode("|"),
   hashcashV4: encoder.encode("hashcash|v4|"),
   nonceV1: encoder.encode("mhg|commit-nonce|v1|"),
@@ -179,16 +179,19 @@ const assertPageBytes = (pageBytes) => {
   }
 };
 
-const requirePrevPage = (prevPage, pageBytes) => {
-  if (!(prevPage instanceof Uint8Array) || prevPage.length !== pageBytes) {
-    throw new TypeError("prevPage must be Uint8Array exactly matching pageBytes for full-page p2 derivation");
+const requirePage = (name, page, pageBytes) => {
+  if (!(page instanceof Uint8Array) || page.length !== pageBytes) {
+    throw new TypeError(`${name} must be Uint8Array exactly matching pageBytes`);
   }
 };
 
-const pageBytesFromInputs = (prevPage, pageBytes) => {
-  const normalized = pageBytes ?? (prevPage instanceof Uint8Array ? prevPage.length : undefined);
-  assertPageBytes(normalized);
-  return normalized;
+const assertParentInvariants = ({ i, p0, p1 }) => {
+  if (!Number.isInteger(i) || i < 3) {
+    throw new RangeError("index i must be an integer >= 3");
+  }
+  if (!Number.isInteger(p0) || !Number.isInteger(p1) || p0 < 0 || p1 < 0 || p0 >= i || p1 >= i || p0 === p1) {
+    throw new Error("parent invariants violated");
+  }
 };
 
 const draw32 = async ({ seed, label, i, ctr }) => {
@@ -252,34 +255,47 @@ const staticParentsOf = async (i, seed) => {
   return { p0, p1 };
 };
 
-const deriveDynamicParent2 = async ({ i, seed, prevPage, pageBytes, p0, p1 }) => {
-  if (!Number.isInteger(i) || i < 3) {
-    throw new RangeError("index i must be an integer >= 3");
+const uniformModExclude = async ({ seed, label, i, mod, exclude, maxCtr }) => {
+  if (!Number.isInteger(mod) || mod <= 0) {
+    throw new RangeError("mod must be a positive integer");
   }
-  if (!(seed instanceof Uint8Array)) {
-    throw new TypeError("seed must be Uint8Array");
-  }
-  assertPageBytes(pageBytes);
-  requirePrevPage(prevPage, pageBytes);
-
-  if (!Number.isInteger(p0) || !Number.isInteger(p1) || p0 < 0 || p1 < 0 || p0 >= i || p1 >= i || p0 === p1) {
-    throw new Error("parent invariants violated");
+  if (!Number.isInteger(maxCtr) || maxCtr <= 0) {
+    throw new RangeError("maxCtr must be a positive integer");
   }
 
-  const digest = await sha256("MHG1-P2", seed, u32be(i), u32be(pageBytes), prevPage);
-  let candidate = readU32be(digest, 0) % i;
-
-  for (let checks = 0; checks < 3; checks += 1) {
-    if (candidate !== p0 && candidate !== p1) {
-      return candidate;
-    }
-    candidate = (candidate + 1) % i;
+  const limit = Math.floor(U32_MAX_PLUS_ONE / mod) * mod;
+  for (let ctr = 0; ctr < maxCtr; ctr += 1) {
+    const n = await draw32({ seed, label, i, ctr });
+    if (n >= limit) continue;
+    const pick = n % mod;
+    if (exclude.has(pick)) continue;
+    return pick;
   }
 
   throw new Error("parent invariants violated");
 };
 
-const canonicalParentsOf = async (i, seed, prevPage, pageBytes) => {
+const deriveDynamicParent2 = async ({ i, seed, pageBytes, p0, p1, p0Page, p1Page }) => {
+  if (!(seed instanceof Uint8Array)) {
+    throw new TypeError("seed must be Uint8Array");
+  }
+  assertPageBytes(pageBytes);
+  requirePage("p0Page", p0Page, pageBytes);
+  requirePage("p1Page", p1Page, pageBytes);
+  assertParentInvariants({ i, p0, p1 });
+
+  const seedP2 = await sha256("MHG1-P2|v4", seed, u32be(i), u32be(pageBytes), p0Page, p1Page);
+  return uniformModExclude({
+    seed: seedP2,
+    label: "p2",
+    i,
+    mod: i,
+    exclude: new Set([p0, p1]),
+    maxCtr: 1 << 20,
+  });
+};
+
+const canonicalParentsOf = async (i, seed, pages, pageBytes) => {
   if (!Number.isInteger(i) || i <= 0) {
     throw new RangeError("index i must be a positive integer");
   }
@@ -294,10 +310,17 @@ const canonicalParentsOf = async (i, seed, prevPage, pageBytes) => {
     return { p0: 1, p1: 0, p2: 0 };
   }
 
-  const normalizedPageBytes = pageBytesFromInputs(prevPage, pageBytes);
-  requirePrevPage(prevPage, normalizedPageBytes);
+  assertPageBytes(pageBytes);
   const { p0, p1 } = await staticParentsOf(i, seed);
-  const p2 = await deriveDynamicParent2({ i, seed, prevPage, pageBytes: normalizedPageBytes, p0, p1 });
+  const p2 = await deriveDynamicParent2({
+    i,
+    seed,
+    pageBytes,
+    p0,
+    p1,
+    p0Page: pages[p0],
+    p1Page: pages[p1],
+  });
   return { p0, p1, p2 };
 };
 
@@ -305,10 +328,7 @@ const createParentsResolver = (graphSeed, pages, pageBytes) => {
   const cache = new Map();
   return async (index) => {
     if (cache.has(index)) return cache.get(index);
-    const value =
-      index >= 3
-        ? await canonicalParentsOf(index, graphSeed, pages[index - 1], pageBytes)
-        : await canonicalParentsOf(index, graphSeed);
+    const value = await canonicalParentsOf(index, graphSeed, pages, pageBytes);
     cache.set(index, value);
     return value;
   };
@@ -412,9 +432,7 @@ const toOpenEntry = async ({ idx, seg, pages, levels, graphSeed, pageBytes }) =>
   const eqSet = buildEqSet(idx, segmentLen);
   const need = new Set();
   for (const j of eqSet) {
-    const p = j >= 3
-      ? await canonicalParentsOf(j, graphSeed, pages[j - 1], pageBytes)
-      : await canonicalParentsOf(j, graphSeed);
+    const p = await canonicalParentsOf(j, graphSeed, pages, pageBytes);
     need.add(j);
     need.add(p.p0);
     need.add(p.p1);

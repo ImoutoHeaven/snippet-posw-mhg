@@ -40,18 +40,27 @@ const referenceStaticParentsOf = async (i, seed) => {
   return { p0, p1 };
 };
 
-const pageWithTop32 = (value) => {
-  const page = new Uint8Array(16);
-  page.set(u32be(value >>> 0), 0);
-  return page;
+const oracleP2V4 = async ({ i, seed, pageBytes, p0, p1, p0Page, p1Page }) => {
+  const { sha256 } = await import("../../lib/mhg/hash.js");
+  const seedP2 = await sha256("MHG1-P2|v4", seed, u32be(i), u32be(pageBytes), p0Page, p1Page);
+  const limit = Math.floor(U32_MAX_PLUS_ONE / i) * i;
+  let ctr = 0;
+  while (true) {
+    const n = await referenceDraw32({ seed: seedP2, label: "p2", i, ctr });
+    ctr += 1;
+    if (n >= limit) continue;
+    const pick = n % i;
+    if (pick === p0 || pick === p1) continue;
+    return pick;
+  }
 };
 
-test("parentsOf keeps boundary semantics for i=1 and i=2", async () => {
-  const { parentsOf } = await import("../../lib/mhg/graph.js");
-  const seed = new Uint8Array(16);
+test("graph parent API no longer exports parentsOf", async () => {
+  const graph = await import("../../lib/mhg/graph.js");
+  const parentContract = await import("../../lib/mhg/parent-contract.js");
 
-  assert.deepEqual(await parentsOf(1, seed), { p0: 0, p1: 0, p2: 0 });
-  assert.deepEqual(await parentsOf(2, seed), { p0: 1, p1: 0, p2: 0 });
+  assert.equal("parentsOf" in graph, false);
+  assert.equal("parentsOf" in parentContract, false);
 });
 
 test("staticParentsOf returns p0=i-1 and PRF p1", async () => {
@@ -67,109 +76,94 @@ test("staticParentsOf returns p0=i-1 and PRF p1", async () => {
   assert.ok(actual.p1 >= 0 && actual.p1 < 37);
 });
 
-test("deriveDynamicParent2 binds to full prevPage hash, not top32", async () => {
+test("deriveDynamicParent2 uses v4 dual-page rejection-sampling contract", async () => {
   const { deriveDynamicParent2 } = await import("../../lib/mhg/graph.js");
-  const { sha256, u32be } = await import("../../lib/mhg/hash.js");
-
-  const resolveCandidate = (candidate, i, p0, p1) => {
-    let x = candidate;
-    for (let checks = 0; checks < 3; checks += 1) {
-      if (x !== p0 && x !== p1) return x;
-      x = (x + 1) % i;
-    }
-    throw new Error("parent invariants violated");
-  };
 
   const seed = Uint8Array.from({ length: 16 }, (_, idx) => idx + 1);
   const i = 37;
   const pageBytes = 64;
   const p0 = 36;
   const p1 = 7;
+  const p0Page = Uint8Array.from({ length: pageBytes }, (_, idx) => (idx + 3) % 251);
+  const p1Page = Uint8Array.from({ length: pageBytes }, (_, idx) => (idx * 7 + 11) % 251);
 
-  const pageA = new Uint8Array(64);
-  pageA.set([0, 0, 0, 9], 0);
+  const p2BaseExpected = await oracleP2V4({ i, seed, pageBytes, p0, p1, p0Page, p1Page });
+  const p2Base = await deriveDynamicParent2({ i, seed, pageBytes, p0, p1, p0Page, p1Page });
+  assert.equal(p2Base, p2BaseExpected);
 
-  const expectedFromPage = async (page) => {
-    const h = await sha256("MHG1-P2", seed, u32be(i), u32be(pageBytes), page);
-    const c = new DataView(h.buffer, h.byteOffset, h.byteLength).getUint32(0, false) % i;
-    return resolveCandidate(c, i, p0, p1);
-  };
-
-  const pageB = pageA.slice();
-  const p2AExpected = await expectedFromPage(pageA);
-  let p2BExpected = p2AExpected;
+  const p0PageVariant = p0Page.slice();
+  let p2P0VariantExpected = p2BaseExpected;
   for (let x = 1; x <= 255; x += 1) {
-    pageB[63] = x;
-    p2BExpected = await expectedFromPage(pageB);
-    if (p2BExpected !== p2AExpected) break;
+    p0PageVariant[p0PageVariant.length - 1] = x;
+    p2P0VariantExpected = await oracleP2V4({
+      i,
+      seed,
+      pageBytes,
+      p0,
+      p1,
+      p0Page: p0PageVariant,
+      p1Page,
+    });
+    if (p2P0VariantExpected !== p2BaseExpected) break;
   }
-  assert.deepEqual(pageA.subarray(0, 4), pageB.subarray(0, 4));
-  assert.notEqual(p2AExpected, p2BExpected);
+  assert.notEqual(p2P0VariantExpected, p2BaseExpected);
+  const p2P0Variant = await deriveDynamicParent2({
+    i,
+    seed,
+    pageBytes,
+    p0,
+    p1,
+    p0Page: p0PageVariant,
+    p1Page,
+  });
+  assert.equal(p2P0Variant, p2P0VariantExpected);
+  assert.notEqual(p2P0Variant, p2Base);
 
-  const p2A = await deriveDynamicParent2({ i, seed, prevPage: pageA, pageBytes, p0, p1 });
-  const p2B = await deriveDynamicParent2({ i, seed, prevPage: pageB, pageBytes, p0, p1 });
-
-  assert.equal(p2A, p2AExpected);
-  assert.equal(p2B, p2BExpected);
-});
-
-test("deriveDynamicParent2 keeps wraparound probing invariants under hash candidate collisions", async () => {
-  const { deriveDynamicParent2 } = await import("../../lib/mhg/graph.js");
-  const { sha256, u32be } = await import("../../lib/mhg/hash.js");
-
-  const seed = Uint8Array.from({ length: 16 }, (_, idx) => idx + 9);
-  const i = 4;
-  const pageBytes = 64;
-  const p0 = 3;
-  const p1 = 0;
-
-  const page = new Uint8Array(64);
-  let forced = false;
-  for (let x = 0; x <= 255; x += 1) {
-    page[63] = x;
-    const h = await sha256("MHG1-P2", seed, u32be(i), u32be(pageBytes), page);
-    const c = new DataView(h.buffer, h.byteOffset, h.byteLength).getUint32(0, false) % i;
-    if (c === p0) {
-      forced = true;
+  const p1PageVariant = p1Page.slice();
+  let p2P1VariantExpected = p2BaseExpected;
+  for (let x = 1; x <= 255; x += 1) {
+    p1PageVariant[p1PageVariant.length - 1] = x;
+    p2P1VariantExpected = await oracleP2V4({
+      i,
+      seed,
+      pageBytes,
+      p0,
+      p1,
+      p0Page,
+      p1Page: p1PageVariant,
+    });
+    if (p2P1VariantExpected !== p2BaseExpected) {
       break;
     }
   }
-  assert.equal(forced, true);
-
-  const p2 = await deriveDynamicParent2({ i, seed, prevPage: page, pageBytes, p0, p1 });
-  assert.equal(p2, 1);
+  assert.notEqual(p2P1VariantExpected, p2BaseExpected);
+  const p2P1Variant = await deriveDynamicParent2({
+    i,
+    seed,
+    pageBytes,
+    p0,
+    p1,
+    p0Page,
+    p1Page: p1PageVariant,
+  });
+  assert.equal(p2P1Variant, p2P1VariantExpected);
+  assert.notEqual(p2P1Variant, p2Base);
 });
 
-test("parentsOf derives full-page-hash p2 from prevPage for i>=3", async () => {
-  const { parentsOf, staticParentsOf } = await import("../../lib/mhg/graph.js");
-  const seed = Uint8Array.from({ length: 16 }, (_, idx) => idx + 11);
-
-  const { p0, p1 } = await staticParentsOf(10, seed);
-  const prevPage = pageWithTop32(p0);
-  const result = await parentsOf(10, seed, prevPage);
-
-  assert.equal(result.p0, p0);
-  assert.equal(result.p1, p1);
-  assert.ok(result.p2 >= 0 && result.p2 < 10);
-  assert.notEqual(result.p2, p0);
-  assert.notEqual(result.p2, p1);
-});
-
-test("parentsOf enforces full-page prevPage contract for i>=3", async () => {
-  const { parentsOf } = await import("../../lib/mhg/graph.js");
-  const seed = new Uint8Array(16);
+test("deriveDynamicParent2 enforces dual-page invariants", async () => {
+  const { deriveDynamicParent2 } = await import("../../lib/mhg/graph.js");
+  const seed = Uint8Array.from({ length: 16 }, (_, idx) => idx + 5);
+  const pageBytes = 64;
+  const p0Page = new Uint8Array(pageBytes);
+  const p1Page = new Uint8Array(pageBytes);
 
   await assert.rejects(
-    async () => parentsOf(3, seed),
-    /pageBytes must be an integer >= 16 and multiple of 16/
+    async () => deriveDynamicParent2({ i: 9, seed, pageBytes, p0: 8, p1: 1, p1Page }),
+    /p0Page must be Uint8Array exactly matching pageBytes/
   );
   await assert.rejects(
-    async () => parentsOf(3, seed, "bad"),
-    /pageBytes must be an integer >= 16 and multiple of 16/
-  );
-  await assert.rejects(
-    async () => parentsOf(3, seed, new Uint8Array(64), 32),
-    /prevPage must be Uint8Array exactly matching pageBytes for full-page p2 derivation/
+    async () => deriveDynamicParent2({ i: 9, seed, pageBytes, p0: 8, p1: 1, p0Page, p1Page: new Uint8Array(32) }),
+    /p1Page must be Uint8Array exactly matching pageBytes/
   );
 });
 
@@ -177,20 +171,22 @@ test("deriveDynamicParent2 fails closed on invariant violations", async () => {
   const { deriveDynamicParent2 } = await import("../../lib/mhg/graph.js");
   const seed = Uint8Array.from({ length: 16 }, (_, idx) => idx + 3);
   const pageBytes = 64;
-  const prevPage = new Uint8Array(pageBytes);
+  const p0Page = new Uint8Array(pageBytes);
+  const p1Page = new Uint8Array(pageBytes);
 
   await assert.rejects(
-    async () => deriveDynamicParent2({ i: 4, seed, prevPage, pageBytes, p0: 9, p1: 1 }),
+    async () => deriveDynamicParent2({ i: 4, seed, pageBytes, p0: 9, p1: 1, p0Page, p1Page }),
     /parent invariants violated/
   );
 });
 
 test("deriveDynamicParent2 requires seed-bound dynamic parent contract for i>=3", async () => {
   const { deriveDynamicParent2 } = await import("../../lib/mhg/graph.js");
-  const prevPage = new Uint8Array(64);
+  const p0Page = new Uint8Array(64);
+  const p1Page = new Uint8Array(64);
 
   await assert.rejects(
-    async () => deriveDynamicParent2({ i: 5, prevPage, pageBytes: 64, p0: 4, p1: 0 }),
+    async () => deriveDynamicParent2({ i: 5, pageBytes: 64, p0: 4, p1: 0, p0Page, p1Page }),
     /seed must be Uint8Array/
   );
 });

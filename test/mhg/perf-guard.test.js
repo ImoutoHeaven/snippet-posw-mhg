@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { parentsOf } from "../../lib/mhg/graph.js";
+import { staticParentsOf, deriveDynamicParent2 } from "../../lib/mhg/graph.js";
 import { verifyOpenBatchVector } from "../../lib/mhg/verify.js";
 import { runWorkerFlow } from "./helpers/worker-rpc-harness.js";
 import {
@@ -52,21 +52,30 @@ test("perf gate: verifyOpenBatchVector stays within throughput budget", { timeou
   );
 });
 
-test("perf gate: parentsOf full-page loop for i>=3 stays within budget", { timeout: 30000 }, async () => {
+test("perf gate: explicit v4 parent resolver loop for i>=3 stays within budget", { timeout: 30000 }, async () => {
   const seed = Uint8Array.from({ length: 16 }, (_, i) => i + 1);
   const pageBytes = 512;
   const iterations = 900;
-  const prevPage = new Uint8Array(pageBytes);
+  const pages = Array.from({ length: iterations + 3 }, () => new Uint8Array(pageBytes));
 
   const started = nowMs();
   for (let i = 3; i < 3 + iterations; i += 1) {
-    prevPage[i % pageBytes] = i & 0xff;
-    await parentsOf(i, seed, prevPage, pageBytes);
+    pages[i - 1][i % pageBytes] = i & 0xff;
+    const { p0, p1 } = await staticParentsOf(i, seed);
+    await deriveDynamicParent2({
+      i,
+      seed,
+      pageBytes,
+      p0,
+      p1,
+      p0Page: pages[p0],
+      p1Page: pages[p1],
+    });
   }
   const elapsedMs = nowMs() - started;
 
   assert.ok(
     elapsedMs <= PARENT_MAX_MS,
-    `parentsOf loop took ${elapsedMs}ms (budget ${PARENT_MAX_MS}ms)`
+    `explicit v4 parent resolver loop took ${elapsedMs}ms (budget ${PARENT_MAX_MS}ms)`
   );
 });

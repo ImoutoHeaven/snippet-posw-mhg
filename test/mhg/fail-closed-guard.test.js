@@ -8,6 +8,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { createPowRuntimeFixture } from "../helpers/pow-runtime-fixture.js";
 import { __testNormalizeConfig as normalizePowConfig } from "../../pow-config.js";
 import { verifyOpenBatchVector } from "../../lib/mhg/verify.js";
+import { resolveParentsV4 } from "./helpers/resolve-parents-v4.js";
 
 const CONFIG_SECRET = "config-secret";
 const POW_SECRET = "pow-secret";
@@ -253,7 +254,7 @@ const extractChallengeArgs = (html) => {
   return { ticketB64: match[3], pathHash: match[4] };
 };
 
-const deriveMhgGraphSeed = (ticketB64, nonce, graphLabel = "v3") =>
+const deriveMhgGraphSeed = (ticketB64, nonce, graphLabel = "v4") =>
   crypto.createHash("sha256").update(`mhg|graph|${graphLabel}|${ticketB64}|${nonce}`).digest().subarray(0, 16);
 
 const deriveMhgNonce16 = (nonce) => {
@@ -262,8 +263,7 @@ const deriveMhgNonce16 = (nonce) => {
   return crypto.createHash("sha256").update(raw).digest().subarray(0, 16);
 };
 
-const buildMhgWitnessBundle = async ({ ticketB64, nonce, graphLabel = "v3" }) => {
-  const { parentsOf } = await import("../../lib/mhg/graph.js");
+const buildMhgWitnessBundle = async ({ ticketB64, nonce, graphLabel = "v4" }) => {
   const { makeGenesisPage, mixPage } = await import("../../lib/mhg/mix-aes.js");
   const { buildMerkle, buildProof } = await import("../../lib/mhg/merkle.js");
   const ticket = parseTicket(ticketB64);
@@ -275,7 +275,7 @@ const buildMhgWitnessBundle = async ({ ticketB64, nonce, graphLabel = "v3" }) =>
   pages[0] = await makeGenesisPage({ graphSeed, nonce: nonce16, pageBytes });
   const parentByIndex = new Map();
   for (let i = 1; i <= ticket.L; i += 1) {
-    const parents = await parentsOf(i, graphSeed, i >= 3 ? pages[i - 1] : undefined);
+    const parents = await resolveParentsV4({ i, graphSeed, pageBytes, pages });
     parentByIndex.set(i, parents);
     pages[i] = await mixPage({
       i,
@@ -627,7 +627,7 @@ test("old-version tickets are rejected fail-closed", async () => {
   }
 });
 
-test("v2-derived vector no longer verifies under v3 graph seed contract", async () => {
+test("v3-derived vector no longer verifies under v4 graph seed contract", async () => {
   const restoreGlobals = ensureGlobals();
   try {
     const bridgeFetch = await buildSplitBridgeFetch();
@@ -650,8 +650,8 @@ test("v2-derived vector no longer verifies under v3 graph seed contract", async 
     const nonce = base64Url(crypto.randomBytes(16));
     const ticket = parseTicket(args.ticketB64);
     assert.ok(ticket);
-    const witness = await buildMhgWitnessBundle({ ticketB64: args.ticketB64, nonce, graphLabel: "v2" });
-    const graphSeedV3 = deriveMhgGraphSeed(args.ticketB64, nonce, "v3");
+    const witness = await buildMhgWitnessBundle({ ticketB64: args.ticketB64, nonce, graphLabel: "v3" });
+    const graphSeedV4 = deriveMhgGraphSeed(args.ticketB64, nonce, "v4");
     const nonce16 = deriveMhgNonce16(nonce);
     const index = Math.min(ticket.L, 3);
     const open = witness.makeOpenEntry(index, 2);
@@ -659,7 +659,7 @@ test("v2-derived vector no longer verifies under v3 graph seed contract", async 
     const verified = await verifyOpenBatchVector({
       rootB64: witness.rootB64,
       leafCount: ticket.L + 1,
-      graphSeed: graphSeedV3,
+      graphSeed: graphSeedV4,
       nonce: nonce16,
       pageBytes: 64,
       mixRounds: 2,
@@ -672,7 +672,7 @@ test("v2-derived vector no longer verifies under v3 graph seed contract", async 
   }
 });
 
-test("/__pow/open rejects v2-derived vectors with cheat hint", async () => {
+test("/__pow/open rejects v3-derived vectors with cheat hint", async () => {
   const restoreGlobals = ensureGlobals();
   try {
     const bridgeFetch = await buildSplitBridgeFetch();
@@ -693,7 +693,7 @@ test("/__pow/open rejects v2-derived vectors with cheat hint", async () => {
     assert.ok(args);
 
     const nonce = base64Url(crypto.randomBytes(16));
-    const witness = await buildMhgWitnessBundle({ ticketB64: args.ticketB64, nonce, graphLabel: "v2" });
+    const witness = await buildMhgWitnessBundle({ ticketB64: args.ticketB64, nonce, graphLabel: "v3" });
 
     const commitRes = await bridgeFetch(
       new Request("https://example.com/__pow/commit", {

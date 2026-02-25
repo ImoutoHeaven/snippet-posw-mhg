@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createPowRuntimeFixture } from "./helpers/pow-runtime-fixture.js";
+import { resolveParentsV4 } from "./mhg/helpers/resolve-parents-v4.js";
 
 const ensureGlobals = () => {
   const priorCrypto = globalThis.crypto;
@@ -153,7 +154,7 @@ const fromBase64Url = (value) => {
 };
 
 const deriveMhgGraphSeed = (ticketB64, nonce) =>
-  crypto.createHash("sha256").update(`mhg|graph|v3|${ticketB64}|${nonce}`).digest().subarray(0, 16);
+  crypto.createHash("sha256").update(`mhg|graph|v4|${ticketB64}|${nonce}`).digest().subarray(0, 16);
 
 const deriveMhgNonce16 = (nonce) => {
   const raw = fromBase64Url(nonce);
@@ -164,7 +165,6 @@ const deriveMhgNonce16 = (nonce) => {
 const buildMhgWitnessBundle = async ({ ticketB64, nonce }) => {
   const ticket = decodeTicket(ticketB64);
   if (!ticket) throw new Error("invalid ticket");
-  const { parentsOf } = await import("../lib/mhg/graph.js");
   const { makeGenesisPage, mixPage } = await import("../lib/mhg/mix-aes.js");
   const { buildMerkle, buildProof } = await import("../lib/mhg/merkle.js");
 
@@ -176,7 +176,7 @@ const buildMhgWitnessBundle = async ({ ticketB64, nonce }) => {
 
   const parentByIndex = new Map();
   for (let i = 1; i <= ticket.L; i += 1) {
-    const parents = await parentsOf(i, graphSeed, i >= 3 ? pages[i - 1] : undefined);
+    const parents = await resolveParentsV4({ i, graphSeed, pageBytes, pages });
     parentByIndex.set(i, parents);
     pages[i] = await mixPage({
       i,
