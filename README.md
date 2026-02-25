@@ -165,7 +165,7 @@ Logic matchers in `when`:
 | `POW_SEGMENT_LEN` | `string, number` | `2` | Segment length as fixed `N` or range `"min-max"`; normalized and enforced end-to-end as `2..16`. |
 | `POW_SAMPLE_K` | `number` | `4` | Extra sampled indices per round. |
 | `POW_CHAL_ROUNDS` | `number` | `10` | Challenge rounds. |
-| `POW_OPEN_BATCH` | `number` | `4` | Indices per `/open` batch (`1..256`, clamped). |
+| `POW_OPEN_BATCH` | `number` | `4` | Indices per `/open` batch (`1..32`, clamped). |
 | `POW_COMMIT_TTL_SEC` | `number` | `120` | TTL for `__Host-pow_commit`. |
 | `POW_MAX_GEN_TIME_SEC` | `number` | `300` | Maximum generation-stage seconds. |
 | `POW_TICKET_TTL_SEC` | `number` | `600` | Ticket TTL. |
