@@ -3,6 +3,9 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { __testNormalizeConfig } from "../pow-config.js";
 
+const LEGACY_SAMPLE_K = ["POW", "SAMPLE", "K"].join("_");
+const LEGACY_CHAL_ROUNDS = ["POW", "CHAL", "ROUNDS"].join("_");
+
 const extractSection = (readme, heading, nextHeading) => {
   const start = readme.indexOf(heading);
   if (start === -1) return "";
@@ -58,8 +61,11 @@ test("README removes stale fields and documents whitepaper knobs", async () => {
   assert.equal(readme.includes("POW_SPINE_K"), false);
   assert.equal(readme.includes("POW_FORCE_EDGE_1"), false);
   assert.equal(readme.includes("POW_FORCE_EDGE_LAST"), false);
+  assert.equal(readme.includes(LEGACY_SAMPLE_K), false);
+  assert.equal(readme.includes(LEGACY_CHAL_ROUNDS), false);
   assert.equal(readme.includes('digest = SHA256("hashcash|v4|"'), true);
   assert.equal(readme.includes("__Host-pow_commit` (v4)"), false);
+  assert.match(readme, /\| `POW_SAMPLE_RATE` \| `number` \| `0\.01` \|/u);
 
   assert.match(
     readme,
@@ -71,7 +77,7 @@ test("README removes stale fields and documents whitepaper knobs", async () => {
   );
   assert.match(
     readme,
-    /\| `POW_OPEN_BATCH` \| `number` \| `4` \|[^\n]*`1\.\.32`[^\n]*\|/u
+    /\| `POW_OPEN_BATCH` \| `number` \| `4` \|[^\n]*`1\.\.256`[^\n]*\|/u
   );
   assert.match(readme, /\| `POW_MAX_GEN_TIME_SEC` \| `number` \| `300` \|/u);
 });

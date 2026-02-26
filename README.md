@@ -14,6 +14,7 @@ This project provides a self-contained L7 front gate that:
 - `pow-config.js`: policy frontload layer (rule match + bypass/bindPath/atomic derivation + signed inner snapshot).
 - `pow-core-1.js`: business-path gate execution layer (proof/challenge/atomic decisions), consumes `inner.s`, and forwards with transit.
 - `pow-core-2.js`: PoW API `/__pow/open` + verification engine for transit-authenticated requests; removed API endpoints (`/__pow/commit`, `/__pow/cap`, `/__pow/challenge`) hard-return `404`.
+- `lib/pow/api-protocol-shared.js`: single source of truth for PoW sampling math and deterministic index/segment derivation used by both API stages.
 - `glue.js`: browser-side UI + protocol orchestration for `/commit -> /challenge -> /open`.
 - `esm/esm.js`: ESM entry that exports the worker URL used by `glue.js`.
 - `esm/mhg-worker.js`: deterministic MHG compute worker (WebCrypto SHA-256 only; no wasm alternate path).
@@ -66,6 +67,7 @@ Notes:
 - `pow-config` is the only policy decision point.
 - `pow-core-1` is business-path execution and transit issuer, and owns `/__pow/commit`, `/__pow/cap`, and `/__pow/challenge`.
 - `pow-core-2` is `/__pow/open`-only for PoW API traffic; removed API endpoints return `404`.
+- PoW sampling is hard-cut to `POW_SAMPLE_RATE` and computed centrally in `lib/pow/api-protocol-shared.js` for both `/challenge` and `/open`.
 - Policy is strict: no dead code branches.
 
 ### MHG client hard-cutoff notes
@@ -163,9 +165,8 @@ Logic matchers in `when`:
 | `POW_PAGE_BYTES` | `number` | `16384` | MHG page size; normalized to a multiple of 16 (minimum 16). |
 | `POW_MIX_ROUNDS` | `number` | `2` | MHG AES mix rounds per page (config normalizes to `1..4`; worker runtime enforces `1..4` fail-closed). |
 | `POW_SEGMENT_LEN` | `string, number` | `2` | Segment length as fixed `N` or range `"min-max"`; normalized and enforced end-to-end as `2..16`. |
-| `POW_SAMPLE_K` | `number` | `4` | Extra sampled indices per round. |
-| `POW_CHAL_ROUNDS` | `number` | `10` | Challenge rounds. |
-| `POW_OPEN_BATCH` | `number` | `4` | Indices per `/open` batch (`1..32`, clamped). |
+| `POW_SAMPLE_RATE` | `number` | `0.01` | Sampling rate for extra challenge indices beyond mandatory edge anchors `1` and `L` (`(0,1]`, clamped). |
+| `POW_OPEN_BATCH` | `number` | `4` | Indices per `/open` batch (hard cap `1..256`, clamped). |
 | `POW_COMMIT_TTL_SEC` | `number` | `120` | TTL for `__Host-pow_commit`. |
 | `POW_MAX_GEN_TIME_SEC` | `number` | `300` | Maximum generation-stage seconds. |
 | `POW_TICKET_TTL_SEC` | `number` | `600` | Ticket TTL. |

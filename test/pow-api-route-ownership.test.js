@@ -5,6 +5,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createPowRuntimeFixture } from "./helpers/pow-runtime-fixture.js";
+import { parseSegmentLenSpec } from "../lib/pow/api-protocol-shared.js";
 
 const TEST_SECRET = "config-secret";
 
@@ -66,8 +67,7 @@ const buildInnerHeaders = ({ secret = TEST_SECRET, apiPrefix = "/__pow" } = {}) 
       POW_VERSION: 3,
       POW_COMMIT_COOKIE: "__Host-pow_commit",
       POW_OPEN_BATCH: 1,
-      POW_CHAL_ROUNDS: 1,
-      POW_SAMPLE_K: 0,
+      POW_SAMPLE_RATE: 0.01,
       POW_SEGMENT_LEN: 1,
       POW_PAGE_BYTES: 64,
       POW_MIX_ROUNDS: 2,
@@ -328,17 +328,13 @@ test("core2 source excludes removed handlers and routes", async () => {
   assert.match(source, /action === "\/open"/u);
 });
 
-test("segment spec clamps use hard minimum 2 across pow entrypoints", async () => {
-  const repoRoot = fileURLToPath(new URL("..", import.meta.url));
-  const [businessGateSource, frontSource, engineSource] = await Promise.all([
-    readFile(join(repoRoot, "lib", "pow", "business-gate.js"), "utf8"),
-    readFile(join(repoRoot, "lib", "pow", "api-core1-front.js"), "utf8"),
-    readFile(join(repoRoot, "lib", "pow", "api-engine.js"), "utf8"),
-  ]);
+test("segment spec normalization enforces hard bounds 2..16", () => {
+  assert.deepEqual(parseSegmentLenSpec(1), { mode: "fixed", fixed: 2 });
+  assert.deepEqual(parseSegmentLenSpec("1"), { mode: "fixed", fixed: 2 });
+  assert.deepEqual(parseSegmentLenSpec(99), { mode: "fixed", fixed: 16 });
 
-  for (const source of [businessGateSource, frontSource, engineSource]) {
-    assert.match(source, /clampInt\(raw,\s*2,\s*16\)/u);
-    assert.match(source, /clampInt\(match\[1\],\s*2,\s*16\)/u);
-    assert.match(source, /clampInt\(match\[2\],\s*2,\s*16\)/u);
-  }
+  assert.deepEqual(parseSegmentLenSpec("1-1"), { mode: "range", min: 2, max: 2 });
+  assert.deepEqual(parseSegmentLenSpec("1-99"), { mode: "range", min: 2, max: 16 });
+  assert.deepEqual(parseSegmentLenSpec("8-4"), null);
+  assert.deepEqual(parseSegmentLenSpec("bad"), null);
 });

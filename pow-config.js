@@ -22,8 +22,7 @@ const DEFAULTS = {
   POW_PAGE_BYTES: 16384,
   POW_MIX_ROUNDS: 2,
   POW_SEGMENT_LEN: 2,
-  POW_SAMPLE_K: 4,
-  POW_CHAL_ROUNDS: 10,
+  POW_SAMPLE_RATE: 0.01,
   POW_OPEN_BATCH: 4,
   POW_COMMIT_TTL_SEC: 120,
   POW_MAX_GEN_TIME_SEC: 300,
@@ -207,6 +206,12 @@ const normalizeNumberClamp = (value, fallback, min, max) => {
   const num = normalizeNumber(value, fallback);
   if (!Number.isFinite(num)) return fallback;
   return Math.min(max, Math.max(min, num));
+};
+
+const normalizeSampleRate = (value, fallback = 0.01) => {
+  const num = Number(value);
+  if (!Number.isFinite(num) || num <= 0) return fallback;
+  return Math.min(1, num);
 };
 
 const normalizeBoolean = (value, fallback) =>
@@ -794,7 +799,6 @@ const normalizeConfig = (baseConfig) => {
   const mergedRaw = { ...DEFAULTS, ...(baseConfig || {}) };
   const { SITEVERIFY_URL: _legacySiteverifyUrl, ...merged } = mergedRaw;
   return {
-    ...merged,
     powcheck: normalizeBoolean(merged.powcheck, DEFAULTS.powcheck),
     turncheck: normalizeBoolean(merged.turncheck, DEFAULTS.turncheck),
     AGGREGATOR_POW_ATOMIC_CONSUME: normalizeBoolean(
@@ -843,18 +847,7 @@ const normalizeConfig = (baseConfig) => {
     POW_PAGE_BYTES: normalizePageBytes(merged.POW_PAGE_BYTES, DEFAULTS.POW_PAGE_BYTES),
     POW_MIX_ROUNDS: normalizeNumberClamp(merged.POW_MIX_ROUNDS, DEFAULTS.POW_MIX_ROUNDS, 1, 4),
     POW_SEGMENT_LEN: normalizeSegmentLen(merged.POW_SEGMENT_LEN, DEFAULTS.POW_SEGMENT_LEN),
-    POW_SAMPLE_K: normalizeNumberClamp(
-      merged.POW_SAMPLE_K,
-      DEFAULTS.POW_SAMPLE_K,
-      1,
-      256
-    ),
-    POW_CHAL_ROUNDS: normalizeNumberClamp(
-      merged.POW_CHAL_ROUNDS,
-      DEFAULTS.POW_CHAL_ROUNDS,
-      1,
-      256
-    ),
+    POW_SAMPLE_RATE: normalizeSampleRate(merged.POW_SAMPLE_RATE, DEFAULTS.POW_SAMPLE_RATE),
     POW_OPEN_BATCH: normalizeNumberClamp(
       merged.POW_OPEN_BATCH,
       DEFAULTS.POW_OPEN_BATCH,

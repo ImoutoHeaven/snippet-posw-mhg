@@ -115,7 +115,7 @@ export const __splitTrace = splitTrace;
   return splitHarnessPath;
 };
 
-const buildConfigModule = async (secret = "config-secret") => {
+const buildConfigModule = async (secret = "config-secret", configOverrides = null) => {
   const repoRoot = fileURLToPath(new URL("..", import.meta.url));
   const [powConfigSource, runtimeSource, pathGlobSource, lruCacheSource] = await Promise.all([
     readFile(join(repoRoot, "pow-config.js"), "utf8"),
@@ -123,29 +123,33 @@ const buildConfigModule = async (secret = "config-secret") => {
     readFile(join(repoRoot, "lib", "rule-engine", "path-glob.js"), "utf8"),
     readFile(join(repoRoot, "lib", "rule-engine", "lru-cache.js"), "utf8"),
   ]);
+  const baseConfig = {
+    POW_TOKEN: "test-secret",
+    powcheck: true,
+    POW_BIND_TLS: false,
+    POW_BIND_COUNTRY: false,
+    POW_BIND_ASN: false,
+    POW_DIFFICULTY_BASE: 64,
+    POW_MIN_STEPS: 16,
+    POW_MAX_STEPS: 64,
+    POW_SAMPLE_RATE: 0.01,
+    POW_OPEN_BATCH: 4,
+    POW_HASHCASH_BITS: 0,
+    POW_PAGE_BYTES: 16384,
+    POW_MIX_ROUNDS: 2,
+    POW_SEGMENT_LEN: 4,
+  };
+  const effectiveConfig = {
+    ...baseConfig,
+    ...(configOverrides && typeof configOverrides === "object" ? configOverrides : {}),
+  };
   const compiledConfig = JSON.stringify([
     {
       host: { kind: "eq", value: "example.com" },
       hostType: "exact",
       hostExact: "example.com",
       path: null,
-      config: {
-        POW_TOKEN: "test-secret",
-        powcheck: true,
-        POW_BIND_TLS: false,
-        POW_BIND_COUNTRY: false,
-        POW_BIND_ASN: false,
-        POW_DIFFICULTY_BASE: 64,
-        POW_MIN_STEPS: 16,
-        POW_MAX_STEPS: 64,
-        POW_CHAL_ROUNDS: 2,
-        POW_SAMPLE_K: 1,
-        POW_OPEN_BATCH: 4,
-        POW_HASHCASH_BITS: 0,
-        POW_PAGE_BYTES: 16384,
-        POW_MIX_ROUNDS: 2,
-        POW_SEGMENT_LEN: 4,
-      },
+      config: effectiveConfig,
     },
   ]);
   const injected = powConfigSource.replace(/__COMPILED_CONFIG__/gu, compiledConfig);
@@ -488,6 +492,86 @@ test("challenge rejects binding mismatch after commit via split core harness", a
   }
 });
 
+test("challenge sampling count follows ceil(L*POW_SAMPLE_RATE)", async () => {
+  const restoreGlobals = ensureGlobals();
+  const core1ModulePath = await buildSplitHarnessModule();
+  const configModulePath = await buildConfigModule("config-secret", {
+    POW_SAMPLE_RATE: 0.5,
+    POW_OPEN_BATCH: 256,
+    POW_MIN_STEPS: 20,
+    POW_MAX_STEPS: 20,
+  });
+  const core1Mod = await import(`${pathToFileURL(core1ModulePath).href}?v=${Date.now()}`);
+  const configMod = await import(`${pathToFileURL(configModulePath).href}?v=${Date.now()}`);
+  const core1Handler = core1Mod.default.fetch;
+  const configHandler = configMod.default.fetch;
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async (request) => {
+      const hasInner = Array.from(request.headers.keys()).some((key) =>
+        key.toLowerCase().startsWith("x-pow-inner")
+      );
+      if (hasInner) return core1Handler(request);
+      return new Response("ok", { status: 200 });
+    };
+
+    const pageRes = await configHandler(
+      new Request("https://example.com/protected", {
+        method: "GET",
+        headers: {
+          Accept: "text/html",
+          "CF-Connecting-IP": "1.2.3.4",
+        },
+      }),
+    );
+    assert.equal(pageRes.status, 200);
+    const html = await pageRes.text();
+    const args = extractChallengeArgs(html);
+    assert.ok(args, "challenge html includes args");
+    assert.equal(args.steps, 20);
+
+    const rootB64 = base64Url(crypto.randomBytes(32));
+    const nonce = base64Url(crypto.randomBytes(12));
+    const commitRes = await configHandler(
+      new Request("https://example.com/__pow/commit", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "CF-Connecting-IP": "1.2.3.4",
+        },
+        body: JSON.stringify({
+          ticketB64: args.ticketB64,
+          rootB64,
+          pathHash: args.pathHash,
+          nonce,
+        }),
+      }),
+    );
+    assert.equal(commitRes.status, 200);
+    const commitCookie = commitRes.headers.get("Set-Cookie").split(";")[0];
+
+    const challengeRes = await configHandler(
+      new Request("https://example.com/__pow/challenge", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "CF-Connecting-IP": "1.2.3.4",
+          Cookie: commitCookie,
+        },
+        body: JSON.stringify({}),
+      }),
+    );
+    assert.equal(challengeRes.status, 200);
+    const challengePayload = await challengeRes.json();
+    assert.equal(challengePayload.indices.length, 10);
+    assert.equal(challengePayload.indices[0], 1);
+    assert.equal(challengePayload.indices[1], args.steps);
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreGlobals();
+  }
+});
+
 test("split runtime uses captchaTag naming", async () => {
   const repoRoot = fileURLToPath(new URL("..", import.meta.url));
   const [businessGateSource, apiEngineSource] = await Promise.all([
@@ -530,8 +614,7 @@ test("split core-2 hard-cutoff rejects removed API routes", async () => {
       POW_DIFFICULTY_BASE: 64,
       POW_MIN_STEPS: 16,
       POW_MAX_STEPS: 64,
-      POW_CHAL_ROUNDS: 2,
-      POW_SAMPLE_K: 1,
+      POW_SAMPLE_RATE: 0.01,
       POW_OPEN_BATCH: 4,
       POW_HASHCASH_BITS: 0,
       POW_PAGE_BYTES: 16384,

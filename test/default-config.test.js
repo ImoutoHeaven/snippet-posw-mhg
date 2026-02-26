@@ -80,8 +80,7 @@ const FULL_CONFIG = {
   POW_PAGE_BYTES: 16384,
   POW_MIX_ROUNDS: 2,
   POW_SEGMENT_LEN: 2,
-  POW_SAMPLE_K: 15,
-  POW_CHAL_ROUNDS: 12,
+  POW_SAMPLE_RATE: 0.01,
   POW_OPEN_BATCH: 15,
   POW_COMMIT_TTL_SEC: 120,
   POW_MAX_GEN_TIME_SEC: 300,
@@ -134,6 +133,9 @@ const FULL_STRATEGY = {
     cookieName: "__Secure-pow_a",
   },
 };
+
+const LEGACY_SAMPLE_K = ["POW", "SAMPLE", "K"].join("_");
+const LEGACY_CHAL_ROUNDS = ["POW", "CHAL", "ROUNDS"].join("_");
 
 test("normalizeConfig includes siteverify aggregator keys", () => {
   const cfg = __testNormalizeConfig({});
@@ -194,6 +196,33 @@ test("normalizeConfig never emits segment length 1", () => {
   assert.notEqual(numericString, 1);
   assert.notEqual(range, "1-1");
   assert.equal(range, "2-2");
+});
+
+test("normalizeConfig removes legacy sampling knobs", () => {
+  const cfgDefault = __testNormalizeConfig({});
+  assert.equal(LEGACY_SAMPLE_K in cfgDefault, false);
+  assert.equal(LEGACY_CHAL_ROUNDS in cfgDefault, false);
+  assert.equal(typeof cfgDefault.POW_SAMPLE_RATE, "number");
+
+  const cfgLegacyInput = __testNormalizeConfig({
+    [LEGACY_SAMPLE_K]: 7,
+    [LEGACY_CHAL_ROUNDS]: 3,
+  });
+  assert.equal(LEGACY_SAMPLE_K in cfgLegacyInput, false);
+  assert.equal(LEGACY_CHAL_ROUNDS in cfgLegacyInput, false);
+  assert.equal(typeof cfgLegacyInput.POW_SAMPLE_RATE, "number");
+});
+
+test("normalizeConfig clamps POW_SAMPLE_RATE into (0,1] with fallback", () => {
+  assert.equal(__testNormalizeConfig({ POW_SAMPLE_RATE: 0.25 }).POW_SAMPLE_RATE, 0.25);
+  assert.equal(__testNormalizeConfig({ POW_SAMPLE_RATE: 1.2 }).POW_SAMPLE_RATE, 1);
+  assert.equal(__testNormalizeConfig({ POW_SAMPLE_RATE: 0 }).POW_SAMPLE_RATE, 0.01);
+  assert.equal(__testNormalizeConfig({ POW_SAMPLE_RATE: -3 }).POW_SAMPLE_RATE, 0.01);
+  assert.equal(__testNormalizeConfig({ POW_SAMPLE_RATE: "oops" }).POW_SAMPLE_RATE, 0.01);
+});
+
+test("normalizeConfig keeps POW_OPEN_BATCH clamp up to 256", () => {
+  assert.equal(__testNormalizeConfig({ POW_OPEN_BATCH: 999 }).POW_OPEN_BATCH, 256);
 });
 
 const buildInnerHeaders = (payloadObj, secret, expOverride) => {

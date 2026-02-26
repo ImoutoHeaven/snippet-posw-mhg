@@ -614,8 +614,7 @@ test("split core chain consumes atomic only from inner.s (no request fallback)",
     POW_MAX_STEPS: 8192,
     POW_HASHCASH_BITS: 0,
     POW_SEGMENT_LEN: 32,
-    POW_SAMPLE_K: 1,
-    POW_CHAL_ROUNDS: 1,
+    POW_SAMPLE_RATE: 0.01,
     POW_OPEN_BATCH: 1,
     POW_COMMIT_TTL_SEC: 120,
     POW_TICKET_TTL_SEC: 600,
@@ -732,8 +731,7 @@ test("pow api uses /cap and rejects /turn", async () => {
       POW_PAGE_BYTES: 64,
       POW_MIX_ROUNDS: 2,
       POW_SEGMENT_LEN: 32,
-      POW_SAMPLE_K: 1,
-      POW_CHAL_ROUNDS: 1,
+      POW_SAMPLE_RATE: 0.01,
       POW_OPEN_BATCH: 1,
       POW_COMMIT_TTL_SEC: 120,
       POW_TICKET_TTL_SEC: 600,
@@ -854,8 +852,7 @@ test("/cap works for no-pow turnstile flow and issues proof", async () => {
       POW_PAGE_BYTES: 64,
       POW_MIX_ROUNDS: 2,
       POW_SEGMENT_LEN: 32,
-      POW_SAMPLE_K: 1,
-      POW_CHAL_ROUNDS: 1,
+      POW_SAMPLE_RATE: 0.01,
       POW_OPEN_BATCH: 1,
       POW_COMMIT_TTL_SEC: 120,
       POW_TICKET_TTL_SEC: 600,
@@ -1025,8 +1022,7 @@ test("/cap returns stale hint when siteverify rejects", async () => {
       POW_PAGE_BYTES: 64,
       POW_MIX_ROUNDS: 2,
       POW_SEGMENT_LEN: 32,
-      POW_SAMPLE_K: 1,
-      POW_CHAL_ROUNDS: 1,
+      POW_SAMPLE_RATE: 0.01,
       POW_OPEN_BATCH: 1,
       POW_COMMIT_TTL_SEC: 120,
       POW_TICKET_TTL_SEC: 600,
@@ -1182,8 +1178,7 @@ test("/cap returns 400 for malformed captcha envelope", async () => {
       POW_PAGE_BYTES: 64,
       POW_MIX_ROUNDS: 2,
       POW_SEGMENT_LEN: 32,
-      POW_SAMPLE_K: 1,
-      POW_CHAL_ROUNDS: 1,
+      POW_SAMPLE_RATE: 0.01,
       POW_OPEN_BATCH: 1,
       POW_COMMIT_TTL_SEC: 120,
       POW_TICKET_TTL_SEC: 600,
@@ -1315,8 +1310,7 @@ test("/commit, /challenge, and non-final /open do not call siteverify", async ()
       POW_PAGE_BYTES: 64,
       POW_MIX_ROUNDS: 2,
       POW_SEGMENT_LEN: 1,
-      POW_SAMPLE_K: 0,
-      POW_CHAL_ROUNDS: 1,
+      POW_SAMPLE_RATE: 0.01,
       POW_OPEN_BATCH: 1,
       POW_COMMIT_TTL_SEC: 120,
       POW_TICKET_TTL_SEC: 600,
@@ -1491,6 +1485,194 @@ test("/commit, /challenge, and non-final /open do not call siteverify", async ()
   }
 });
 
+test("challenge/open remain consistent under POW_SAMPLE_RATE hard-cutoff", async () => {
+  const restoreGlobals = ensureGlobals();
+  const originalFetch = globalThis.fetch;
+  try {
+    const core1Path = await buildCore1Module();
+    const core1Mod = await import(`${pathToFileURL(core1Path).href}?v=${Date.now()}`);
+    const core1Handler = core1Mod.default.fetch;
+
+    const config = {
+      powcheck: true,
+      turncheck: false,
+      bindPathMode: "none",
+      bindPathQueryName: "path",
+      bindPathHeaderName: "",
+      stripBindPathHeader: false,
+      POW_VERSION: 3,
+      POW_API_PREFIX: "/__pow",
+      POW_DIFFICULTY_BASE: 20,
+      POW_DIFFICULTY_COEFF: 1,
+      POW_MIN_STEPS: 20,
+      POW_MAX_STEPS: 20,
+      POW_HASHCASH_BITS: 0,
+      POW_PAGE_BYTES: 64,
+      POW_MIX_ROUNDS: 2,
+      POW_SEGMENT_LEN: 1,
+      POW_SAMPLE_RATE: 0.5,
+      POW_OPEN_BATCH: 256,
+      POW_COMMIT_TTL_SEC: 120,
+      POW_TICKET_TTL_SEC: 600,
+      PROOF_TTL_SEC: 600,
+      PROOF_RENEW_ENABLE: false,
+      PROOF_RENEW_MAX: 2,
+      PROOF_RENEW_WINDOW_SEC: 90,
+      PROOF_RENEW_MIN_SEC: 30,
+      ATOMIC_CONSUME: false,
+      ATOMIC_TURN_QUERY: "__ts",
+      ATOMIC_TICKET_QUERY: "__tt",
+      ATOMIC_CONSUME_QUERY: "__ct",
+      ATOMIC_TURN_HEADER: "x-turnstile",
+      ATOMIC_TICKET_HEADER: "x-ticket",
+      ATOMIC_CONSUME_HEADER: "x-consume",
+      ATOMIC_COOKIE_NAME: "__Secure-pow_a",
+      STRIP_ATOMIC_QUERY: true,
+      STRIP_ATOMIC_HEADERS: true,
+      INNER_AUTH_QUERY_NAME: "",
+      INNER_AUTH_QUERY_VALUE: "",
+      INNER_AUTH_HEADER_NAME: "",
+      INNER_AUTH_HEADER_VALUE: "",
+      stripInnerAuthQuery: false,
+      stripInnerAuthHeader: false,
+      POW_BIND_PATH: true,
+      POW_BIND_IPRANGE: true,
+      POW_BIND_COUNTRY: false,
+      POW_BIND_ASN: false,
+      POW_BIND_TLS: false,
+      POW_TOKEN: "pow-secret",
+      TURNSTILE_SITEKEY: "sitekey",
+      TURNSTILE_SECRET: "turn-secret",
+      POW_COMMIT_COOKIE: "__Host-pow_commit",
+      POW_ESM_URL: "https://example.com/esm",
+      POW_GLUE_URL: "https://example.com/glue",
+    };
+
+    const { payload, mac, exp } = buildInnerHeaders(
+      {
+        v: 1,
+        id: 131,
+        c: config,
+        d: { ipScope: "1.2.3.4/32", country: "any", asn: "any", tlsFingerprint: "any" },
+        s: {
+          nav: {},
+          bypass: { bypass: false },
+          bind: { ok: true, code: "", canonicalPath: "/protected" },
+          atomic: {
+            captchaToken: "",
+            ticketB64: "",
+            consumeToken: "",
+            fromCookie: false,
+            cookieName: "__Secure-pow_a",
+          },
+        },
+      },
+      "config-secret"
+    );
+
+    globalThis.fetch = async () => new Response("ok", { status: 200 });
+
+    const pageRes = await core1Handler(
+      new Request("https://example.com/protected", {
+        headers: {
+          Accept: "text/html",
+          "CF-Connecting-IP": "1.2.3.4",
+          "X-Pow-Inner": payload,
+          "X-Pow-Inner-Mac": mac,
+          "X-Pow-Inner-Expire": String(exp),
+        },
+      })
+    );
+    assert.equal(pageRes.status, 200);
+    const args = extractChallengeArgs(await pageRes.text());
+    assert.ok(args, "challenge args present");
+    const nonce = base64Url(crypto.randomBytes(12));
+    const bindingString = decodeB64UrlUtf8(args.bindingB64);
+    const { rootB64, witnessByIndex, parentByIndex } = await buildMhgWitnessBundle({
+      ticketB64: args.ticketB64,
+      nonce,
+    });
+
+    const commitRes = await core1Handler(
+      new Request("https://example.com/__pow/commit", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "CF-Connecting-IP": "1.2.3.4",
+          "X-Pow-Inner": payload,
+          "X-Pow-Inner-Mac": mac,
+          "X-Pow-Inner-Expire": String(exp),
+        },
+        body: JSON.stringify({
+          ticketB64: args.ticketB64,
+          rootB64,
+          pathHash: args.pathHash,
+          nonce,
+          captchaToken: "",
+          binding: `${bindingString}|any`,
+        }),
+      })
+    );
+    assert.equal(commitRes.status, 200);
+    const commitCookie = (commitRes.headers.get("Set-Cookie") || "").split(";")[0];
+    assert.ok(commitCookie, "commit cookie issued");
+
+    const challengeRes = await core1Handler(
+      new Request("https://example.com/__pow/challenge", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Cookie: commitCookie,
+          "CF-Connecting-IP": "1.2.3.4",
+          "X-Pow-Inner": payload,
+          "X-Pow-Inner-Mac": mac,
+          "X-Pow-Inner-Expire": String(exp),
+        },
+        body: JSON.stringify({}),
+      })
+    );
+    assert.equal(challengeRes.status, 200);
+    const challenge = await challengeRes.json();
+    assert.equal(challenge.done, false);
+    assert.equal(challenge.indices.length, 10);
+    assert.equal(challenge.indices[0], 1);
+    assert.equal(challenge.indices[1], 20);
+
+    const opens = buildMhgOpensForChallenge({
+      indices: challenge.indices,
+      segs: challenge.segs,
+      witnessByIndex,
+      parentByIndex,
+    });
+    const openRes = await core1Handler(
+      new Request("https://example.com/__pow/open", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Cookie: commitCookie,
+          "CF-Connecting-IP": "1.2.3.4",
+          "X-Pow-Inner": payload,
+          "X-Pow-Inner-Mac": mac,
+          "X-Pow-Inner-Expire": String(exp),
+        },
+        body: JSON.stringify({
+          sid: challenge.sid,
+          cursor: challenge.cursor,
+          token: challenge.token,
+          captchaToken: "",
+          opens,
+        }),
+      })
+    );
+    assert.equal(openRes.status, 200);
+    const openPayload = await openRes.json();
+    assert.equal(openPayload.done, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreGlobals();
+  }
+});
+
 test("/commit returns stale hint when ticket cfgId mismatches inner context", async () => {
   const restoreGlobals = ensureGlobals();
   const originalFetch = globalThis.fetch;
@@ -1516,8 +1698,7 @@ test("/commit returns stale hint when ticket cfgId mismatches inner context", as
       POW_PAGE_BYTES: 64,
       POW_MIX_ROUNDS: 2,
       POW_SEGMENT_LEN: 1,
-      POW_SAMPLE_K: 0,
-      POW_CHAL_ROUNDS: 1,
+      POW_SAMPLE_RATE: 0.01,
       POW_OPEN_BATCH: 1,
       POW_COMMIT_TTL_SEC: 120,
       POW_TICKET_TTL_SEC: 600,
@@ -1655,8 +1836,7 @@ test("atomic /open final does not call siteverify", async () => {
       POW_PAGE_BYTES: 64,
       POW_MIX_ROUNDS: 2,
       POW_SEGMENT_LEN: 1,
-      POW_SAMPLE_K: 0,
-      POW_CHAL_ROUNDS: 1,
+      POW_SAMPLE_RATE: 0.01,
       POW_OPEN_BATCH: 1,
       POW_COMMIT_TTL_SEC: 120,
       POW_TICKET_TTL_SEC: 600,
@@ -1854,8 +2034,7 @@ test("combined pow+captcha /open returns cheat hint for tampered payload and cap
       POW_PAGE_BYTES: 64,
       POW_MIX_ROUNDS: 2,
       POW_SEGMENT_LEN: 1,
-      POW_SAMPLE_K: 0,
-      POW_CHAL_ROUNDS: 1,
+      POW_SAMPLE_RATE: 0.01,
       POW_OPEN_BATCH: 1,
       POW_COMMIT_TTL_SEC: 120,
       POW_TICKET_TTL_SEC: 600,
@@ -2202,8 +2381,7 @@ test("pow+captcha /open fails closed when aggregator returns non-200 or non-json
       POW_PAGE_BYTES: 64,
       POW_MIX_ROUNDS: 2,
       POW_SEGMENT_LEN: 1,
-      POW_SAMPLE_K: 0,
-      POW_CHAL_ROUNDS: 1,
+      POW_SAMPLE_RATE: 0.01,
       POW_OPEN_BATCH: 1,
       POW_COMMIT_TTL_SEC: 120,
       POW_TICKET_TTL_SEC: 600,
@@ -2440,8 +2618,7 @@ test("non-atomic /open returns 400 for malformed captcha envelope", async () => 
       POW_PAGE_BYTES: 64,
       POW_MIX_ROUNDS: 2,
       POW_SEGMENT_LEN: 1,
-      POW_SAMPLE_K: 0,
-      POW_CHAL_ROUNDS: 1,
+      POW_SAMPLE_RATE: 0.01,
       POW_OPEN_BATCH: 1,
       POW_COMMIT_TTL_SEC: 120,
       POW_TICKET_TTL_SEC: 600,
@@ -2654,8 +2831,7 @@ test("pow-only + atomic + aggregator consume requires consume token on business 
       POW_PAGE_BYTES: 64,
       POW_MIX_ROUNDS: 2,
       POW_SEGMENT_LEN: 1,
-      POW_SAMPLE_K: 0,
-      POW_CHAL_ROUNDS: 1,
+      POW_SAMPLE_RATE: 0.01,
       POW_OPEN_BATCH: 1,
       POW_COMMIT_TTL_SEC: 120,
       POW_TICKET_TTL_SEC: 600,
@@ -2826,8 +3002,7 @@ test("pow-only + atomic falls back to pow_required when aggregator consume is di
       POW_PAGE_BYTES: 64,
       POW_MIX_ROUNDS: 2,
       POW_SEGMENT_LEN: 1,
-      POW_SAMPLE_K: 0,
-      POW_CHAL_ROUNDS: 1,
+      POW_SAMPLE_RATE: 0.01,
       POW_OPEN_BATCH: 1,
       POW_COMMIT_TTL_SEC: 120,
       POW_TICKET_TTL_SEC: 600,
@@ -2942,8 +3117,7 @@ test("turnstile atomic behavior is unchanged by aggregator pow-only extension", 
       POW_PAGE_BYTES: 64,
       POW_MIX_ROUNDS: 2,
       POW_SEGMENT_LEN: 1,
-      POW_SAMPLE_K: 0,
-      POW_CHAL_ROUNDS: 1,
+      POW_SAMPLE_RATE: 0.01,
       POW_OPEN_BATCH: 1,
       POW_COMMIT_TTL_SEC: 120,
       POW_TICKET_TTL_SEC: 600,
@@ -3111,8 +3285,7 @@ test("split core1 enforces business gate for non-navigation unauthorized request
       POW_PAGE_BYTES: 64,
       POW_MIX_ROUNDS: 2,
       POW_SEGMENT_LEN: 1,
-      POW_SAMPLE_K: 0,
-      POW_CHAL_ROUNDS: 1,
+      POW_SAMPLE_RATE: 0.01,
       POW_OPEN_BATCH: 1,
       POW_COMMIT_TTL_SEC: 120,
       POW_TICKET_TTL_SEC: 600,
@@ -3225,8 +3398,7 @@ test("split core1 enforces navigation unauthorized challenge html", async () => 
       POW_PAGE_BYTES: 64,
       POW_MIX_ROUNDS: 2,
       POW_SEGMENT_LEN: 1,
-      POW_SAMPLE_K: 0,
-      POW_CHAL_ROUNDS: 1,
+      POW_SAMPLE_RATE: 0.01,
       POW_OPEN_BATCH: 1,
       POW_COMMIT_TTL_SEC: 120,
       POW_TICKET_TTL_SEC: 600,
@@ -3345,8 +3517,7 @@ test("split core1 forwards valid proof path to origin", async () => {
       POW_PAGE_BYTES: 64,
       POW_MIX_ROUNDS: 2,
       POW_SEGMENT_LEN: 1,
-      POW_SAMPLE_K: 0,
-      POW_CHAL_ROUNDS: 1,
+      POW_SAMPLE_RATE: 0.01,
       POW_OPEN_BATCH: 1,
       POW_COMMIT_TTL_SEC: 120,
       POW_TICKET_TTL_SEC: 600,
@@ -3546,8 +3717,7 @@ test("split core1 preserves stale/cheat hints on api deny", async () => {
       POW_PAGE_BYTES: 64,
       POW_MIX_ROUNDS: 2,
       POW_SEGMENT_LEN: 1,
-      POW_SAMPLE_K: 0,
-      POW_CHAL_ROUNDS: 1,
+      POW_SAMPLE_RATE: 0.01,
       POW_OPEN_BATCH: 1,
       POW_COMMIT_TTL_SEC: 120,
       POW_TICKET_TTL_SEC: 600,
