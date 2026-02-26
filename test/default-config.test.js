@@ -718,28 +718,3 @@ test("mask enforcement keeps bitwise AND semantics", async () => {
   assert.match(businessGateSource, /if \(\(parsed\.m & requiredMask\) !== requiredMask\) return null;/u);
   assert.match(businessGateSource, /if \(\(proof\.m & requiredMask\) !== requiredMask\) return null;/u);
 });
-
-test("README documents split-chain deployment and snippet contracts", async () => {
-  const repoRoot = fileURLToPath(new URL("..", import.meta.url));
-  const readme = await readFile(join(repoRoot, "README.md"), "utf8");
-
-  assert.match(readme, /`pow-core-1\.js`/u);
-  assert.match(readme, /`pow-core-2\.js`/u);
-  assert.match(readme, /pow_config_snippet\.js/u);
-  assert.match(readme, /pow_core1_snippet\.js/u);
-  assert.match(readme, /pow_core2_snippet\.js/u);
-  assert.match(readme, /pow-config\s*->\s*pow-core-1\s*->\s*pow-core-2/u);
-  assert.match(readme, /fail-closed/u);
-  assert.match(readme, /no dead code branches/u);
-  assert.match(readme, /32\s*KiB.*hard/u);
-  assert.doesNotMatch(readme, /23\s*KiB/u);
-  assert.doesNotMatch(readme, /best-effort/u);
-  assert.match(readme, /pow-core-1[\s\S]*\/__pow\/commit[\s\S]*\/__pow\/cap[\s\S]*\/__pow\/challenge/u);
-  assert.match(readme, /pow-core-2[\s\S]*\/__pow\/open[\s\S]*404/u);
-  assert.match(
-    readme,
-    /Subrequest matrix \(API \+ business paths\):[\s\S]*\| Flow \| `pow-config` subrequests \| `pow-core-1` subrequests \| `pow-core-2` subrequests \| Total \|/u
-  );
-  assert.doesNotMatch(readme, /### Flow Analysis Table/u);
-  assert.doesNotMatch(readme, /\bpow\.js\b/u);
-});

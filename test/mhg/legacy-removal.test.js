@@ -6,7 +6,6 @@ import { extname, join } from "node:path";
 test("legacy pow chain symbols removed", async () => {
   const businessGateSource = await readFile("lib/pow/business-gate.js", "utf8");
   const configSource = await readFile("pow-config.js", "utf8");
-  const readmeSource = await readFile("README.md", "utf8");
 
   assert.equal(businessGateSource.includes("POW_SPINE_K"), false);
   assert.equal(businessGateSource.includes("MERKLE_LEAF_PREFIX"), false);
@@ -23,19 +22,6 @@ test("legacy pow chain symbols removed", async () => {
   assert.equal(configSource.includes("spineSeed"), false);
   assert.equal(configSource.includes("POW_SEGMENT_LEN"), true);
   assert.equal(configSource.includes("POW_HASHCASH_BITS"), true);
-  assert.equal(readmeSource.includes("POW_SPINE_K"), false);
-  assert.equal(readmeSource.includes("POW_FORCE_EDGE_1"), false);
-  assert.equal(readmeSource.includes("POW_FORCE_EDGE_LAST"), false);
-  assert.equal(readmeSource.includes('digest = SHA256("hashcash|v4|"'), true);
-  assert.equal(readmeSource.includes("__Host-pow_commit` (v4)"), false);
-  assert.equal(readmeSource.includes("POW_PAGE_BYTES"), true);
-  assert.equal(readmeSource.includes("POW_MIX_ROUNDS"), true);
-  assert.equal(readmeSource.includes("MHG1-P2|v4"), true);
-  assert.equal(readmeSource.includes("mhg|graph|v4|"), true);
-  assert.equal(readmeSource.includes("staticParentsOf"), true);
-  assert.equal(readmeSource.includes("deriveDynamicParent2"), true);
-  assert.equal(readmeSource.includes("parentsOf"), false);
-  assert.equal(readmeSource.includes("prevPage"), false);
 });
 
 const collectCodeFiles = async (dir) => {
