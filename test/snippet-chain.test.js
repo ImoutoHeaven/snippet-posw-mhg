@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createPowRuntimeFixture } from "./helpers/pow-runtime-fixture.js";
 import { resolveParentsV4 } from "./mhg/helpers/resolve-parents-v4.js";
+import { runGlueFlow } from "./mhg/helpers/glue-flow-harness.js";
 
 const ensureGlobals = () => {
   const priorCrypto = globalThis.crypto;
@@ -647,7 +648,6 @@ test("split core chain consumes atomic only from inner.s (no request fallback)",
     POW_TOKEN: "pow-secret",
     TURNSTILE_SITEKEY: "sitekey",
     TURNSTILE_SECRET: "turn-secret",
-    POW_COMMIT_COOKIE: "__Host-pow_commit",
     POW_ESM_URL: "https://example.com/esm",
     POW_GLUE_URL: "https://example.com/glue",
   };
@@ -764,7 +764,6 @@ test("pow api uses /cap and rejects /turn", async () => {
       POW_TOKEN: "pow-secret",
       TURNSTILE_SITEKEY: "sitekey",
       TURNSTILE_SECRET: "turn-secret",
-      POW_COMMIT_COOKIE: "__Host-pow_commit",
       POW_ESM_URL: "https://example.com/esm",
       POW_GLUE_URL: "https://example.com/glue",
     };
@@ -885,7 +884,6 @@ test("/cap works for no-pow turnstile flow and issues proof", async () => {
       POW_TOKEN: "pow-secret",
       TURNSTILE_SITEKEY: "sitekey",
       TURNSTILE_SECRET: "turn-secret",
-      POW_COMMIT_COOKIE: "__Host-pow_commit",
       POW_ESM_URL: "https://example.com/esm",
       POW_GLUE_URL: "https://example.com/glue",
     };
@@ -1055,7 +1053,6 @@ test("/cap returns stale hint when siteverify rejects", async () => {
       POW_TOKEN: "pow-secret",
       TURNSTILE_SITEKEY: "sitekey",
       TURNSTILE_SECRET: "turn-secret",
-      POW_COMMIT_COOKIE: "__Host-pow_commit",
       POW_ESM_URL: "https://example.com/esm",
       POW_GLUE_URL: "https://example.com/glue",
     };
@@ -1211,7 +1208,6 @@ test("/cap returns 400 for malformed captcha envelope", async () => {
       POW_TOKEN: "pow-secret",
       TURNSTILE_SITEKEY: "sitekey",
       TURNSTILE_SECRET: "turn-secret",
-      POW_COMMIT_COOKIE: "__Host-pow_commit",
       POW_ESM_URL: "https://example.com/esm",
       POW_GLUE_URL: "https://example.com/glue",
     };
@@ -1343,7 +1339,6 @@ test("/commit, /challenge, and non-final /open do not call siteverify", async ()
       POW_TOKEN: "pow-secret",
       TURNSTILE_SITEKEY: "sitekey",
       TURNSTILE_SECRET: "turn-secret",
-      POW_COMMIT_COOKIE: "__Host-pow_commit",
       POW_ESM_URL: "https://example.com/esm",
       POW_GLUE_URL: "https://example.com/glue",
     };
@@ -1426,21 +1421,22 @@ test("/commit, /challenge, and non-final /open do not call siteverify", async ()
     );
     assert.equal(commitRes.status, 200);
     assert.equal(siteverifyCalls, 0);
-    const commitCookie = (commitRes.headers.get("Set-Cookie") || "").split(";")[0];
-    assert.ok(commitCookie, "commit cookie issued");
+    const commitPayload = await commitRes.json();
+    const commitToken =
+      commitPayload && typeof commitPayload.commitToken === "string" ? commitPayload.commitToken : "";
+    assert.ok(commitToken, "commit token issued");
 
     const challengeRes = await core1Handler(
       new Request("https://example.com/__pow/challenge", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Cookie: commitCookie,
           "CF-Connecting-IP": "1.2.3.4",
           "X-Pow-Inner": payload,
           "X-Pow-Inner-Mac": mac,
           "X-Pow-Inner-Expire": String(exp),
         },
-        body: JSON.stringify({}),
+        body: JSON.stringify({ commitToken }),
       })
     );
     assert.equal(challengeRes.status, 200);
@@ -1460,13 +1456,13 @@ test("/commit, /challenge, and non-final /open do not call siteverify", async ()
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Cookie: commitCookie,
           "CF-Connecting-IP": "1.2.3.4",
           "X-Pow-Inner": payload,
           "X-Pow-Inner-Mac": mac,
           "X-Pow-Inner-Expire": String(exp),
         },
         body: JSON.stringify({
+          commitToken,
           sid: challenge.sid,
           cursor: challenge.cursor,
           token: challenge.token,
@@ -1543,7 +1539,6 @@ test("challenge/open remain consistent under POW_SAMPLE_RATE hard-cutoff", async
       POW_TOKEN: "pow-secret",
       TURNSTILE_SITEKEY: "sitekey",
       TURNSTILE_SECRET: "turn-secret",
-      POW_COMMIT_COOKIE: "__Host-pow_commit",
       POW_ESM_URL: "https://example.com/esm",
       POW_GLUE_URL: "https://example.com/glue",
     };
@@ -1614,21 +1609,22 @@ test("challenge/open remain consistent under POW_SAMPLE_RATE hard-cutoff", async
       })
     );
     assert.equal(commitRes.status, 200);
-    const commitCookie = (commitRes.headers.get("Set-Cookie") || "").split(";")[0];
-    assert.ok(commitCookie, "commit cookie issued");
+    const commitPayload = await commitRes.json();
+    const commitToken =
+      commitPayload && typeof commitPayload.commitToken === "string" ? commitPayload.commitToken : "";
+    assert.ok(commitToken, "commit token issued");
 
     const challengeRes = await core1Handler(
       new Request("https://example.com/__pow/challenge", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Cookie: commitCookie,
           "CF-Connecting-IP": "1.2.3.4",
           "X-Pow-Inner": payload,
           "X-Pow-Inner-Mac": mac,
           "X-Pow-Inner-Expire": String(exp),
         },
-        body: JSON.stringify({}),
+        body: JSON.stringify({ commitToken }),
       })
     );
     assert.equal(challengeRes.status, 200);
@@ -1649,13 +1645,13 @@ test("challenge/open remain consistent under POW_SAMPLE_RATE hard-cutoff", async
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Cookie: commitCookie,
           "CF-Connecting-IP": "1.2.3.4",
           "X-Pow-Inner": payload,
           "X-Pow-Inner-Mac": mac,
           "X-Pow-Inner-Expire": String(exp),
         },
         body: JSON.stringify({
+          commitToken,
           sid: challenge.sid,
           cursor: challenge.cursor,
           token: challenge.token,
@@ -1731,7 +1727,6 @@ test("/commit returns stale hint when ticket cfgId mismatches inner context", as
       POW_TOKEN: "pow-secret",
       TURNSTILE_SITEKEY: "sitekey",
       TURNSTILE_SECRET: "turn-secret",
-      POW_COMMIT_COOKIE: "__Host-pow_commit",
       POW_ESM_URL: "https://example.com/esm",
       POW_GLUE_URL: "https://example.com/glue",
     };
@@ -1869,7 +1864,6 @@ test("atomic /open final does not call siteverify", async () => {
       POW_TOKEN: "pow-secret",
       TURNSTILE_SITEKEY: "sitekey",
       TURNSTILE_SECRET: "turn-secret",
-      POW_COMMIT_COOKIE: "__Host-pow_commit",
       POW_ESM_URL: "https://example.com/esm",
       POW_GLUE_URL: "https://example.com/glue",
     };
@@ -1948,21 +1942,22 @@ test("atomic /open final does not call siteverify", async () => {
       })
     );
     assert.equal(commitRes.status, 200);
-    const commitCookie = (commitRes.headers.get("Set-Cookie") || "").split(";")[0];
-    assert.ok(commitCookie, "commit cookie issued");
+    const commitPayload = await commitRes.json();
+    const commitToken =
+      commitPayload && typeof commitPayload.commitToken === "string" ? commitPayload.commitToken : "";
+    assert.ok(commitToken, "commit token issued");
 
     const challengeRes = await core1Handler(
       new Request("https://example.com/__pow/challenge", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Cookie: commitCookie,
           "CF-Connecting-IP": "1.2.3.4",
           "X-Pow-Inner": payload,
           "X-Pow-Inner-Mac": mac,
           "X-Pow-Inner-Expire": String(exp),
         },
-        body: JSON.stringify({}),
+        body: JSON.stringify({ commitToken }),
       })
     );
     assert.equal(challengeRes.status, 200);
@@ -1979,13 +1974,13 @@ test("atomic /open final does not call siteverify", async () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Cookie: commitCookie,
           "CF-Connecting-IP": "1.2.3.4",
           "X-Pow-Inner": payload,
           "X-Pow-Inner-Mac": mac,
           "X-Pow-Inner-Expire": String(exp),
         },
         body: JSON.stringify({
+          commitToken,
           sid: challenge.sid,
           cursor: challenge.cursor,
           token: challenge.token,
@@ -2067,7 +2062,6 @@ test("combined pow+captcha /open returns cheat hint for tampered payload and cap
       POW_TOKEN: "pow-secret",
       TURNSTILE_SITEKEY: "sitekey",
       TURNSTILE_SECRET: "turn-secret",
-      POW_COMMIT_COOKIE: "__Host-pow_commit",
       POW_ESM_URL: "https://example.com/esm",
       POW_GLUE_URL: "https://example.com/glue",
     };
@@ -2173,21 +2167,22 @@ test("combined pow+captcha /open returns cheat hint for tampered payload and cap
       })
     );
     assert.equal(commitRes.status, 200);
-    const commitCookie = (commitRes.headers.get("Set-Cookie") || "").split(";")[0];
-    assert.ok(commitCookie, "commit cookie issued");
+    const commitPayload = await commitRes.json();
+    const commitToken =
+      commitPayload && typeof commitPayload.commitToken === "string" ? commitPayload.commitToken : "";
+    assert.ok(commitToken, "commit token issued");
 
     const challengeRes = await core1Handler(
       new Request("https://example.com/__pow/challenge", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Cookie: commitCookie,
           "CF-Connecting-IP": "1.2.3.4",
           "X-Pow-Inner": payload,
           "X-Pow-Inner-Mac": mac,
           "X-Pow-Inner-Expire": String(exp),
         },
-        body: JSON.stringify({}),
+        body: JSON.stringify({ commitToken }),
       })
     );
     assert.equal(challengeRes.status, 200);
@@ -2213,13 +2208,13 @@ test("combined pow+captcha /open returns cheat hint for tampered payload and cap
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Cookie: commitCookie,
           "CF-Connecting-IP": "1.2.3.4",
           "X-Pow-Inner": payload,
           "X-Pow-Inner-Mac": mac,
           "X-Pow-Inner-Expire": String(exp),
         },
         body: JSON.stringify({
+          commitToken,
           ...openBody,
           captchaToken: goodEnvelope,
           opens: [
@@ -2271,13 +2266,12 @@ test("combined pow+captcha /open returns cheat hint for tampered payload and cap
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Cookie: commitCookie,
           "CF-Connecting-IP": "1.2.3.4",
           "X-Pow-Inner": payload,
           "X-Pow-Inner-Mac": mac,
           "X-Pow-Inner-Expire": String(exp),
         },
-        body: JSON.stringify({ ...openBody, captchaToken: goodEnvelope }),
+        body: JSON.stringify({ commitToken, ...openBody, captchaToken: goodEnvelope }),
       })
     );
     assert.equal(staleOpen.status, 403);
@@ -2316,13 +2310,12 @@ test("combined pow+captcha /open returns cheat hint for tampered payload and cap
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Cookie: commitCookie,
           "CF-Connecting-IP": "1.2.3.4",
           "X-Pow-Inner": payload,
           "X-Pow-Inner-Mac": mac,
           "X-Pow-Inner-Expire": String(exp),
         },
-        body: JSON.stringify({ ...openBody, captchaToken: badEnvelope }),
+        body: JSON.stringify({ commitToken, ...openBody, captchaToken: badEnvelope }),
       })
     );
     assert.equal(rejectOpen.status, 403);
@@ -2333,13 +2326,12 @@ test("combined pow+captcha /open returns cheat hint for tampered payload and cap
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Cookie: commitCookie,
           "CF-Connecting-IP": "1.2.3.4",
           "X-Pow-Inner": payload,
           "X-Pow-Inner-Mac": mac,
           "X-Pow-Inner-Expire": String(exp),
         },
-        body: JSON.stringify({ ...openBody, captchaToken: goodEnvelope }),
+        body: JSON.stringify({ commitToken, ...openBody, captchaToken: goodEnvelope }),
       })
     );
     assert.equal(passOpen.status, 200);
@@ -2414,7 +2406,6 @@ test("pow+captcha /open fails closed when aggregator returns non-200 or non-json
       POW_TOKEN: "pow-secret",
       TURNSTILE_SITEKEY: "sitekey",
       TURNSTILE_SECRET: "turn-secret",
-      POW_COMMIT_COOKIE: "__Host-pow_commit",
       POW_ESM_URL: "https://example.com/esm",
       POW_GLUE_URL: "https://example.com/glue",
     };
@@ -2518,21 +2509,22 @@ test("pow+captcha /open fails closed when aggregator returns non-200 or non-json
       })
     );
     assert.equal(commitRes.status, 200);
-    const commitCookie = (commitRes.headers.get("Set-Cookie") || "").split(";")[0];
-    assert.ok(commitCookie, "commit cookie issued");
+    const commitPayload = await commitRes.json();
+    const commitToken =
+      commitPayload && typeof commitPayload.commitToken === "string" ? commitPayload.commitToken : "";
+    assert.ok(commitToken, "commit token issued");
 
     const challengeRes = await core1Handler(
       new Request("https://example.com/__pow/challenge", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Cookie: commitCookie,
           "CF-Connecting-IP": "1.2.3.4",
           "X-Pow-Inner": payload,
           "X-Pow-Inner-Mac": mac,
           "X-Pow-Inner-Expire": String(exp),
         },
-        body: JSON.stringify({}),
+        body: JSON.stringify({ commitToken }),
       })
     );
     assert.equal(challengeRes.status, 200);
@@ -2545,6 +2537,7 @@ test("pow+captcha /open fails closed when aggregator returns non-200 or non-json
     });
 
     const openBody = {
+      commitToken,
       sid: challenge.sid,
       cursor: challenge.cursor,
       token: challenge.token,
@@ -2558,7 +2551,6 @@ test("pow+captcha /open fails closed when aggregator returns non-200 or non-json
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Cookie: commitCookie,
           "CF-Connecting-IP": "1.2.3.4",
           "X-Pow-Inner": payload,
           "X-Pow-Inner-Mac": mac,
@@ -2576,7 +2568,6 @@ test("pow+captcha /open fails closed when aggregator returns non-200 or non-json
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Cookie: commitCookie,
           "CF-Connecting-IP": "1.2.3.4",
           "X-Pow-Inner": payload,
           "X-Pow-Inner-Mac": mac,
@@ -2651,7 +2642,6 @@ test("non-atomic /open returns 400 for malformed captcha envelope", async () => 
       POW_TOKEN: "pow-secret",
       TURNSTILE_SITEKEY: "sitekey",
       TURNSTILE_SECRET: "turn-secret",
-      POW_COMMIT_COOKIE: "__Host-pow_commit",
       POW_ESM_URL: "https://example.com/esm",
       POW_GLUE_URL: "https://example.com/glue",
     };
@@ -2745,21 +2735,22 @@ test("non-atomic /open returns 400 for malformed captcha envelope", async () => 
       })
     );
     assert.equal(commitRes.status, 200);
-    const commitCookie = (commitRes.headers.get("Set-Cookie") || "").split(";")[0];
-    assert.ok(commitCookie, "commit cookie issued");
+    const commitPayload = await commitRes.json();
+    const commitToken =
+      commitPayload && typeof commitPayload.commitToken === "string" ? commitPayload.commitToken : "";
+    assert.ok(commitToken, "commit token issued");
 
     const challengeRes = await core1Handler(
       new Request("https://example.com/__pow/challenge", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Cookie: commitCookie,
           "CF-Connecting-IP": "1.2.3.4",
           "X-Pow-Inner": payload,
           "X-Pow-Inner-Mac": mac,
           "X-Pow-Inner-Expire": String(exp),
         },
-        body: JSON.stringify({}),
+        body: JSON.stringify({ commitToken }),
       })
     );
     assert.equal(challengeRes.status, 200);
@@ -2770,13 +2761,13 @@ test("non-atomic /open returns 400 for malformed captcha envelope", async () => 
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Cookie: commitCookie,
           "CF-Connecting-IP": "1.2.3.4",
           "X-Pow-Inner": payload,
           "X-Pow-Inner-Mac": mac,
           "X-Pow-Inner-Expire": String(exp),
         },
         body: JSON.stringify({
+          commitToken,
           sid: challenge.sid,
           cursor: challenge.cursor,
           token: challenge.token,
@@ -2864,7 +2855,6 @@ test("pow-only + atomic + aggregator consume requires consume token on business 
       POW_TOKEN: "pow-secret",
       TURNSTILE_SITEKEY: "sitekey",
       TURNSTILE_SECRET: "turn-secret",
-      POW_COMMIT_COOKIE: "__Host-pow_commit",
       POW_ESM_URL: "https://example.com/esm",
       POW_GLUE_URL: "https://example.com/glue",
     };
@@ -3035,7 +3025,6 @@ test("pow-only + atomic falls back to pow_required when aggregator consume is di
       POW_TOKEN: "pow-secret",
       TURNSTILE_SITEKEY: "sitekey",
       TURNSTILE_SECRET: "turn-secret",
-      POW_COMMIT_COOKIE: "__Host-pow_commit",
       POW_ESM_URL: "https://example.com/esm",
       POW_GLUE_URL: "https://example.com/glue",
     };
@@ -3150,7 +3139,6 @@ test("turnstile atomic behavior is unchanged by aggregator pow-only extension", 
       POW_TOKEN: "pow-secret",
       TURNSTILE_SITEKEY: "sitekey",
       TURNSTILE_SECRET: "turn-secret",
-      POW_COMMIT_COOKIE: "__Host-pow_commit",
       POW_ESM_URL: "https://example.com/esm",
       POW_GLUE_URL: "https://example.com/glue",
     };
@@ -3318,7 +3306,6 @@ test("split core1 enforces business gate for non-navigation unauthorized request
       POW_TOKEN: "pow-secret",
       TURNSTILE_SITEKEY: "sitekey",
       TURNSTILE_SECRET: "turn-secret",
-      POW_COMMIT_COOKIE: "__Host-pow_commit",
       POW_ESM_URL: "https://example.com/esm",
       POW_GLUE_URL: "https://example.com/glue",
     };
@@ -3431,7 +3418,6 @@ test("split core1 enforces navigation unauthorized challenge html", async () => 
       POW_TOKEN: "pow-secret",
       TURNSTILE_SITEKEY: "sitekey",
       TURNSTILE_SECRET: "turn-secret",
-      POW_COMMIT_COOKIE: "__Host-pow_commit",
       POW_ESM_URL: "https://example.com/esm",
       POW_GLUE_URL: "https://example.com/glue",
     };
@@ -3550,7 +3536,6 @@ test("split core1 forwards valid proof path to origin", async () => {
       POW_TOKEN: "pow-secret",
       TURNSTILE_SITEKEY: "sitekey",
       TURNSTILE_SECRET: "turn-secret",
-      POW_COMMIT_COOKIE: "__Host-pow_commit",
       POW_ESM_URL: "https://example.com/esm",
       POW_GLUE_URL: "https://example.com/glue",
     };
@@ -3750,7 +3735,6 @@ test("split core1 preserves stale/cheat hints on api deny", async () => {
       POW_TOKEN: "pow-secret",
       TURNSTILE_SITEKEY: "sitekey",
       TURNSTILE_SECRET: "turn-secret",
-      POW_COMMIT_COOKIE: "__Host-pow_commit",
       POW_ESM_URL: "https://example.com/esm",
       POW_GLUE_URL: "https://example.com/glue",
     };
@@ -3830,8 +3814,10 @@ test("split core1 preserves stale/cheat hints on api deny", async () => {
       })
     );
     assert.equal(commitRes.status, 200);
-    const commitCookie = (commitRes.headers.get("Set-Cookie") || "").split(";")[0];
-    assert.ok(commitCookie, "commit cookie issued");
+    const commitPayload = await commitRes.json();
+    const commitToken =
+      commitPayload && typeof commitPayload.commitToken === "string" ? commitPayload.commitToken : "";
+    assert.ok(commitToken, "commit token issued");
 
     const challengeHeaders = buildSplitApiHeaders({
       payloadObj: innerPayloadObj,
@@ -3842,12 +3828,11 @@ test("split core1 preserves stale/cheat hints on api deny", async () => {
       apiPrefix: "/__pow",
     });
     challengeHeaders["Content-Type"] = "application/json";
-    challengeHeaders.Cookie = commitCookie;
     const challengeRes = await core1Fetch(
       new Request("https://example.com/__pow/challenge", {
         method: "POST",
         headers: challengeHeaders,
-        body: JSON.stringify({}),
+        body: JSON.stringify({ commitToken }),
       })
     );
     assert.equal(challengeRes.status, 200);
@@ -3862,12 +3847,12 @@ test("split core1 preserves stale/cheat hints on api deny", async () => {
       apiPrefix: "/__pow",
     });
     badOpenHeaders["Content-Type"] = "application/json";
-    badOpenHeaders.Cookie = commitCookie;
     const badOpenRes = await core1Fetch(
       new Request("https://example.com/__pow/open", {
         method: "POST",
         headers: badOpenHeaders,
         body: JSON.stringify({
+          commitToken,
           sid: challengeBody.sid,
           cursor: challengeBody.cursor,
           token: challengeBody.token,
@@ -3890,13 +3875,11 @@ test("split core1 preserves stale/cheat hints on api deny", async () => {
     assert.equal(badOpenRes.status, 403);
     assert.equal(badOpenRes.headers.get("x-pow-h"), "cheat");
 
-    const staleCommitCookie = (() => {
-      const [cookieName, cookieValueRaw = ""] = commitCookie.split("=");
-      const decodedValue = decodeURIComponent(cookieValueRaw);
-      const parts = decodedValue.split(".");
+    const staleCommitToken = (() => {
+      const parts = commitToken.split(".");
       assert.equal(parts.length, 8);
       parts[6] = String(Math.floor(Date.now() / 1000) - 10);
-      return `${cookieName}=${encodeURIComponent(parts.join("."))}`;
+      return parts.join(".");
     })();
 
     const staleOpenHeaders = buildSplitApiHeaders({
@@ -3908,12 +3891,12 @@ test("split core1 preserves stale/cheat hints on api deny", async () => {
       apiPrefix: "/__pow",
     });
     staleOpenHeaders["Content-Type"] = "application/json";
-    staleOpenHeaders.Cookie = staleCommitCookie;
     const staleOpenRes = await core1Fetch(
       new Request("https://example.com/__pow/open", {
         method: "POST",
         headers: staleOpenHeaders,
         body: JSON.stringify({
+          commitToken: staleCommitToken,
           sid: challengeBody.sid,
           cursor: challengeBody.cursor,
           token: challengeBody.token,
@@ -3946,4 +3929,57 @@ test("glue runtime uses captchaTag naming", async () => {
   const glueSource = await readFile(join(repoRoot, "glue.js"), "utf8");
   assert.match(glueSource, /captchaTagV1/u);
   assert.doesNotMatch(glueSource, /\btbFromToken\b/u);
+});
+
+test("glue forwards commitToken in challenge/open payloads", async () => {
+  const commitToken = "v5.test-ticket.test-root.test-path.none.test-nonce.9999999999.test-mac";
+  const challengeFixture = {
+    done: false,
+    sid: "sid-test",
+    cursor: 0,
+    token: "tok-test",
+    indices: [1],
+    segs: [1],
+  };
+
+  const traces = await runGlueFlow({
+    bootstrap: {
+      bindingString: "bind-string",
+      ticketB64: "ticket-b64",
+      steps: 1,
+      segmentLen: 2,
+      pageBytes: 64,
+      mixRounds: 2,
+      hashcashBits: 0,
+    },
+    challengeFixture,
+    fetchMap: {
+      "/__pow/commit": async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({ commitToken }),
+      }),
+      "/__pow/challenge": async ({ body }) => {
+        assert.equal(body.commitToken, commitToken);
+        return {
+          ok: true,
+          status: 200,
+          json: async () => challengeFixture,
+        };
+      },
+      "/__pow/open": async ({ body }) => {
+        assert.equal(body.commitToken, commitToken);
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ done: true }),
+        };
+      },
+    },
+  });
+
+  const challengeCall = traces.endpointRequests.find((req) => req.pathname.endsWith("/__pow/challenge"));
+  const openCall = traces.endpointRequests.find((req) => req.pathname.endsWith("/__pow/open"));
+  assert.equal(challengeCall.body.commitToken, commitToken);
+  assert.equal(openCall.body.commitToken, commitToken);
 });

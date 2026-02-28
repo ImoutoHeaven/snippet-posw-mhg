@@ -85,6 +85,18 @@ node -e "import('./pow-config.js').then(m=>{console.log(JSON.stringify(m.__testN
 | `POW_SAMPLE_RATE` | number | `0.01` | Optional; tune only for sampling strategy changes. | Sampling rate used by PoW generation logic. |
 | `POW_OPEN_BATCH` | number | `4` | Optional; tune only when adjusting open/challenge throughput. | Batch size for PoW open handling. |
 
+### PoW API payload contract
+
+These endpoint payload fields are fixed runtime contract and are not config-driven.
+
+| Endpoint | Contract |
+| --- | --- |
+| `POST /__pow/commit` | Success response body includes `commitToken` (string, non-empty). |
+| `POST /__pow/challenge` | Request JSON must include `commitToken` (string, non-empty) from `/__pow/commit`. |
+| `POST /__pow/open` | Request JSON must include `commitToken` (string, non-empty) from `/__pow/commit`. |
+
+`/__pow/challenge` and `/__pow/open` read `commitToken` from JSON body only.
+
 ### Proof lifecycle controls
 
 | Key | Type | Default | Required when | What it controls |
@@ -97,7 +109,6 @@ node -e "import('./pow-config.js').then(m=>{console.log(JSON.stringify(m.__testN
 | `PROOF_RENEW_MAX` | number | `2` | Required when `PROOF_RENEW_ENABLE=true`. | Max renewal count allowed per proof. |
 | `PROOF_RENEW_WINDOW_SEC` | number | `90` | Required when `PROOF_RENEW_ENABLE=true`. | Renewal eligibility window. |
 | `PROOF_RENEW_MIN_SEC` | number | `30` | Required when `PROOF_RENEW_ENABLE=true`. | Minimum age before a proof can renew. |
-| `POW_COMMIT_COOKIE` | string | `__Host-pow_commit` | Never; fixed by runtime. | Cookie name used for PoW commit state. |
 
 ### Atomic transport controls
 

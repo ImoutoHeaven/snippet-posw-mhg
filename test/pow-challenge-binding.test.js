@@ -316,6 +316,94 @@ const extractChallengeArgs = (html) => {
   };
 };
 
+test("commit returns commitToken payload; challenge requires payload token", async () => {
+  const restoreGlobals = ensureGlobals();
+  const core1ModulePath = await buildSplitHarnessModule();
+  const configModulePath = await buildConfigModule();
+  const core1Mod = await import(`${pathToFileURL(core1ModulePath).href}?v=${Date.now()}`);
+  const configMod = await import(`${pathToFileURL(configModulePath).href}?v=${Date.now()}`);
+  const core1Handler = core1Mod.default.fetch;
+  const configHandler = configMod.default.fetch;
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async (request) => {
+      const hasInner = Array.from(request.headers.keys()).some((key) =>
+        key.toLowerCase().startsWith("x-pow-inner")
+      );
+      if (hasInner) {
+        return core1Handler(request);
+      }
+      return new Response("ok", { status: 200 });
+    };
+
+    const pageRes = await configHandler(
+      new Request("https://example.com/protected", {
+        method: "GET",
+        headers: {
+          Accept: "text/html",
+          "CF-Connecting-IP": "1.2.3.4",
+        },
+      }),
+    );
+    assert.equal(pageRes.status, 200);
+    const html = await pageRes.text();
+    const args = extractChallengeArgs(html);
+    assert.ok(args, "challenge html includes args");
+
+    const rootB64 = base64Url(crypto.randomBytes(32));
+    const nonce = base64Url(crypto.randomBytes(12));
+    const commitRes = await configHandler(
+      new Request("https://example.com/__pow/commit", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "CF-Connecting-IP": "1.2.3.4",
+        },
+        body: JSON.stringify({
+          ticketB64: args.ticketB64,
+          rootB64,
+          pathHash: args.pathHash,
+          nonce,
+        }),
+      }),
+    );
+
+    assert.equal(commitRes.status, 200);
+    assert.equal(commitRes.headers.get("Set-Cookie"), null);
+    const commitPayload = await commitRes.json();
+    assert.equal(typeof commitPayload.commitToken, "string");
+    assert.ok(commitPayload.commitToken.length > 0);
+
+    const challengeRes = await configHandler(
+      new Request("https://example.com/__pow/challenge", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "CF-Connecting-IP": "1.2.3.4",
+        },
+        body: JSON.stringify({ commitToken: commitPayload.commitToken }),
+      }),
+    );
+    assert.equal(challengeRes.status, 200);
+
+    const legacyCookieOnly = await configHandler(
+      new Request("https://example.com/__pow/challenge", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "CF-Connecting-IP": "1.2.3.4",
+          Cookie: `__Host-pow_commit=${encodeURIComponent(commitPayload.commitToken)}`,
+        },
+        body: JSON.stringify({}),
+      }),
+    );
+    assert.equal(legacyCookieOnly.status, 400);
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreGlobals();
+  }
+});
+
 test("challenge rejects binding mismatch after commit via split core harness", async () => {
   const restoreGlobals = ensureGlobals();
   const core1ModulePath = await buildSplitHarnessModule();
@@ -389,20 +477,17 @@ test("challenge rejects binding mismatch after commit via split core harness", a
       })
     );
     assert.equal(commitRes.status, 200);
-    const setCookie = commitRes.headers.get("Set-Cookie");
-    assert.ok(setCookie, "commit sets cookie");
-    assert.ok(setCookie.includes("SameSite=Lax"), "commit cookie uses SameSite=Lax");
-    const commitCookie = setCookie.split(";")[0];
-
+    const commitPayload = await commitRes.json();
+    assert.equal(typeof commitPayload.commitToken, "string");
+    assert.ok(commitPayload.commitToken.length > 0);
     const challengeResPrimary = await configHandler(
       new Request("https://example.com/__pow/challenge", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           "CF-Connecting-IP": ipPrimary,
-          Cookie: commitCookie,
         },
-        body: JSON.stringify({}),
+        body: JSON.stringify({ commitToken: commitPayload.commitToken }),
       })
     );
     assert.equal(challengeResPrimary.status, 200);
@@ -434,9 +519,9 @@ test("challenge rejects binding mismatch after commit via split core harness", a
         headers: {
           "Content-Type": "application/json",
           "CF-Connecting-IP": ipPrimary,
-          Cookie: commitCookie,
         },
         body: JSON.stringify({
+          commitToken: commitPayload.commitToken,
           sid: challengePayload.sid,
           cursor: challengePayload.cursor,
           token: challengePayload.token,
@@ -457,9 +542,9 @@ test("challenge rejects binding mismatch after commit via split core harness", a
         headers: {
           "Content-Type": "application/json",
           "CF-Connecting-IP": ipPrimary,
-          Cookie: commitCookie,
         },
         body: JSON.stringify({
+          commitToken: commitPayload.commitToken,
           sid: challengePayload.sid,
           cursor: challengePayload.cursor,
           token: challengePayload.token,
@@ -477,9 +562,8 @@ test("challenge rejects binding mismatch after commit via split core harness", a
         headers: {
           "Content-Type": "application/json",
           "CF-Connecting-IP": ipSecondary,
-          Cookie: commitCookie,
         },
-        body: JSON.stringify({}),
+        body: JSON.stringify({ commitToken: commitPayload.commitToken }),
       })
     );
     assert.equal(challengeRes.status, 403);
@@ -548,7 +632,9 @@ test("challenge sampling count follows ceil(L*POW_SAMPLE_RATE)", async () => {
       }),
     );
     assert.equal(commitRes.status, 200);
-    const commitCookie = commitRes.headers.get("Set-Cookie").split(";")[0];
+    const commitPayload = await commitRes.json();
+    assert.equal(typeof commitPayload.commitToken, "string");
+    assert.ok(commitPayload.commitToken.length > 0);
 
     const challengeRes = await configHandler(
       new Request("https://example.com/__pow/challenge", {
@@ -556,9 +642,8 @@ test("challenge sampling count follows ceil(L*POW_SAMPLE_RATE)", async () => {
         headers: {
           "Content-Type": "application/json",
           "CF-Connecting-IP": "1.2.3.4",
-          Cookie: commitCookie,
         },
-        body: JSON.stringify({}),
+        body: JSON.stringify({ commitToken: commitPayload.commitToken }),
       }),
     );
     assert.equal(challengeRes.status, 200);
@@ -626,7 +711,6 @@ test("split core-2 hard-cutoff rejects removed API routes", async () => {
       POW_BIND_COUNTRY: false,
       POW_BIND_ASN: false,
       POW_BIND_TLS: false,
-      POW_COMMIT_COOKIE: "__Host-pow_commit",
       PROOF_TTL_SEC: 300,
       ATOMIC_CONSUME: false,
       POW_TICKET_TTL_SEC: 180,

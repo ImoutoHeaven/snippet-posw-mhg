@@ -114,7 +114,6 @@ const FULL_CONFIG = {
   POW_BIND_TLS: true,
   IPV4_PREFIX: 32,
   IPV6_PREFIX: 64,
-  POW_COMMIT_COOKIE: "__Host-pow_commit",
   POW_ESM_URL:
     "https://cdn.jsdelivr.net/gh/ImoutoHeaven/snippet-posw@412f7fcc71c319b62a614e4252280f2bb3d7302b/esm/esm.js",
   POW_GLUE_URL:
@@ -178,6 +177,11 @@ test("normalizeConfig hard-cuts POW_VERSION to 4 regardless input", () => {
     const cfg = __testNormalizeConfig({ POW_VERSION: value });
     assert.equal(cfg.POW_VERSION, 4);
   }
+});
+
+test("normalizeConfig hard-cuts legacy POW_COMMIT_COOKIE", () => {
+  const cfg = __testNormalizeConfig({ POW_COMMIT_COOKIE: "custom" });
+  assert.equal("POW_COMMIT_COOKIE" in cfg, false);
 });
 
 test("normalizeConfig clamps POW_SEGMENT_LEN fixed values to 2..16", () => {

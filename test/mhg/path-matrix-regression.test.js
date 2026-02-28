@@ -179,8 +179,7 @@ const buildConfigModule = async (secret = CONFIG_SECRET, overrides = {}) => {
         POW_COMMIT_TTL_SEC: 120,
         POW_TICKET_TTL_SEC: 180,
         PROOF_TTL_SEC: 300,
-        POW_COMMIT_COOKIE: "__Host-pow_commit",
-        ATOMIC_CONSUME: true,
+          ATOMIC_CONSUME: true,
         ATOMIC_TURN_QUERY: "__ts",
         ATOMIC_TICKET_QUERY: "__tt",
         ATOMIC_CONSUME_QUERY: "__ct",
@@ -238,11 +237,10 @@ const mutateTicketExpiry = (ticketB64, exp) => {
   return base64Url(Buffer.from(parts.join("."), "utf8"));
 };
 
-const mutateCommitExpiry = (commitCookie, exp) => {
-  const value = commitCookie.split("=")[1] || "";
-  const parts = decodeURIComponent(value).split(".");
+const mutateCommitTokenExpiry = (commitToken, exp) => {
+  const parts = String(commitToken || "").split(".");
   parts[6] = String(exp);
-  return `${commitCookie.split("=")[0]}=${encodeURIComponent(parts.join("."))}`;
+  return parts.join(".");
 };
 
 const parseConsume = (consumeToken) => {
@@ -283,7 +281,7 @@ const makeSignedTicketB64 = ({ payload, host, pathHash, issuedAt, exp, steps, no
   return base64Url(Buffer.from(raw, "utf8"));
 };
 
-const makeSignedCommitCookie = ({
+const makeSignedCommitToken = ({
   ticketB64,
   rootB64,
   pathHash,
@@ -298,8 +296,7 @@ const makeSignedCommitCookie = ({
       .update(`C2|${ticketB64}|${rootB64}|${pathHash}|${captchaTag}|${nonce}|${exp}`)
       .digest()
   );
-  const value = `v5.${ticketB64}.${rootB64}.${pathHash}.${captchaTag}.${nonce}.${exp}.${mac}`;
-  return `__Host-pow_commit=${encodeURIComponent(value)}`;
+  return `v5.${ticketB64}.${rootB64}.${pathHash}.${captchaTag}.${nonce}.${exp}.${mac}`;
 };
 
 const extractChallengeArgs = (html) => {
@@ -353,7 +350,6 @@ const makeInnerPayload = ({
     POW_SEGMENT_LEN: 2,
     POW_COMMIT_TTL_SEC: 120,
     POW_TICKET_TTL_SEC: 180,
-    POW_COMMIT_COOKIE: "__Host-pow_commit",
     POW_BIND_PATH: true,
     POW_BIND_IPRANGE: true,
     POW_BIND_COUNTRY: false,
@@ -398,6 +394,25 @@ const makeInnerHeaders = (payloadObj, secret = CONFIG_SECRET, expireOffsetSec = 
     "X-Pow-Inner-Mac": mac,
     "X-Pow-Inner-Expire": String(exp),
   };
+};
+
+const parseInnerPayloadFromRequest = (request) => {
+  const direct = request.headers.get("X-Pow-Inner");
+  if (direct) {
+    return JSON.parse(fromBase64Url(direct).toString("utf8"));
+  }
+  const countRaw = request.headers.get("X-Pow-Inner-Count") || "";
+  const count = Number.parseInt(countRaw, 10);
+  if (!Number.isFinite(count) || count <= 0) {
+    throw new Error("missing_inner_payload");
+  }
+  let joined = "";
+  for (let i = 0; i < count; i += 1) {
+    const part = request.headers.get(`X-Pow-Inner-${i}`);
+    if (!part) throw new Error("missing_inner_chunk");
+    joined += part;
+  }
+  return JSON.parse(fromBase64Url(joined).toString("utf8"));
 };
 
 const deriveMhgGraphSeed = (ticketB64, nonce) =>
@@ -663,14 +678,20 @@ const runOnePath = async (mod, spec, failures) => {
         pushFailure(failures, spec.pathId, "commit_status", 200, commitRes.status);
         return;
       }
-      const commitCookie = (commitRes.headers.get("set-cookie") || "").split(";")[0];
+      const commitPayload = await commitRes.json();
+      const commitToken =
+        commitPayload && typeof commitPayload.commitToken === "string" ? commitPayload.commitToken : "";
+      if (!commitToken) {
+        pushFailure(failures, spec.pathId, "commit_token", "present", null);
+        return;
+      }
 
       const challengeBefore = snapshot();
       const challengeRes = await mod.default.fetch(
         new Request("https://example.com/__pow/challenge", {
           method: "POST",
-          headers: { ...freshHeaders(), "Content-Type": "application/json", Cookie: commitCookie },
-          body: JSON.stringify({}),
+          headers: { ...freshHeaders(), "Content-Type": "application/json" },
+          body: JSON.stringify({ commitToken }),
         }),
         {},
         {}
@@ -694,8 +715,9 @@ const runOnePath = async (mod, spec, failures) => {
         const openRes = await mod.default.fetch(
           new Request("https://example.com/__pow/open", {
             method: "POST",
-            headers: { ...freshHeaders(), "Content-Type": "application/json", Cookie: commitCookie },
+            headers: { ...freshHeaders(), "Content-Type": "application/json" },
             body: JSON.stringify({
+              commitToken,
               sid: state.sid,
               cursor: state.cursor,
               token: state.token,
@@ -898,7 +920,10 @@ const runSplitLinkedCase = async ({ pathId }) => {
       {}
     );
     assert.equal(commitRes.status, 200);
-    const commitCookie = (commitRes.headers.get("set-cookie") || "").split(";")[0];
+    const commitPayload = await commitRes.json();
+    const commitToken =
+      commitPayload && typeof commitPayload.commitToken === "string" ? commitPayload.commitToken : "";
+    assert.ok(commitToken);
 
     const challengeRes = await powHandler(
       new Request("https://example.com/__pow/challenge", {
@@ -906,9 +931,8 @@ const runSplitLinkedCase = async ({ pathId }) => {
         headers: {
           ...makeInnerHeaders(seedPayload),
           "Content-Type": "application/json",
-          Cookie: commitCookie,
         },
-        body: JSON.stringify({}),
+        body: JSON.stringify({ commitToken }),
       }),
       {},
       {}
@@ -925,9 +949,9 @@ const runSplitLinkedCase = async ({ pathId }) => {
           headers: {
             ...makeInnerHeaders(seedPayload),
             "Content-Type": "application/json",
-            Cookie: commitCookie,
           },
           body: JSON.stringify({
+            commitToken,
             sid: state.sid,
             cursor: state.cursor,
             token: state.token,
@@ -1116,15 +1140,16 @@ const runStaleSemantics = async () => {
     {},
     {}
   );
-  const staleCommitCookie = mutateCommitExpiry(
-    (commitRes.headers.get("set-cookie") || "").split(";")[0],
+  const commitPayload = await commitRes.json();
+  const staleCommitToken = mutateCommitTokenExpiry(
+    commitPayload && typeof commitPayload.commitToken === "string" ? commitPayload.commitToken : "",
     Math.floor(Date.now() / 1000) - 10
   );
   const commitStaleRes = await mod.default.fetch(
     new Request("https://example.com/__pow/challenge", {
       method: "POST",
-      headers: { ...freshHeaders(), "Content-Type": "application/json", Cookie: staleCommitCookie },
-      body: JSON.stringify({}),
+      headers: { ...freshHeaders(), "Content-Type": "application/json" },
+      body: JSON.stringify({ commitToken: staleCommitToken }),
     }),
     {},
     {}
@@ -1342,13 +1367,16 @@ test("non-atomic pow path with AGG true and turncheck false calls aggregator onc
       {}
     );
     assert.equal(commitRes.status, 200);
-    const commitCookie = (commitRes.headers.get("set-cookie") || "").split(";")[0];
+    const commitPayload = await commitRes.json();
+    const commitToken =
+      commitPayload && typeof commitPayload.commitToken === "string" ? commitPayload.commitToken : "";
+    assert.ok(commitToken);
 
     const challengeRes = await mod.default.fetch(
       new Request("https://example.com/__pow/challenge", {
         method: "POST",
-        headers: { ...freshHeaders(), "Content-Type": "application/json", Cookie: commitCookie },
-        body: JSON.stringify({}),
+        headers: { ...freshHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify({ commitToken }),
       }),
       {},
       {}
@@ -1363,8 +1391,8 @@ test("non-atomic pow path with AGG true and turncheck false calls aggregator onc
       const openRes = await mod.default.fetch(
         new Request("https://example.com/__pow/open", {
           method: "POST",
-          headers: { ...freshHeaders(), "Content-Type": "application/json", Cookie: commitCookie },
-          body: JSON.stringify({ sid: state.sid, cursor: state.cursor, token: state.token, opens }),
+          headers: { ...freshHeaders(), "Content-Type": "application/json" },
+          body: JSON.stringify({ commitToken, sid: state.sid, cursor: state.cursor, token: state.token, opens }),
         }),
         {},
         {}
@@ -1442,13 +1470,16 @@ test("non-atomic pow path with AGG false and turncheck false keeps aggregator at
       {}
     );
     assert.equal(commitRes.status, 200);
-    const commitCookie = (commitRes.headers.get("set-cookie") || "").split(";")[0];
+    const commitPayload = await commitRes.json();
+    const commitToken =
+      commitPayload && typeof commitPayload.commitToken === "string" ? commitPayload.commitToken : "";
+    assert.ok(commitToken);
 
     const challengeRes = await mod.default.fetch(
       new Request("https://example.com/__pow/challenge", {
         method: "POST",
-        headers: { ...freshHeaders(), "Content-Type": "application/json", Cookie: commitCookie },
-        body: JSON.stringify({}),
+        headers: { ...freshHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify({ commitToken }),
       }),
       {},
       {}
@@ -1463,8 +1494,8 @@ test("non-atomic pow path with AGG false and turncheck false keeps aggregator at
       const openRes = await mod.default.fetch(
         new Request("https://example.com/__pow/open", {
           method: "POST",
-          headers: { ...freshHeaders(), "Content-Type": "application/json", Cookie: commitCookie },
-          body: JSON.stringify({ sid: state.sid, cursor: state.cursor, token: state.token, opens }),
+          headers: { ...freshHeaders(), "Content-Type": "application/json" },
+          body: JSON.stringify({ commitToken, sid: state.sid, cursor: state.cursor, token: state.token, opens }),
         }),
         {},
         {}
@@ -1676,7 +1707,7 @@ test("challenge rejects absolute issuedAt lifecycle overflow even when ticket an
       steps: 6,
       nonce: base64Url(crypto.randomBytes(12)),
     });
-    const commitCookie = makeSignedCommitCookie({
+    const commitToken = makeSignedCommitToken({
       ticketB64: staleTicketB64,
       rootB64: base64Url(crypto.randomBytes(32)),
       pathHash: args.pathHash,
@@ -1688,8 +1719,8 @@ test("challenge rejects absolute issuedAt lifecycle overflow even when ticket an
     const challengeRes = await mod.default.fetch(
       new Request("https://example.com/__pow/challenge", {
         method: "POST",
-        headers: { ...freshHeaders(), "Content-Type": "application/json", Cookie: commitCookie },
-        body: JSON.stringify({}),
+        headers: { ...freshHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify({ commitToken }),
       }),
       {},
       {}
@@ -1730,7 +1761,7 @@ test("open rejects absolute issuedAt lifecycle overflow even when ticket and com
       steps: 6,
       nonce: base64Url(crypto.randomBytes(12)),
     });
-    const commitCookie = makeSignedCommitCookie({
+    const commitToken = makeSignedCommitToken({
       ticketB64: staleTicketB64,
       rootB64: base64Url(crypto.randomBytes(32)),
       pathHash: args.pathHash,
@@ -1742,8 +1773,8 @@ test("open rejects absolute issuedAt lifecycle overflow even when ticket and com
     const openRes = await mod.default.fetch(
       new Request("https://example.com/__pow/open", {
         method: "POST",
-        headers: { ...freshHeaders(), "Content-Type": "application/json", Cookie: commitCookie },
-        body: JSON.stringify({}),
+        headers: { ...freshHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify({ commitToken }),
       }),
       {},
       {}
@@ -1787,7 +1818,7 @@ test("challenge allows request exactly at absolute issuedAt lifecycle deadline",
       steps: 6,
       nonce: base64Url(crypto.randomBytes(12)),
     });
-    const commitCookie = makeSignedCommitCookie({
+    const commitToken = makeSignedCommitToken({
       ticketB64,
       rootB64: base64Url(crypto.randomBytes(32)),
       pathHash: args.pathHash,
@@ -1799,8 +1830,8 @@ test("challenge allows request exactly at absolute issuedAt lifecycle deadline",
     const challengeRes = await mod.default.fetch(
       new Request("https://example.com/__pow/challenge", {
         method: "POST",
-        headers: { ...freshHeaders(), "Content-Type": "application/json", Cookie: commitCookie },
-        body: JSON.stringify({}),
+        headers: { ...freshHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify({ commitToken }),
       }),
       {},
       {}
@@ -1808,6 +1839,79 @@ test("challenge allows request exactly at absolute issuedAt lifecycle deadline",
 
     assert.equal(challengeRes.status, 200);
   } finally {
+    restoreGlobals();
+  }
+});
+
+test("resolveConfig for challenge/open uses body commitToken cfgId", async () => {
+  const restoreGlobals = ensureGlobals();
+  const cfgModulePath = await buildConfigModule();
+  const cfgMod = await import(`${pathToFileURL(cfgModulePath).href}?v=${Date.now()}-cfgid-body-token`);
+  const cfgHandler = cfgMod.default.fetch;
+
+  const makeCommitTokenForCfgId = (cfgId) => {
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const ticketRaw = [
+      "4",
+      String(nowSeconds + 180),
+      "6",
+      base64Url(crypto.randomBytes(12)),
+      String(cfgId),
+      String(nowSeconds),
+      base64Url(crypto.randomBytes(32)),
+    ].join(".");
+    const ticketB64 = base64Url(Buffer.from(ticketRaw, "utf8"));
+    const bodyCommitToken = makeSignedCommitToken({
+      ticketB64,
+      rootB64: base64Url(crypto.randomBytes(32)),
+      pathHash: base64Url(crypto.randomBytes(32)),
+      captchaTag: "any",
+      nonce: base64Url(crypto.randomBytes(16)),
+      exp: nowSeconds + 180,
+    });
+    return bodyCommitToken;
+  };
+
+  const bodyCommitToken = makeCommitTokenForCfgId(999);
+  const originalFetch = globalThis.fetch;
+  try {
+    const seenCfgIds = [];
+    globalThis.fetch = async (input, init) => {
+      const req = input instanceof Request ? input : new Request(input, init);
+      const innerPayload = parseInnerPayloadFromRequest(req);
+      seenCfgIds.push(innerPayload.id);
+      return new Response("ok", { status: 200 });
+    };
+
+    const challengeRes = await cfgHandler(
+      new Request("https://example.com/__pow/challenge", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ commitToken: bodyCommitToken }),
+      }),
+      {},
+      {}
+    );
+    assert.equal(challengeRes.status, 200);
+
+    const openRes = await cfgHandler(
+      new Request("https://example.com/__pow/open", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ commitToken: bodyCommitToken }),
+      }),
+      {},
+      {}
+    );
+    assert.equal(openRes.status, 200);
+
+    assert.deepEqual(seenCfgIds, [-1, -1]);
+  } finally {
+    globalThis.fetch = originalFetch;
     restoreGlobals();
   }
 });

@@ -65,7 +65,6 @@ const buildInnerHeaders = ({ secret = TEST_SECRET, apiPrefix = "/__pow" } = {}) 
       POW_API_PREFIX: normalizeApiPrefix(apiPrefix),
       POW_TOKEN: "pow-secret",
       POW_VERSION: 3,
-      POW_COMMIT_COOKIE: "__Host-pow_commit",
       POW_OPEN_BATCH: 1,
       POW_SAMPLE_RATE: 0.01,
       POW_SEGMENT_LEN: 1,

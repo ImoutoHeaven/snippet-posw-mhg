@@ -296,7 +296,7 @@ export async function setupGlueTestGlobals({ bootstrap, challengeFixture, worker
       return await fetchMap[parsed.pathname]({ url: endpoint, init, body });
     }
     if (parsed.pathname.endsWith("/commit")) {
-      return { ok: true, status: 200, json: async () => ({}) };
+      return { ok: true, status: 200, json: async () => ({ commitToken: "v5.test.commit-token" }) };
     }
     if (parsed.pathname.endsWith("/challenge")) {
       return { ok: true, status: 200, json: async () => defaultChallenge };

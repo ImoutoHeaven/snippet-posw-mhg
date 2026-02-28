@@ -200,7 +200,6 @@ const makeInnerPayload = ({ atomic = false, turncheck = true, powVersion = 4 } =
     POW_SEGMENT_LEN: 2,
     POW_COMMIT_TTL_SEC: 120,
     POW_TICKET_TTL_SEC: 180,
-    POW_COMMIT_COOKIE: "__Host-pow_commit",
     POW_BIND_PATH: true,
     POW_BIND_IPRANGE: true,
     POW_BIND_COUNTRY: false,
@@ -381,13 +380,15 @@ const runForbiddenVerifyPointCases = async (handler) => {
     );
     const commitSiteverifyCalls = siteverifyCalls;
     assert.equal(commitRes.status, 200);
-    const commitCookie = (commitRes.headers.get("set-cookie") || "").split(";")[0];
+    const commitPayload = await commitRes.json();
+    assert.equal(typeof commitPayload.commitToken, "string");
+    assert.ok(commitPayload.commitToken.length > 0);
 
     const challengeRes = await handler(
       new Request("https://example.com/__pow/challenge", {
         method: "POST",
-        headers: { ...headers, "Content-Type": "application/json", Cookie: commitCookie },
-        body: JSON.stringify({}),
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ commitToken: commitPayload.commitToken }),
       }),
       {},
       {}
@@ -403,8 +404,9 @@ const runForbiddenVerifyPointCases = async (handler) => {
       const openRes = await handler(
         new Request("https://example.com/__pow/open", {
           method: "POST",
-          headers: { ...headers, "Content-Type": "application/json", Cookie: commitCookie },
+          headers: { ...headers, "Content-Type": "application/json" },
           body: JSON.stringify({
+            commitToken: commitPayload.commitToken,
             sid: state.sid,
             cursor: state.cursor,
             token: state.token,
@@ -671,6 +673,96 @@ test("v3-derived vector no longer verifies under v4 graph seed contract", async 
   }
 });
 
+test("open requires commitToken in body and ignores commit cookie", async () => {
+  const restoreGlobals = ensureGlobals();
+  try {
+    const bridgeFetch = await buildSplitBridgeFetch();
+    const payload = makeInnerPayload({ turncheck: false });
+    const pageRes = await bridgeFetch(
+      new Request("https://example.com/protected", {
+        headers: {
+          ...makeInnerHeaders(payload),
+          Accept: "text/html",
+          "CF-Connecting-IP": "1.2.3.4",
+        },
+      }),
+      {},
+      {}
+    );
+    assert.equal(pageRes.status, 200);
+    const args = extractChallengeArgs(await pageRes.text());
+    assert.ok(args);
+
+    const nonce = base64Url(crypto.randomBytes(16));
+    const witness = await buildMhgWitnessBundle({ ticketB64: args.ticketB64, nonce, graphLabel: "v3" });
+
+    const commitRes = await bridgeFetch(
+      new Request("https://example.com/__pow/commit", {
+        method: "POST",
+        headers: {
+          ...makeInnerHeaders(payload),
+          "Content-Type": "application/json",
+          "CF-Connecting-IP": "1.2.3.4",
+        },
+        body: JSON.stringify({
+          ticketB64: args.ticketB64,
+          rootB64: witness.rootB64,
+          pathHash: args.pathHash,
+          nonce,
+          captchaToken: "",
+        }),
+      }),
+      {},
+      {}
+    );
+    assert.equal(commitRes.status, 200);
+    const commitPayload = await commitRes.json();
+    assert.equal(typeof commitPayload.commitToken, "string");
+    assert.ok(commitPayload.commitToken.length > 0);
+
+    const challengeRes = await bridgeFetch(
+      new Request("https://example.com/__pow/challenge", {
+        method: "POST",
+        headers: {
+          ...makeInnerHeaders(payload),
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ commitToken: commitPayload.commitToken }),
+      }),
+      {},
+      {}
+    );
+    assert.equal(challengeRes.status, 200);
+    const challenge = await challengeRes.json();
+    assert.equal(challenge.done, false);
+
+    const opens = challenge.indices.map((idx, pos) => witness.makeOpenEntry(idx, challenge.segs[pos]));
+    const openMissingToken = await bridgeFetch(
+      new Request("https://example.com/__pow/open", {
+        method: "POST",
+        headers: {
+          ...makeInnerHeaders(payload),
+          "Content-Type": "application/json",
+          Cookie: `__Host-pow_commit=${encodeURIComponent(commitPayload.commitToken)}`,
+        },
+        body: JSON.stringify({
+          sid: challenge.sid,
+          cursor: challenge.cursor,
+          token: challenge.token,
+          captchaToken: "",
+          opens,
+        }),
+      }),
+      {},
+      {}
+    );
+
+    assert.equal(openMissingToken.status, 400);
+  } finally {
+    restoreGlobals();
+  }
+});
+
 test("/__pow/open rejects v3-derived vectors with cheat hint", async () => {
   const restoreGlobals = ensureGlobals();
   try {
@@ -714,8 +806,9 @@ test("/__pow/open rejects v3-derived vectors with cheat hint", async () => {
       {}
     );
     assert.equal(commitRes.status, 200);
-    const commitCookie = (commitRes.headers.get("set-cookie") || "").split(";")[0];
-    assert.ok(commitCookie);
+    const commitPayload = await commitRes.json();
+    assert.equal(typeof commitPayload.commitToken, "string");
+    assert.ok(commitPayload.commitToken.length > 0);
 
     const challengeRes = await bridgeFetch(
       new Request("https://example.com/__pow/challenge", {
@@ -723,9 +816,8 @@ test("/__pow/open rejects v3-derived vectors with cheat hint", async () => {
         headers: {
           ...makeInnerHeaders(payload),
           "Content-Type": "application/json",
-          Cookie: commitCookie,
         },
-        body: JSON.stringify({}),
+        body: JSON.stringify({ commitToken: commitPayload.commitToken }),
       }),
       {},
       {}
@@ -741,9 +833,9 @@ test("/__pow/open rejects v3-derived vectors with cheat hint", async () => {
         headers: {
           ...makeInnerHeaders(payload),
           "Content-Type": "application/json",
-          Cookie: commitCookie,
         },
         body: JSON.stringify({
+          commitToken: commitPayload.commitToken,
           sid: challenge.sid,
           cursor: challenge.cursor,
           token: challenge.token,

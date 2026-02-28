@@ -4,7 +4,6 @@ import assert from "node:assert/strict";
 import { LOW_PROFILE, assertLowProfileFixture } from "./helpers/low-profile.js";
 import { runWorkerFlow } from "./helpers/worker-rpc-harness.js";
 import { runGlueFlow } from "./helpers/glue-flow-harness.js";
-import challengeRequestBaseline from "./fixtures/challenge-request-baseline.js";
 
 const scriptedEchoWorker = ({ msg }) => {
   if (msg.type === "INIT") {
@@ -78,9 +77,20 @@ test("L1 commit->challenge->open flow preserves server values", async () => {
     Object.keys(reqByPathA["/__pow/commit"].body).sort(),
     ["nonce", "pathHash", "rootB64", "ticketB64"],
   );
-  assert.deepEqual(Object.keys(reqByPathA["/__pow/challenge"].body), []);
-  assert.deepEqual(Object.keys(reqByPathA["/__pow/open"].body).sort(), ["cursor", "opens", "sid", "token"]);
-  assert.deepEqual(reqByPathA["/__pow/challenge"].body, challengeRequestBaseline);
+  assert.deepEqual(Object.keys(reqByPathA["/__pow/challenge"].body).sort(), ["commitToken"]);
+  assert.deepEqual(Object.keys(reqByPathA["/__pow/open"].body).sort(), [
+    "commitToken",
+    "cursor",
+    "opens",
+    "sid",
+    "token",
+  ]);
+  assert.equal(typeof reqByPathA["/__pow/challenge"].body.commitToken, "string");
+  assert.ok(reqByPathA["/__pow/challenge"].body.commitToken.length > 0);
+  assert.equal(
+    reqByPathA["/__pow/open"].body.commitToken,
+    reqByPathA["/__pow/challenge"].body.commitToken,
+  );
 
   const mappingRowsA = [
     [caseA.runPowArgs.bindingString, caseA.initPayloads[0].bindingString, "strict"],
@@ -137,6 +147,20 @@ test("L1 commit->challenge->open flow preserves server values", async () => {
   assert.equal(caseB.initPayloads[0].hashcashBits, 0);
   assert.deepEqual(caseB.openPayloads[0].indices, [33]);
   assert.deepEqual(caseB.openPayloads[0].segs, [19]);
+  assert.deepEqual(Object.keys(reqByPathB["/__pow/challenge"].body).sort(), ["commitToken"]);
+  assert.deepEqual(Object.keys(reqByPathB["/__pow/open"].body).sort(), [
+    "commitToken",
+    "cursor",
+    "opens",
+    "sid",
+    "token",
+  ]);
+  assert.equal(typeof reqByPathB["/__pow/challenge"].body.commitToken, "string");
+  assert.ok(reqByPathB["/__pow/challenge"].body.commitToken.length > 0);
+  assert.equal(
+    reqByPathB["/__pow/open"].body.commitToken,
+    reqByPathB["/__pow/challenge"].body.commitToken,
+  );
   assert.equal(caseB.workerCommitResults[0].rootB64, reqByPathB["/__pow/commit"].body.rootB64);
   assert.equal(caseB.workerCommitResults[0].nonce, reqByPathB["/__pow/commit"].body.nonce);
   assert.deepEqual(reqByPathB["/__pow/open"].body.opens.map((x) => x.seg), [19]);

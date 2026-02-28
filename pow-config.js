@@ -56,7 +56,6 @@ const DEFAULTS = {
   POW_BIND_TLS: true,
   IPV4_PREFIX: 32,
   IPV6_PREFIX: 128,
-  POW_COMMIT_COOKIE: "__Host-pow_commit",
   POW_ESM_URL:
     "https://cdn.jsdelivr.net/gh/ImoutoHeaven/snippet-posw@6a34eb1/esm/esm.js",
   POW_GLUE_URL:
@@ -962,7 +961,6 @@ const normalizeConfig = (baseConfig) => {
     POW_BIND_TLS: normalizeBoolean(merged.POW_BIND_TLS, DEFAULTS.POW_BIND_TLS),
     IPV4_PREFIX: normalizeNumberClamp(merged.IPV4_PREFIX, DEFAULTS.IPV4_PREFIX, 0, 32),
     IPV6_PREFIX: normalizeNumberClamp(merged.IPV6_PREFIX, DEFAULTS.IPV6_PREFIX, 0, 128),
-    POW_COMMIT_COOKIE: DEFAULTS.POW_COMMIT_COOKIE,
     POW_ESM_URL: normalizeString(merged.POW_ESM_URL, DEFAULTS.POW_ESM_URL),
     POW_GLUE_URL: normalizeString(merged.POW_GLUE_URL, DEFAULTS.POW_GLUE_URL),
     TURNSTILE_SITEKEY: normalizeString(merged.TURNSTILE_SITEKEY, ""),
@@ -1274,9 +1272,9 @@ const resolveCfgIdFromPowApi = async (request, requestPath) => {
     return ticket ? ticket.cfgId : null;
   }
   if (action === "/challenge" || action === "/open") {
-    const cookies = parseCookieHeader(request.headers.get("Cookie"));
-    const commitRaw = cookies.get(DEFAULTS.POW_COMMIT_COOKIE) || "";
-    const commit = parsePowCommitCookie(commitRaw);
+    const body = await readJsonBody(request.clone());
+    const commitToken = body && typeof body.commitToken === "string" ? body.commitToken : "";
+    const commit = parsePowCommitCookie(commitToken);
     const ticket = commit ? parsePowTicket(commit.ticketB64) : null;
     return ticket ? ticket.cfgId : null;
   }

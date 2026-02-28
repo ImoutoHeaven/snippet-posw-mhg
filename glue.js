@@ -1586,10 +1586,17 @@ const runPowFlow = async (
       nonce: commitRes.result.nonce,
     };
     if (captchaToken) commitBody.captchaToken = captchaToken;
-    await postJson(apiPrefix + "/commit", commitBody);
+    const commitResponse = await postJson(apiPrefix + "/commit", commitBody);
+    const commitToken =
+      commitResponse && typeof commitResponse.commitToken === "string"
+        ? commitResponse.commitToken
+        : "";
+    if (!commitToken) {
+      throw new Error("Commit failed");
+    }
 
     log(t("requesting_challenge"));
-    let state = await postJson(apiPrefix + "/challenge", {});
+    let state = await postJson(apiPrefix + "/challenge", { commitToken });
     if (
       !state ||
       !Array.isArray(state.indices) ||
@@ -1625,6 +1632,7 @@ const runPowFlow = async (
       }
       const openRes = await rpc.call("OPEN", { indices, segs });
       const openBody = {
+        commitToken,
         sid: state.sid,
         cursor: state.cursor,
         token: state.token,
