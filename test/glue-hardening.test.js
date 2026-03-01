@@ -813,6 +813,7 @@ test("glue hardening", { concurrency: 1 }, async (t) => {
   await t.test("pow-only atomic forwards consume token via query fallback", async () => {
     let redirectUrl = null;
     const consume = "v2.ticket.exp.any.1.mac";
+    const commitToken = "v5.test-ticket.test-root.test-path.none.test-nonce.9999999999.test-mac";
     const glue = await importGlue();
     Object.defineProperty(globalThis.document, "cookie", {
       configurable: true,
@@ -854,9 +855,11 @@ test("glue hardening", { concurrency: 1 }, async (t) => {
         return { text: async () => "self.onmessage = () => {};" };
       }
       if (textUrl === "/__pow/commit") {
-        return { ok: true, status: 200, json: async () => ({}) };
+        return { ok: true, status: 200, json: async () => ({ commitToken }) };
       }
       if (textUrl === "/__pow/challenge") {
+        const body = init && init.body ? JSON.parse(init.body) : {};
+        assert.equal(body.commitToken, commitToken);
         return {
           ok: true,
           status: 200,
@@ -866,6 +869,7 @@ test("glue hardening", { concurrency: 1 }, async (t) => {
       if (textUrl === "/__pow/open") {
         const body = init && init.body ? JSON.parse(init.body) : {};
         assert.equal(body.sid, "sid-1");
+        assert.equal(body.commitToken, commitToken);
         return { ok: true, status: 200, json: async () => ({ done: true, consume }) };
       }
       throw new Error(`unexpected fetch ${textUrl}`);
@@ -883,6 +887,7 @@ test("glue hardening", { concurrency: 1 }, async (t) => {
 
   await t.test("pow-only atomic allows proof-cookie fallback when consume is absent", async () => {
     let redirectUrl = null;
+    const commitToken = "v5.test-ticket.test-root.test-path.none.test-nonce.9999999999.test-mac";
     const glue = await importGlue();
     Object.defineProperty(globalThis.document, "cookie", {
       configurable: true,
@@ -918,15 +923,17 @@ test("glue hardening", { concurrency: 1 }, async (t) => {
       }
       terminate() {}
     };
-    globalThis.fetch = async (url) => {
+    globalThis.fetch = async (url, init) => {
       const textUrl = String(url);
       if (textUrl === "https://example.com/worker.js") {
         return { text: async () => "self.onmessage = () => {};" };
       }
       if (textUrl === "/__pow/commit") {
-        return { ok: true, status: 200, json: async () => ({}) };
+        return { ok: true, status: 200, json: async () => ({ commitToken }) };
       }
       if (textUrl === "/__pow/challenge") {
+        const body = init && init.body ? JSON.parse(init.body) : {};
+        assert.equal(body.commitToken, commitToken);
         return {
           ok: true,
           status: 200,
@@ -934,6 +941,8 @@ test("glue hardening", { concurrency: 1 }, async (t) => {
         };
       }
       if (textUrl === "/__pow/open") {
+        const body = init && init.body ? JSON.parse(init.body) : {};
+        assert.equal(body.commitToken, commitToken);
         return { ok: true, status: 200, json: async () => ({ done: true }) };
       }
       throw new Error(`unexpected fetch ${textUrl}`);
@@ -951,6 +960,7 @@ test("glue hardening", { concurrency: 1 }, async (t) => {
 
   await t.test("pow-only atomic embedded posts consume token", async () => {
     const consume = "v2.ticket.exp.any.1.mac";
+    const commitToken = "v5.test-ticket.test-root.test-path.none.test-nonce.9999999999.test-mac";
     const posts = [];
     const glue = await importGlue();
     globalThis.window.location.href = "https://example.com/challenge";
@@ -983,15 +993,17 @@ test("glue hardening", { concurrency: 1 }, async (t) => {
       }
       terminate() {}
     };
-    globalThis.fetch = async (url) => {
+    globalThis.fetch = async (url, init) => {
       const textUrl = String(url);
       if (textUrl === "https://example.com/worker.js") {
         return { text: async () => "self.onmessage = () => {};" };
       }
       if (textUrl === "/__pow/commit") {
-        return { ok: true, status: 200, json: async () => ({}) };
+        return { ok: true, status: 200, json: async () => ({ commitToken }) };
       }
       if (textUrl === "/__pow/challenge") {
+        const body = init && init.body ? JSON.parse(init.body) : {};
+        assert.equal(body.commitToken, commitToken);
         return {
           ok: true,
           status: 200,
@@ -999,6 +1011,8 @@ test("glue hardening", { concurrency: 1 }, async (t) => {
         };
       }
       if (textUrl === "/__pow/open") {
+        const body = init && init.body ? JSON.parse(init.body) : {};
+        assert.equal(body.commitToken, commitToken);
         return { ok: true, status: 200, json: async () => ({ done: true, consume }) };
       }
       throw new Error(`unexpected fetch ${textUrl}`);

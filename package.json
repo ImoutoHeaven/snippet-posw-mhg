@@ -4,8 +4,8 @@
   "type": "module",
   "scripts": {
     "build": "node build.mjs",
-    "test:mhg-guards": "node --test --test-timeout=10000 test/mhg/l0-low-difficulty-guard.test.js test/mhg/l1-protocol-flow-guard.test.js test/mhg/l2-concurrency-guard.test.js",
-    "test:core2-30k": "ENFORCE_CORE2_30K=1 node --test test/build-core2-30k-gate.test.js"
+    "test": "node --test",
+    "test:mhg-guards": "node --test --test-timeout=10000 test/mhg/l0-low-difficulty-guard.test.js test/mhg/l1-protocol-flow-guard.test.js test/mhg/l2-concurrency-guard.test.js"
   },
   "devDependencies": {
     "esbuild": "0.23.1",

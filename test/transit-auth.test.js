@@ -743,7 +743,7 @@ test("core2 rejects encoded removed api path with early 404", async () => {
   }
 });
 
-test("core1->core2 api path keeps signed inner and denies without commit", async () => {
+test("core1->core2 api path keeps signed inner and rejects without commitToken payload", async () => {
   const restoreGlobals = ensureGlobals();
   const { core1, core2 } = await buildCoreModules(TEST_SECRET);
   const originalFetch = globalThis.fetch;
@@ -770,7 +770,7 @@ test("core1->core2 api path keeps signed inner and denies without commit", async
       new Request(`https://example.com${pathname}`, { method, headers: innerHeaders })
     );
 
-    assert.equal(res.status, 403);
+    assert.equal(res.status, 400);
     assert.ok(hopRequest, "core1 forwards to core2");
     assert.ok(hopRequest.headers.get("X-Pow-Inner"), "hop keeps signed inner payload");
     assert.ok(hopRequest.headers.get("X-Pow-Inner-Mac"), "hop keeps signed inner mac");
