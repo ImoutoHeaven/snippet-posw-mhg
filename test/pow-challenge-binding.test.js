@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createPowRuntimeFixture } from "./helpers/pow-runtime-fixture.js";
+import { resolveParentsV4 } from "./mhg/helpers/resolve-parents-v4.js";
 
 const ensureGlobals = () => {
   const priorCrypto = globalThis.crypto;
@@ -134,7 +135,7 @@ const buildConfigModule = async (secret = "config-secret", configOverrides = nul
     POW_MAX_STEPS: 64,
     POW_SAMPLE_RATE: 0.01,
     POW_OPEN_BATCH: 4,
-    POW_HASHCASH_BITS: 0,
+    POW_HASHCASH_X: 1,
     POW_PAGE_BYTES: 16384,
     POW_MIX_ROUNDS: 2,
     POW_SEGMENT_LEN: 4,
@@ -301,20 +302,222 @@ const makeSplitApiHeaders = ({ payloadObj, configSecret, method, pathname, apiPr
   return headers;
 };
 
+const fromBase64Url = (value) => {
+  const normalized = String(value || "").replace(/-/g, "+").replace(/_/g, "/");
+  const pad = normalized.length % 4 === 0 ? "" : "=".repeat(4 - (normalized.length % 4));
+  return Buffer.from(normalized + pad, "base64");
+};
+
+const decodeTicket = (ticketB64) => {
+  const raw = fromBase64Url(ticketB64).toString("utf8");
+  const parts = raw.split(".");
+  if (parts.length !== 7) return null;
+  const issuedAt = Number.parseInt(parts[5], 10);
+  if (!Number.isFinite(issuedAt) || issuedAt <= 0) return null;
+  return {
+    v: Number.parseInt(parts[0], 10),
+    e: Number.parseInt(parts[1], 10),
+    L: Number.parseInt(parts[2], 10),
+    r: parts[3] || "",
+    cfgId: Number.parseInt(parts[4], 10),
+    issuedAt,
+    mac: parts[6] || "",
+  };
+};
+
+const deriveMhgGraphSeed16 = (ticketB64, nonce) =>
+  crypto.createHash("sha256").update(`mhg|graph|v4|${ticketB64}|${nonce}`).digest().subarray(0, 16);
+
+const deriveMhgNonce16 = (nonce) => {
+  const raw = fromBase64Url(nonce);
+  if (raw.length >= 16) return raw.subarray(0, 16);
+  return crypto.createHash("sha256").update(raw).digest().subarray(0, 16);
+};
+
+const buildMhgWitnessBundle = async ({ ticketB64, nonce, pageBytes = 64 }) => {
+  const ticket = decodeTicket(ticketB64);
+  if (!ticket) throw new Error("invalid ticket");
+  const { makeGenesisPage, mixPage } = await import("../lib/mhg/mix-aes.js");
+  const { buildMerkle, buildProof } = await import("../lib/mhg/merkle.js");
+
+  const graphSeed = deriveMhgGraphSeed16(ticketB64, nonce);
+  const nonce16 = deriveMhgNonce16(nonce);
+  const pages = new Array(ticket.L + 1);
+  pages[0] = await makeGenesisPage({ graphSeed, nonce: nonce16, pageBytes });
+
+  const parentByIndex = new Map();
+  for (let i = 1; i <= ticket.L; i += 1) {
+    const parents = await resolveParentsV4({ i, graphSeed, pageBytes, pages });
+    parentByIndex.set(i, parents);
+    pages[i] = await mixPage({
+      i,
+      p0: pages[parents.p0],
+      p1: pages[parents.p1],
+      p2: pages[parents.p2],
+      graphSeed,
+      nonce: nonce16,
+      pageBytes,
+    });
+  }
+
+  const tree = await buildMerkle(pages);
+  const witnessByIndex = new Map();
+  for (let i = 0; i <= ticket.L; i += 1) {
+    witnessByIndex.set(i, {
+      pageB64: base64Url(pages[i]),
+      proof: buildProof(tree, i).map((sib) => base64Url(sib)),
+    });
+  }
+
+  return {
+    rootB64: base64Url(tree.root),
+    witnessByIndex,
+    parentByIndex,
+    finalPageB64: base64Url(pages[ticket.L]),
+  };
+};
+
+const buildEqSet = (index, seg) => {
+  const out = [];
+  const start = Math.max(1, index - seg + 1);
+  for (let i = start; i <= index; i += 1) out.push(i);
+  return out;
+};
+
+const buildNeedSet = (eqSet, parentByIndex) => {
+  const out = new Set();
+  for (const i of eqSet) {
+    const edge = parentByIndex.get(i);
+    if (!edge) throw new Error(`missing parents for index ${i}`);
+    out.add(i);
+    out.add(edge.p0);
+    out.add(edge.p1);
+    out.add(edge.p2);
+  }
+  return out;
+};
+
+const buildMhgOpensForChallenge = ({ indices, segs, witnessByIndex, parentByIndex }) => {
+  if (!Array.isArray(indices) || !Array.isArray(segs) || indices.length !== segs.length) {
+    throw new Error("challenge shape mismatch");
+  }
+  return indices.map((index, pos) => {
+    const seg = Number.parseInt(segs[pos], 10);
+    if (!Number.isInteger(seg) || seg <= 0) throw new Error(`invalid seg at ${pos}`);
+    const eqSet = buildEqSet(index, seg);
+    const need = buildNeedSet(eqSet, parentByIndex);
+    const nodes = {};
+    for (const needIdx of need) {
+      const witness = witnessByIndex.get(needIdx);
+      if (!witness) throw new Error(`missing witness for index ${needIdx}`);
+      nodes[String(needIdx)] = { pageB64: witness.pageB64, proof: witness.proof };
+    }
+    return { i: index, seg, nodes };
+  });
+};
+
+const HASHCASH_PREFIX_BYTES = Buffer.from("hashcash|v4|", "utf8");
+
+const hashcashPrefixU32 = (bytes) =>
+  (((bytes[0] << 24) | (bytes[1] << 16) | (bytes[2] << 8) | bytes[3]) >>> 0);
+
+const hashcashPrefixU32ForRootLast = (rootB64, lastPageB64) => {
+  const digest = crypto
+    .createHash("sha256")
+    .update(Buffer.concat([HASHCASH_PREFIX_BYTES, fromBase64Url(rootB64), fromBase64Url(lastPageB64)]))
+    .digest();
+  return hashcashPrefixU32(digest);
+};
+
+const runChallengeOpenFlow = async ({
+  configHandler,
+  ip,
+  ticketB64,
+  pathHash,
+  rootB64,
+  nonce,
+  witnessByIndex,
+  parentByIndex,
+}) => {
+  const commitRes = await configHandler(
+    new Request("https://example.com/__pow/commit", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "CF-Connecting-IP": ip,
+      },
+      body: JSON.stringify({ ticketB64, rootB64, pathHash, nonce }),
+    }),
+  );
+  assert.equal(commitRes.status, 200, "commit succeeds for valid witness bundle");
+  const commitPayload = await commitRes.json();
+  const commitToken = commitPayload && typeof commitPayload.commitToken === "string"
+    ? commitPayload.commitToken
+    : "";
+  assert.ok(commitToken, "commit token issued");
+
+  const challengeRes = await configHandler(
+    new Request("https://example.com/__pow/challenge", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "CF-Connecting-IP": ip,
+      },
+      body: JSON.stringify({ commitToken }),
+    }),
+  );
+  assert.equal(challengeRes.status, 200, "challenge succeeds for committed root");
+  const challengePayload = await challengeRes.json();
+  const opens = buildMhgOpensForChallenge({
+    indices: challengePayload.indices,
+    segs: challengePayload.segs,
+    witnessByIndex,
+    parentByIndex,
+  });
+
+  const openRes = await configHandler(
+    new Request("https://example.com/__pow/open", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "CF-Connecting-IP": ip,
+      },
+      body: JSON.stringify({
+        commitToken,
+        sid: challengePayload.sid,
+        cursor: challengePayload.cursor,
+        token: challengePayload.token,
+        opens,
+      }),
+    }),
+  );
+
+  return { openRes, challengePayload };
+};
+
 const extractChallengeArgs = (html) => {
   const match = html.match(
-    /g\("([^"]+)",\s*(\d+),\s*"([^"]+)",\s*"([^"]+)",\s*(\d+),\s*(\d+)/u,
+    /g\("([^"]+)",\s*(\d+),\s*"([^"]+)",\s*"([^"]+)",\s*([0-9]+(?:\.[0-9]+)?),\s*(\d+)/u,
   );
   if (!match) return null;
+  const hashcashX = Number.parseFloat(match[5]);
+  if (!Number.isFinite(hashcashX)) return null;
   return {
     bindingB64: match[1],
     steps: Number.parseInt(match[2], 10),
     ticketB64: match[3],
     pathHash: match[4],
-    hashcashBits: Number.parseInt(match[5], 10),
+    hashcashX,
     segmentLen: Number.parseInt(match[6], 10),
   };
 };
+
+test("challenge parser accepts float hashcashX argument", () => {
+  const args = extractChallengeArgs('<script>g("bind", 20, "ticket", "path", 3.5, 4)</script>');
+  assert.ok(args, "challenge parser extracts args");
+  assert.equal(typeof args.hashcashX, "number");
+  assert.equal(args.hashcashX, 3.5);
+});
 
 test("commit returns commitToken payload; challenge requires payload token", async () => {
   const restoreGlobals = ensureGlobals();
@@ -657,6 +860,108 @@ test("challenge sampling count follows ceil(L*POW_SAMPLE_RATE)", async () => {
   }
 });
 
+test("split core-2 open enforces hashcashX threshold with hashcash(root,lastPage)", async () => {
+  const restoreGlobals = ensureGlobals();
+  const core1ModulePath = await buildSplitHarnessModule();
+  const hashcashX = 3.5;
+  const configModulePath = await buildConfigModule("config-secret", {
+    POW_HASHCASH_X: hashcashX,
+    POW_MIN_STEPS: 20,
+    POW_MAX_STEPS: 20,
+    POW_SAMPLE_RATE: 0.5,
+    POW_OPEN_BATCH: 256,
+    POW_PAGE_BYTES: 64,
+    POW_MIX_ROUNDS: 2,
+  });
+  const core1Mod = await import(`${pathToFileURL(core1ModulePath).href}?v=${Date.now()}`);
+  const configMod = await import(`${pathToFileURL(configModulePath).href}?v=${Date.now()}`);
+  const core1Handler = core1Mod.default.fetch;
+  const configHandler = configMod.default.fetch;
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async (request) => {
+      const hasInner = Array.from(request.headers.keys()).some((key) =>
+        key.toLowerCase().startsWith("x-pow-inner")
+      );
+      if (hasInner) return core1Handler(request);
+      return new Response("ok", { status: 200 });
+    };
+
+    const threshold = Math.floor(0x1_0000_0000 / hashcashX);
+    const ip = "1.2.3.4";
+    const pageRes = await configHandler(
+      new Request("https://example.com/protected", {
+        method: "GET",
+        headers: {
+          Accept: "text/html",
+          "CF-Connecting-IP": ip,
+        },
+      }),
+    );
+    assert.equal(pageRes.status, 200);
+    const args = extractChallengeArgs(await pageRes.text());
+    assert.ok(args, "challenge html includes args");
+    assert.equal(typeof args.hashcashX, "number");
+    assert.equal(args.hashcashX, hashcashX);
+
+    let passing = null;
+    let failing = null;
+    for (let attempt = 0; attempt < 48 && (!passing || !failing); attempt += 1) {
+      const nonce = base64Url(crypto.randomBytes(12));
+      const witness = await buildMhgWitnessBundle({
+        ticketB64: args.ticketB64,
+        nonce,
+        pageBytes: 64,
+      });
+      const u = hashcashPrefixU32ForRootLast(witness.rootB64, witness.finalPageB64);
+      const candidate = {
+        nonce,
+        rootB64: witness.rootB64,
+        witnessByIndex: witness.witnessByIndex,
+        parentByIndex: witness.parentByIndex,
+        u,
+      };
+      if (!passing && u < threshold) passing = candidate;
+      if (!failing && u >= threshold) failing = candidate;
+    }
+
+    assert.ok(passing, "found witness with u < floor(2^32 / x)");
+    assert.ok(failing, "found witness with u >= floor(2^32 / x)");
+    assert.ok(passing.u < threshold, "passing witness is below threshold");
+    assert.ok(failing.u >= threshold, "failing witness meets or exceeds threshold");
+
+    const passingFlow = await runChallengeOpenFlow({
+      configHandler,
+      ip,
+      ticketB64: args.ticketB64,
+      pathHash: args.pathHash,
+      rootB64: passing.rootB64,
+      nonce: passing.nonce,
+      witnessByIndex: passing.witnessByIndex,
+      parentByIndex: passing.parentByIndex,
+    });
+    assert.equal(passingFlow.openRes.status, 200);
+    const passingPayload = await passingFlow.openRes.json();
+    assert.equal(passingPayload.done, true);
+
+    const failingFlow = await runChallengeOpenFlow({
+      configHandler,
+      ip,
+      ticketB64: args.ticketB64,
+      pathHash: args.pathHash,
+      rootB64: failing.rootB64,
+      nonce: failing.nonce,
+      witnessByIndex: failing.witnessByIndex,
+      parentByIndex: failing.parentByIndex,
+    });
+    assert.equal(failingFlow.openRes.status, 403);
+    assert.equal(failingFlow.openRes.headers.get("x-pow-h"), "cheat");
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreGlobals();
+  }
+});
+
 test("split runtime uses captchaTag naming", async () => {
   const repoRoot = fileURLToPath(new URL("..", import.meta.url));
   const [businessGateSource, apiEngineSource] = await Promise.all([
@@ -701,7 +1006,7 @@ test("split core-2 hard-cutoff rejects removed API routes", async () => {
       POW_MAX_STEPS: 64,
       POW_SAMPLE_RATE: 0.01,
       POW_OPEN_BATCH: 4,
-      POW_HASHCASH_BITS: 0,
+      POW_HASHCASH_X: 1,
       POW_PAGE_BYTES: 16384,
       POW_MIX_ROUNDS: 2,
       POW_SEGMENT_LEN: 4,

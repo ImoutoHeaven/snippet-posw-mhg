@@ -16,6 +16,8 @@ const base64Url = (value) =>
 const makeModuleUrl = (workerUrl) =>
   `data:text/javascript,${encodeURIComponent(`export const workerUrl = "${workerUrl}";`)}`;
 
+const LEGACY_BITS_FIELD = ["hashcash", "Bits"].join("");
+
 const encodeCaptchaCfg = (cfg) =>
   base64Url(typeof cfg === "string" ? cfg : JSON.stringify(cfg || {}));
 
@@ -115,7 +117,7 @@ const makeRunPowArgs = (overrides = {}) => {
     steps: 1,
     ticketB64: base64Url("a.b.c.d.e.f.g"),
     pathHash: "pathhash",
-    hashcashBits: 1,
+    hashcashX: 1,
     segmentLen: 1,
     reloadUrlB64: base64Url("https://example.com/"),
     apiPrefixB64: base64Url("/__pow"),
@@ -130,7 +132,7 @@ const makeRunPowArgs = (overrides = {}) => {
     params.steps,
     params.ticketB64,
     params.pathHash,
-    params.hashcashBits,
+    params.hashcashX,
     params.segmentLen,
     params.reloadUrlB64,
     params.apiPrefixB64,
@@ -166,7 +168,44 @@ test("glue hardening", { concurrency: 1 }, async (t) => {
     const args = makeRunPowArgs({ segmentLen: 1 });
     await glue.default(...args);
     assert.ok(initPayload);
+    assert.equal(initPayload.hashcashX, 1);
+    assert.equal(Object.hasOwn(initPayload, LEGACY_BITS_FIELD), false);
     assert.equal(initPayload.segmentLen, 2);
+  });
+
+  await t.test("worker bootstrap uses hashcashX cutoff of 4 for worker fanout", async () => {
+    const workerCtorCalls = [];
+    const glue = await importGlue();
+    globalThis.Worker = class FakeWorker {
+      constructor() {
+        this.listeners = new Map();
+        workerCtorCalls.push(this);
+      }
+      addEventListener(type, cb) {
+        const list = this.listeners.get(type) || [];
+        list.push(cb);
+        this.listeners.set(type, list);
+      }
+      postMessage(msg) {
+        if (msg && msg.type === "INIT") {
+          const event = { data: { type: "ERROR", rid: msg.rid, message: "init failed" } };
+          const list = this.listeners.get("message") || [];
+          for (const cb of list) cb(event);
+        }
+      }
+      terminate() {}
+    };
+
+    const assertWorkerFanout = async (hashcashX, expectedWorkers) => {
+      workerCtorCalls.length = 0;
+      await glue.default(...makeRunPowArgs({ hashcashX }));
+      assert.equal(workerCtorCalls.length, expectedWorkers);
+    };
+
+    await assertWorkerFanout(3.5, 1);
+    await assertWorkerFanout(3.999999, 1);
+    await assertWorkerFanout(4, 4);
+    await assertWorkerFanout(4.000001, 4);
   });
 
   await t.test("worker bootstrap launches module worker from workerUrl directly", async () => {

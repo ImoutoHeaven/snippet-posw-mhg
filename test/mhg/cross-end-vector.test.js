@@ -111,7 +111,7 @@ const deriveNonce16 = async (nonceString) => {
   return (await digest(raw)).slice(0, 16);
 };
 
-const runWorkerFlow = async ({ ticketB64, steps, pageBytes = 64, mixRounds = 2, hashcashBits = 0, indices, segs }) => {
+const runWorkerFlow = async ({ ticketB64, steps, pageBytes = 64, mixRounds = 2, hashcashX = 1, indices, segs }) => {
   const prevSelf = globalThis.self;
   const prevPostMessage = globalThis.postMessage;
   const prevAtob = globalThis.atob;
@@ -156,7 +156,7 @@ const runWorkerFlow = async ({ ticketB64, steps, pageBytes = 64, mixRounds = 2, 
     });
 
   try {
-    await call("INIT", { ticketB64, steps, pageBytes, mixRounds, hashcashBits });
+    await call("INIT", { ticketB64, steps, pageBytes, mixRounds, hashcashX });
     const commit = await call("COMMIT");
     const open = await call("OPEN", { indices, segs });
     return { commit, open };

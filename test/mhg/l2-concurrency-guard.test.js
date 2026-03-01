@@ -2,11 +2,27 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { LOW_PROFILE, assertLowProfileFixture } from "./helpers/low-profile.js";
-import { cleanupWorkerGlobals, createTestWorker, rpcCall, runWorkerFlow } from "./helpers/worker-rpc-harness.js";
+import { cleanupWorkerGlobals, createTestWorker, rpcCall } from "./helpers/worker-rpc-harness.js";
 import { runGlueFlow } from "./helpers/glue-flow-harness.js";
 
 const CANCEL_MAX_MS = Number(process.env.MHG_CANCEL_MAX_MS || 1000);
 const nowMs = () => Date.now();
+
+const runWorkerFlow = async ({ ticketB64, steps, pageBytes, mixRounds, hashcashX, indices, segs }) => {
+  const worker = await createTestWorker();
+  try {
+    await rpcCall(worker, "INIT", { ticketB64, steps, pageBytes, mixRounds, hashcashX });
+    const commit = await rpcCall(worker, "COMMIT");
+    const open =
+      Array.isArray(indices) && Array.isArray(segs)
+        ? await rpcCall(worker, "OPEN", { indices, segs })
+        : null;
+    return { commit, open };
+  } finally {
+    worker.terminate();
+    await cleanupWorkerGlobals();
+  }
+};
 
 test("L2 multi-worker race has one winner and disposes losers", async () => {
   const fixture = {
@@ -16,7 +32,7 @@ test("L2 multi-worker race has one winner and disposes losers", async () => {
     segmentLen: 2,
     pageBytes: LOW_PROFILE.defaults.pageBytes,
     mixRounds: LOW_PROFILE.defaults.mixRounds,
-    hashcashBits: LOW_PROFILE.hashcashBits,
+    hashcashX: LOW_PROFILE.hashcashX,
   };
   assertLowProfileFixture(fixture);
 
@@ -79,7 +95,7 @@ test("L2 cancel/dispose prevents ghost messages", async () => {
     segmentLen: 3,
     pageBytes: 512,
     mixRounds: 1,
-    hashcashBits: LOW_PROFILE.hashcashBits,
+    hashcashX: LOW_PROFILE.hashcashX,
   };
   assertLowProfileFixture(fixture);
 
@@ -135,7 +151,7 @@ test("L2 one real-worker smoke remains low-difficulty", async () => {
     steps: 64,
     pageBytes: 240,
     mixRounds: 3,
-    hashcashBits: LOW_PROFILE.hashcashBits,
+    hashcashX: LOW_PROFILE.hashcashX,
     indices: [16],
     segs: [4],
   };
@@ -155,7 +171,7 @@ test("L2 cancel latency stays bounded while worker is under load", { timeout: 30
       steps: 384,
       pageBytes: 1024,
       mixRounds: 3,
-      hashcashBits: 8,
+      hashcashX: 256,
     });
 
     const commitPromise = rpcCall(worker, "COMMIT");

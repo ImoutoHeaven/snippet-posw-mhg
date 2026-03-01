@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 import { staticParentsOf, deriveDynamicParent2 } from "../../lib/mhg/graph.js";
 import { verifyOpenBatchVector } from "../../lib/mhg/verify.js";
-import { runWorkerFlow } from "./helpers/worker-rpc-harness.js";
+import { cleanupWorkerGlobals, createTestWorker, rpcCall } from "./helpers/worker-rpc-harness.js";
 import {
   deriveLeafCountFromSteps,
   deriveGraphSeed16FromTicketNonce,
@@ -15,13 +15,29 @@ const PARENT_MAX_MS = Number(process.env.MHG_PARENT_MAX_MS || 1800);
 
 const nowMs = () => Date.now();
 
+const runWorkerFlow = async ({ ticketB64, steps, pageBytes, mixRounds, hashcashX, indices, segs }) => {
+  const worker = await createTestWorker();
+  try {
+    await rpcCall(worker, "INIT", { ticketB64, steps, pageBytes, mixRounds, hashcashX });
+    const commit = await rpcCall(worker, "COMMIT");
+    const open =
+      Array.isArray(indices) && Array.isArray(segs)
+        ? await rpcCall(worker, "OPEN", { indices, segs })
+        : null;
+    return { commit, open };
+  } finally {
+    worker.terminate();
+    await cleanupWorkerGlobals();
+  }
+};
+
 const makeVerifyFixture = async () => {
   const fixture = {
     ticketB64: "dGVzdC10aWNrZXQtcGVyZi1ndWFyZA",
     steps: 127,
     pageBytes: 512,
     mixRounds: 2,
-    hashcashBits: 0,
+    hashcashX: 1,
     indices: [95, 111, 127],
     segs: [16, 16, 16],
   };

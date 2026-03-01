@@ -1395,7 +1395,7 @@ const runPowFlow = async (
   steps,
   ticketB64,
   pathHash,
-  hashcashBits,
+  hashcashX,
   segmentLen,
   pageBytes,
   mixRounds,
@@ -1531,7 +1531,7 @@ const runPowFlow = async (
       bindingString: powBinding,
       ticketB64,
       steps,
-      hashcashBits,
+      hashcashX,
       segmentLen: Math.max(2, Math.min(16, Math.floor(Number(segmentLen) || 0))),
       pageBytes,
       mixRounds,
@@ -1539,7 +1539,7 @@ const runPowFlow = async (
       progressEvery: 1024,
     };
 
-    const workerCount = Number(hashcashBits) >= 2 ? 4 : 1;
+    const workerCount = Number(hashcashX) >= 4 ? 4 : 1;
     rpcs = [];
     try {
       for (let i = 0; i < workerCount; i += 1) {
@@ -1678,7 +1678,7 @@ export default async function runPow(
   steps,
   ticketB64,
   pathHash,
-  hashcashBits,
+  hashcashX,
   segmentLen,
   reloadUrlB64,
   apiPrefixB64,
@@ -1764,7 +1764,7 @@ export default async function runPow(
         steps,
         ticketB64,
         pathHash,
-        hashcashBits,
+        hashcashX,
         segmentLen,
         pageBytes,
         mixRounds,
@@ -1814,7 +1814,7 @@ export default async function runPow(
         steps,
         ticketB64,
         pathHash,
-        hashcashBits,
+        hashcashX,
         segmentLen,
         pageBytes,
         mixRounds,

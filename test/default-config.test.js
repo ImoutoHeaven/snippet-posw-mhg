@@ -76,7 +76,7 @@ const FULL_CONFIG = {
   POW_DIFFICULTY_COEFF: 1.0,
   POW_MIN_STEPS: 512,
   POW_MAX_STEPS: 8192,
-  POW_HASHCASH_BITS: 3,
+  POW_HASHCASH_X: 3.5,
   POW_PAGE_BYTES: 16384,
   POW_MIX_ROUNDS: 2,
   POW_SEGMENT_LEN: 2,
@@ -135,6 +135,7 @@ const FULL_STRATEGY = {
 
 const LEGACY_SAMPLE_K = ["POW", "SAMPLE", "K"].join("_");
 const LEGACY_CHAL_ROUNDS = ["POW", "CHAL", "ROUNDS"].join("_");
+const LEGACY_POW_BITS_KEY = ["POW", "HASHCASH", "BITS"].join("_");
 
 test("normalizeConfig includes siteverify aggregator keys", () => {
   const cfg = __testNormalizeConfig({});
@@ -182,6 +183,28 @@ test("normalizeConfig hard-cuts POW_VERSION to 4 regardless input", () => {
 test("normalizeConfig hard-cuts legacy POW_COMMIT_COOKIE", () => {
   const cfg = __testNormalizeConfig({ POW_COMMIT_COOKIE: "custom" });
   assert.equal("POW_COMMIT_COOKIE" in cfg, false);
+});
+
+test("normalizeConfig uses POW_HASHCASH_X contract", () => {
+  const cfgDefault = __testNormalizeConfig({});
+  assert.equal(cfgDefault.POW_HASHCASH_X, 1);
+  assert.equal(LEGACY_POW_BITS_KEY in cfgDefault, false);
+
+  const cfgFloat = __testNormalizeConfig({ POW_HASHCASH_X: 3.5 });
+  assert.equal(cfgFloat.POW_HASHCASH_X, 3.5);
+  assert.equal(LEGACY_POW_BITS_KEY in cfgFloat, false);
+
+  const cfgLowerClamp = __testNormalizeConfig({ POW_HASHCASH_X: -1 });
+  assert.equal(cfgLowerClamp.POW_HASHCASH_X, 0);
+
+  const cfgUpperClamp = __testNormalizeConfig({ POW_HASHCASH_X: 9_999_999_999 });
+  assert.equal(cfgUpperClamp.POW_HASHCASH_X, 4_294_967_296);
+});
+
+test("normalizeConfig ignores legacy bits key input", () => {
+  const cfgLegacyInput = __testNormalizeConfig({ [LEGACY_POW_BITS_KEY]: 31 });
+  assert.equal(cfgLegacyInput.POW_HASHCASH_X, 1);
+  assert.equal(LEGACY_POW_BITS_KEY in cfgLegacyInput, false);
 });
 
 test("normalizeConfig clamps POW_SEGMENT_LEN fixed values to 2..16", () => {

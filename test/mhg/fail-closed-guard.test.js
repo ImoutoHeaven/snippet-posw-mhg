@@ -194,7 +194,7 @@ const makeInnerPayload = ({ atomic = false, turncheck = true, powVersion = 4 } =
     POW_MAX_STEPS: 8,
     POW_SAMPLE_RATE: 0.01,
     POW_OPEN_BATCH: 2,
-    POW_HASHCASH_BITS: 0,
+    POW_HASHCASH_X: 1,
     POW_PAGE_BYTES: 64,
     POW_MIX_ROUNDS: 2,
     POW_SEGMENT_LEN: 2,

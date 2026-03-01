@@ -18,7 +18,7 @@ const DEFAULTS = {
   POW_DIFFICULTY_COEFF: 1.0,
   POW_MIN_STEPS: 512,
   POW_MAX_STEPS: 8192,
-  POW_HASHCASH_BITS: 0,
+  POW_HASHCASH_X: 1,
   POW_PAGE_BYTES: 16384,
   POW_MIX_ROUNDS: 2,
   POW_SEGMENT_LEN: 2,
@@ -837,11 +837,11 @@ const normalizeConfig = (baseConfig) => {
       1,
       1000000
     ),
-    POW_HASHCASH_BITS: normalizeNumberClamp(
-      merged.POW_HASHCASH_BITS,
-      DEFAULTS.POW_HASHCASH_BITS,
+    POW_HASHCASH_X: normalizeNumberClamp(
+      merged.POW_HASHCASH_X,
+      DEFAULTS.POW_HASHCASH_X,
       0,
-      32
+      4294967296
     ),
     POW_PAGE_BYTES: normalizePageBytes(merged.POW_PAGE_BYTES, DEFAULTS.POW_PAGE_BYTES),
     POW_MIX_ROUNDS: normalizeNumberClamp(merged.POW_MIX_ROUNDS, DEFAULTS.POW_MIX_ROUNDS, 1, 4),

@@ -78,7 +78,7 @@ node -e "import('./pow-config.js').then(m=>{console.log(JSON.stringify(m.__testN
 | `POW_DIFFICULTY_COEFF` | number | `1` | Optional; tune only when adjusting challenge cost. | Coefficient applied to PoW difficulty calculations. |
 | `POW_MIN_STEPS` | number | `512` | Optional; tune only when adjusting challenge bounds. | Minimum solve steps accepted for challenges. |
 | `POW_MAX_STEPS` | number | `8192` | Optional; tune only when adjusting challenge bounds. | Maximum solve steps accepted for challenges. |
-| `POW_HASHCASH_BITS` | number | `0` | Optional; set when adding hashcash requirement. | Extra hashcash bit requirement for PoW challenges. |
+| `POW_HASHCASH_X` | number | `1` | Optional; set when adding hashcash requirement. | Expected total attempts for hashcash screening (runtime clamps to `0..4294967296`; `x<=1` disables). |
 | `POW_PAGE_BYTES` | number | `16384` | Optional; tune only when changing solver workload. | Working set size used by PoW computation. |
 | `POW_MIX_ROUNDS` | number | `2` | Optional; tune only when changing solver workload. | Number of PoW mixing rounds. |
 | `POW_SEGMENT_LEN` | number or range string | `2` | Optional; tune only when changing solver workload. | Segment sizing used by PoW challenge generation. |

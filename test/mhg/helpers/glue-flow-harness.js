@@ -123,7 +123,7 @@ const createFakeWorkerClass = ({ traces, workerScript }) => {
           segmentLen: msg.segmentLen,
           pageBytes: msg.pageBytes,
           mixRounds: msg.mixRounds,
-          hashcashBits: msg.hashcashBits,
+          hashcashX: msg.hashcashX,
         });
       }
       if (msg.type === "OPEN") traces.openPayloads.push({ indices: msg.indices, segs: msg.segs });
@@ -315,10 +315,10 @@ export async function importGlueWithCacheBust({ forceWorkerCount } = {}) {
   const gluePath = join(repoRoot, "glue.js");
   if (Number.isInteger(forceWorkerCount) && forceWorkerCount > 0) {
     const source = await readFile(gluePath, "utf8");
-    const marker = "const workerCount = Number(hashcashBits) >= 2 ? 4 : 1;";
+    const marker = "const workerCount = Number(hashcashX) >= 4 ? 4 : 1;";
     const patched = source.replace(
       marker,
-      "const workerCount = globalThis.__MHG_TEST_FORCE_WORKER_COUNT__ ?? (Number(hashcashBits) >= 2 ? 4 : 1);"
+      "const workerCount = globalThis.__MHG_TEST_FORCE_WORKER_COUNT__ ?? (Number(hashcashX) >= 4 ? 4 : 1);"
     );
     if (patched === source) {
       throw new Error("failed to apply test worker-count patch");
@@ -338,7 +338,7 @@ export function buildGlueArgs(bootstrap) {
     bootstrap.steps,
     bootstrap.ticketB64,
     bootstrap.pathHash || "pathhash",
-    bootstrap.hashcashBits,
+    bootstrap.hashcashX,
     bootstrap.segmentLen,
     b64u(bootstrap.reloadUrl || "https://example.com/ok"),
     b64u(bootstrap.apiPrefix || "/__pow"),
@@ -395,7 +395,7 @@ export async function runGlueFlow({ bootstrap, challengeFixture, workerScript, f
     "segmentLen",
     "pageBytes",
     "mixRounds",
-    "hashcashBits",
+    "hashcashX",
   ];
   for (const key of required) {
     if (!(key in (bootstrap || {}))) throw new Error(`bootstrap.${key} required`);
@@ -413,7 +413,7 @@ export async function runGlueFlow({ bootstrap, challengeFixture, workerScript, f
       segmentLen: bootstrap.segmentLen,
       pageBytes: bootstrap.pageBytes,
       mixRounds: bootstrap.mixRounds,
-      hashcashBits: bootstrap.hashcashBits,
+      hashcashX: bootstrap.hashcashX,
       pathHash: bootstrap.pathHash || "pathhash",
     },
     challengeFixture:
@@ -442,7 +442,7 @@ export async function runGlueFlow({ bootstrap, challengeFixture, workerScript, f
       segmentLen: bootstrap.segmentLen,
       pageBytes: bootstrap.pageBytes,
       mixRounds: bootstrap.mixRounds,
-      hashcashBits: bootstrap.hashcashBits,
+      hashcashX: bootstrap.hashcashX,
     });
     return traces;
   } finally {

@@ -70,7 +70,7 @@ const buildInnerHeaders = ({ secret = TEST_SECRET, apiPrefix = "/__pow" } = {}) 
       POW_SEGMENT_LEN: 1,
       POW_PAGE_BYTES: 64,
       POW_MIX_ROUNDS: 2,
-      POW_HASHCASH_BITS: 0,
+      POW_HASHCASH_X: 1,
       POW_BIND_PATH: true,
       POW_BIND_IPRANGE: true,
       POW_BIND_COUNTRY: false,

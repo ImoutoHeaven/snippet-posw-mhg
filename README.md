@@ -18,9 +18,9 @@ npm run build
 ## Files
 
 - `pow-config.js`: rule matching and per-request config selection.
-- `pow-core-1.js`: first gate stage for protected routes.
-- `pow-core-2.js`: second gate stage and `/open` verification endpoint.
-- `glue.js`: browser challenge and verification client helper.
+- `pow-core-1.js`: first gate stage and front handling for `/commit` and `/challenge`.
+- `pow-core-2.js`: second gate stage and `/open` verification handling.
+- `glue.js`: browser challenge runtime and worker bootstrap helper.
 - `esm/esm.js`: ESM entry that exports the PoW worker module URL.
 - `esm/mhg-worker.js`: browser worker implementation used by the ESM runtime.
 - `lib/`: shared libraries for matching, PoW, transport, and verification.
