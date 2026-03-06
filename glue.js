@@ -1424,7 +1424,6 @@ const runPowFlow = async (
   let spinTimer;
   let verifySpinTimer;
   let rpc = null;
-  let rpcs = [];
   let workerBlobUrl = "";
   const disposedRpcs = new Set();
   const disposeRpc = (entry) => {
@@ -1499,34 +1498,6 @@ const runPowFlow = async (
       return workerRpc;
     };
 
-    const raceFirstCommit = (entries) =>
-      new Promise((resolve, reject) => {
-        let pending = entries.length;
-        if (pending === 0) {
-          reject(new Error("No workers"));
-          return;
-        }
-        let settled = false;
-        let lastError = null;
-        entries.forEach((entry, index) => {
-          entry
-            .call("COMMIT")
-            .then((result) => {
-              if (settled) return;
-              settled = true;
-              resolve({ result, index });
-            })
-            .catch((err) => {
-              if (settled) return;
-              lastError = err;
-              pending -= 1;
-              if (pending === 0) {
-                reject(lastError || new Error("Commit failed"));
-              }
-            });
-        });
-      });
-
     const initPayload = {
       bindingString: powBinding,
       ticketB64,
@@ -1539,35 +1510,19 @@ const runPowFlow = async (
       progressEvery: 1024,
     };
 
-    const workerCount = Number(hashcashX) >= 4 ? 4 : 1;
-    rpcs = [];
     try {
-      for (let i = 0; i < workerCount; i += 1) {
-        rpcs.push(await makeWorkerRpc());
-      }
-      await Promise.all(rpcs.map((entry) => entry.call("INIT", initPayload)));
+      rpc = await makeWorkerRpc();
+      await rpc.call("INIT", initPayload);
     } catch (err) {
-      for (const entry of rpcs) {
-        disposeRpc(entry);
-      }
+      disposeRpc(rpc);
+      rpc = null;
       throw err;
     }
 
-    const raceRpcs = workerCount > 1 ? rpcs : rpcs.slice(0, 1);
-    if (raceRpcs.length === 0) throw new Error("Worker Missing");
-
-    activeWorker = raceRpcs[0].worker;
+    activeWorker = rpc.worker;
     ensureHashingLine();
 
-    const commitRes = await raceFirstCommit(raceRpcs);
-    const winner = raceRpcs[commitRes.index];
-    rpc = winner;
-    activeWorker = winner.worker;
-
-    const loserRpcs = raceRpcs.filter((entry, idx) => idx !== commitRes.index);
-    for (const loser of loserRpcs) {
-      disposeRpc(loser);
-    }
+    const commitRes = await rpc.call("COMMIT");
 
     if (spinTimer) clearInterval(spinTimer);
     if (spinIndex !== -1) {
@@ -1581,9 +1536,9 @@ const runPowFlow = async (
     log(t("submitting_commit"));
     const commitBody = {
       ticketB64,
-      rootB64: commitRes.result.rootB64,
+      rootB64: commitRes.rootB64,
       pathHash,
-      nonce: commitRes.result.nonce,
+      nonce: commitRes.nonce,
     };
     if (captchaToken) commitBody.captchaToken = captchaToken;
     const commitResponse = await postJson(apiPrefix + "/commit", commitBody);
@@ -1658,9 +1613,6 @@ const runPowFlow = async (
   } finally {
     if (spinTimer) clearInterval(spinTimer);
     if (verifySpinTimer) clearInterval(verifySpinTimer);
-    for (const entry of rpcs) {
-      disposeRpc(entry);
-    }
     if (rpc) {
       disposeRpc(rpc);
     }

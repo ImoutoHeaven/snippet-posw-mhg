@@ -24,80 +24,16 @@ const runWorkerFlow = async ({ ticketB64, steps, pageBytes, mixRounds, hashcashX
   }
 };
 
-test("L2 multi-worker race has one winner and disposes losers", async () => {
+test("L2 high-hashcash commit search stays serial", async () => {
   const fixture = {
-    bindingString: "binding-l2-race",
-    ticketB64: "dGVzdC10aWNrZXQ",
-    steps: LOW_PROFILE.defaults.steps,
-    segmentLen: 2,
-    pageBytes: LOW_PROFILE.defaults.pageBytes,
-    mixRounds: LOW_PROFILE.defaults.mixRounds,
-    hashcashX: LOW_PROFILE.hashcashX,
-  };
-  assertLowProfileFixture(fixture);
-
-  const traces = await runGlueFlow({
-    bootstrap: fixture,
-    challengeFixture: {
-      done: true,
-      indices: [],
-      segs: [],
-      sid: "sid-l2-race",
-      cursor: 0,
-      token: "tok-l2-race",
-    },
-    forceWorkerCount: 3,
-    workerScript: [
-      {
-        workerId: "w-fast",
-        events: [
-          { on: "INIT", msg: { type: "INIT_OK" } },
-          { on: "COMMIT", msg: { type: "COMMIT_OK", rootB64: "AQ", nonce: "winner-nonce" } },
-        ],
-      },
-      {
-        workerId: "w-slow-a",
-        events: [
-          { on: "INIT", msg: { type: "INIT_OK" } },
-          { on: "COMMIT", msg: { type: "COMMIT_OK", rootB64: "Ag", nonce: "loser-a" } },
-        ],
-      },
-      {
-        workerId: "w-slow-b",
-        events: [
-          { on: "INIT", msg: { type: "INIT_OK" } },
-          { on: "COMMIT", msg: { type: "COMMIT_OK", rootB64: "Aw", nonce: "loser-b" } },
-        ],
-      },
-    ],
-  });
-
-  assert.equal(traces.raceTrace.winnerIds[0], "w-fast");
-  const commitReq = traces.endpointRequests.find((req) => req.pathname === "/__pow/commit");
-  const winnerExpectedById = {
-    "w-fast": { rootB64: "AQ", nonce: "winner-nonce" },
-  };
-  const acceptedWinner = winnerExpectedById[traces.raceTrace.winnerIds[0]];
-  assert.equal(commitReq.body.rootB64, acceptedWinner.rootB64);
-  assert.equal(commitReq.body.nonce, acceptedWinner.nonce);
-  assert.deepEqual(traces.raceTrace.raceDisposedIds, ["w-slow-a", "w-slow-b"]);
-  assert.deepEqual(traces.raceTrace.raceCanceledIds, ["w-slow-a", "w-slow-b"]);
-  assert.deepEqual(traces.raceTrace.raceTerminatedIds, ["w-slow-a", "w-slow-b"]);
-  assert.equal(traces.raceTrace.ignoredLateMessages, 0);
-  assert.equal(traces.callCounts.commit, 1);
-});
-
-test("L2 cancel/dispose prevents ghost messages", async () => {
-  const fixture = {
-    bindingString: "binding-l2-ghost",
+    bindingString: "binding-l2-serial",
     ticketB64: "dGVzdC10aWNrZXQ",
     steps: 96,
     segmentLen: 3,
     pageBytes: 512,
     mixRounds: 1,
-    hashcashX: LOW_PROFILE.hashcashX,
+    hashcashX: 8,
   };
-  assertLowProfileFixture(fixture);
 
   const traces = await runGlueFlow({
     bootstrap: fixture,
@@ -105,44 +41,44 @@ test("L2 cancel/dispose prevents ghost messages", async () => {
       done: true,
       indices: [],
       segs: [],
-      sid: "sid-l2-ghost",
+      sid: "sid-l2-serial",
       cursor: 0,
-      token: "tok-l2-ghost",
+      token: "tok-l2-serial",
     },
-    forceWorkerCount: 3,
     workerScript: [
       {
-        workerId: "w-win",
+        workerId: "w-only",
         events: [
           { on: "INIT", msg: { type: "INIT_OK" } },
-          { on: "COMMIT", msg: { type: "COMMIT_OK", rootB64: "BA", nonce: "winner" } },
+          { on: "COMMIT", msg: { type: "COMMIT_OK", rootB64: "AQ", nonce: "serial-nonce" } },
         ],
       },
       {
-        workerId: "w-ghost-a",
+        workerId: "w-should-not-init-a",
         events: [
           { on: "INIT", msg: { type: "INIT_OK" } },
-          { on: "COMMIT", msg: { type: "PROGRESS", phase: "chain", done: 1, total: 2 } },
-          { on: "POST_DISPOSE", msg: { type: "COMMIT_OK", rootB64: "late", nonce: "ghost-a" } },
+          { on: "COMMIT", msg: { type: "COMMIT_OK", rootB64: "BA", nonce: "extra-a" } },
         ],
       },
       {
-        workerId: "w-ghost-b",
+        workerId: "w-should-not-init-b",
         events: [
           { on: "INIT", msg: { type: "INIT_OK" } },
-          { on: "COMMIT", msg: { type: "PROGRESS", phase: "chain", done: 1, total: 2 } },
-          { on: "POST_DISPOSE", msg: { type: "COMMIT_OK", rootB64: "late", nonce: "ghost-b" } },
+          { on: "COMMIT", msg: { type: "COMMIT_OK", rootB64: "CA", nonce: "extra-b" } },
         ],
       },
     ],
   });
 
-  assert.equal(traces.raceTrace.ignoredLateMessages, 2);
-  assert.deepEqual(traces.raceTrace.ignoredLateWorkerIds, ["w-ghost-a", "w-ghost-b"]);
-  assert.equal(traces.raceTrace.winnerIds.length, 1);
-  assert.deepEqual(traces.raceTrace.raceDisposedIds, ["w-ghost-a", "w-ghost-b"]);
+  assert.deepEqual(traces.initWorkerIds, ["w-only"]);
+  assert.deepEqual(traces.workerCommitResults, [{ rootB64: "AQ", nonce: "serial-nonce" }]);
   const commitReq = traces.endpointRequests.find((req) => req.pathname === "/__pow/commit");
-  assert.equal(commitReq.body.nonce, "winner");
+  assert.equal(commitReq.body.rootB64, "AQ");
+  assert.equal(commitReq.body.nonce, "serial-nonce");
+  assert.deepEqual(traces.raceTrace.raceDisposedIds, []);
+  assert.deepEqual(traces.raceTrace.raceCanceledIds, []);
+  assert.deepEqual(traces.raceTrace.raceTerminatedIds, []);
+  assert.equal(traces.callCounts.commit, 1);
 });
 
 test("L2 one real-worker smoke remains low-difficulty", async () => {

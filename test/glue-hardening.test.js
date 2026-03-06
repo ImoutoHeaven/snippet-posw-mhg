@@ -173,9 +173,20 @@ test("glue hardening", { concurrency: 1 }, async (t) => {
     assert.equal(initPayload.segmentLen, 2);
   });
 
-  await t.test("worker bootstrap uses hashcashX cutoff of 4 for worker fanout", async () => {
+  await t.test("worker bootstrap always uses a single worker for commit search", async () => {
     const workerCtorCalls = [];
+    const commitCalls = [];
     const glue = await importGlue();
+    globalThis.fetch = async (url) => {
+      const normalized = String(url);
+      if (normalized === "/__pow/commit") {
+        return { ok: true, status: 200, json: async () => ({ commitToken: "commit-token" }) };
+      }
+      if (normalized === "/__pow/challenge") {
+        return { ok: true, status: 200, json: async () => ({ done: true }) };
+      }
+      throw new Error(`unexpected fetch ${normalized}`);
+    };
     globalThis.Worker = class FakeWorker {
       constructor() {
         this.listeners = new Map();
@@ -187,25 +198,33 @@ test("glue hardening", { concurrency: 1 }, async (t) => {
         this.listeners.set(type, list);
       }
       postMessage(msg) {
-        if (msg && msg.type === "INIT") {
-          const event = { data: { type: "ERROR", rid: msg.rid, message: "init failed" } };
-          const list = this.listeners.get("message") || [];
-          for (const cb of list) cb(event);
+        if (!msg) return;
+        const list = this.listeners.get("message") || [];
+        if (msg.type === "INIT") {
+          for (const cb of list) cb({ data: { type: "OK", rid: msg.rid } });
+        }
+        if (msg.type === "COMMIT") {
+          commitCalls.push(this);
+          for (const cb of list) cb({ data: { type: "OK", rid: msg.rid, rootB64: "root", nonce: 1 } });
         }
       }
       terminate() {}
     };
 
-    const assertWorkerFanout = async (hashcashX, expectedWorkers) => {
+    const assertSingleCommitWorker = async (hashcashX) => {
       workerCtorCalls.length = 0;
+      commitCalls.length = 0;
       await glue.default(...makeRunPowArgs({ hashcashX }));
-      assert.equal(workerCtorCalls.length, expectedWorkers);
+      assert.equal(workerCtorCalls.length, 1);
+      assert.equal(commitCalls.length, 1);
+      assert.equal(commitCalls[0], workerCtorCalls[0]);
     };
 
-    await assertWorkerFanout(3.5, 1);
-    await assertWorkerFanout(3.999999, 1);
-    await assertWorkerFanout(4, 4);
-    await assertWorkerFanout(4.000001, 4);
+    await assertSingleCommitWorker(1);
+    await assertSingleCommitWorker(3.5);
+    await assertSingleCommitWorker(4);
+    await assertSingleCommitWorker(4.000001);
+    await assertSingleCommitWorker(8);
   });
 
   await t.test("worker bootstrap launches module worker from workerUrl directly", async () => {

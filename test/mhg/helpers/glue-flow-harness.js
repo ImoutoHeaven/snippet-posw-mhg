@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { webcrypto } from "node:crypto";
-import { readFile } from "node:fs/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { join } from "node:path";
 
@@ -116,6 +115,7 @@ const createFakeWorkerClass = ({ traces, workerScript }) => {
 
     postMessage(msg) {
       if (msg.type === "INIT") {
+        traces.initWorkerIds.push(this.workerId);
         traces.initPayloads.push({
           bindingString: msg.bindingString,
           ticketB64: msg.ticketB64,
@@ -184,7 +184,7 @@ const createFakeWorkerClass = ({ traces, workerScript }) => {
   return FakeWorker;
 };
 
-export async function setupGlueTestGlobals({ bootstrap, challengeFixture, workerScript, fetchMap, traces, forceWorkerCount }) {
+export async function setupGlueTestGlobals({ bootstrap, challengeFixture, workerScript, fetchMap, traces }) {
   if (glueGlobalState) {
     throw new Error("glue globals already active");
   }
@@ -194,7 +194,6 @@ export async function setupGlueTestGlobals({ bootstrap, challengeFixture, worker
     window: globalThis.window,
     navigator: globalThis.navigator,
     fetch: globalThis.fetch,
-    testWorkerCount: globalThis.__MHG_TEST_FORCE_WORKER_COUNT__,
     Worker: globalThis.Worker,
     requestAnimationFrame: globalThis.requestAnimationFrame,
     setTimeout: globalThis.setTimeout,
@@ -270,9 +269,6 @@ export async function setupGlueTestGlobals({ bootstrap, challengeFixture, worker
   }
 
   globalThis.Worker = createFakeWorkerClass({ traces, workerScript });
-  if (Number.isInteger(forceWorkerCount) && forceWorkerCount > 0) {
-    globalThis.__MHG_TEST_FORCE_WORKER_COUNT__ = forceWorkerCount;
-  }
 
   const defaultChallenge = challengeFixture || { done: true, indices: [], sid: "sid", cursor: 0, token: "tok" };
   globalThis.fetch = async (url, init = {}) => {
@@ -310,22 +306,9 @@ export async function setupGlueTestGlobals({ bootstrap, challengeFixture, worker
   glueGlobalState = { prev, bootstrap };
 }
 
-export async function importGlueWithCacheBust({ forceWorkerCount } = {}) {
+export async function importGlueWithCacheBust() {
   const cacheBust = `${Date.now()}-${Math.random()}`;
   const gluePath = join(repoRoot, "glue.js");
-  if (Number.isInteger(forceWorkerCount) && forceWorkerCount > 0) {
-    const source = await readFile(gluePath, "utf8");
-    const marker = "const workerCount = Number(hashcashX) >= 4 ? 4 : 1;";
-    const patched = source.replace(
-      marker,
-      "const workerCount = globalThis.__MHG_TEST_FORCE_WORKER_COUNT__ ?? (Number(hashcashX) >= 4 ? 4 : 1);"
-    );
-    if (patched === source) {
-      throw new Error("failed to apply test worker-count patch");
-    }
-    const glueUrl = `data:text/javascript,${encodeURIComponent(patched)}#v=${cacheBust}`;
-    return await import(glueUrl);
-  }
   const glueUrl = `${pathToFileURL(gluePath).href}?v=${cacheBust}`;
   return await import(glueUrl);
 }
@@ -364,11 +347,6 @@ export async function teardownGlueTestGlobals() {
     });
   }
   globalThis.fetch = prev.fetch;
-  if (typeof prev.testWorkerCount === "undefined") {
-    delete globalThis.__MHG_TEST_FORCE_WORKER_COUNT__;
-  } else {
-    globalThis.__MHG_TEST_FORCE_WORKER_COUNT__ = prev.testWorkerCount;
-  }
   globalThis.Worker = prev.Worker;
   globalThis.requestAnimationFrame = prev.requestAnimationFrame;
   globalThis.setTimeout = prev.setTimeout;
@@ -387,7 +365,7 @@ export async function teardownGlueTestGlobals() {
   glueGlobalState = null;
 }
 
-export async function runGlueFlow({ bootstrap, challengeFixture, workerScript, fetchMap, forceWorkerCount }) {
+export async function runGlueFlow({ bootstrap, challengeFixture, workerScript, fetchMap }) {
   const required = [
     "bindingString",
     "ticketB64",
@@ -404,6 +382,7 @@ export async function runGlueFlow({ bootstrap, challengeFixture, workerScript, f
   const traces = {
     endpointRequests: [],
     initPayloads: [],
+    initWorkerIds: [],
     openPayloads: [],
     workerCommitResults: [],
     callCounts: { commit: 0, challenge: 0, open: 0 },
@@ -431,9 +410,9 @@ export async function runGlueFlow({ bootstrap, challengeFixture, workerScript, f
     },
   };
 
-  await setupGlueTestGlobals({ bootstrap, challengeFixture, workerScript, fetchMap, traces, forceWorkerCount });
+  await setupGlueTestGlobals({ bootstrap, challengeFixture, workerScript, fetchMap, traces });
   try {
-    const glue = await importGlueWithCacheBust({ forceWorkerCount });
+    const glue = await importGlueWithCacheBust();
     await glue.default(...buildGlueArgs(bootstrap));
     assert.deepEqual(traces.initPayloads[0], {
       bindingString: bootstrap.bindingString,
