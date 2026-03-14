@@ -702,24 +702,25 @@ const createWorkerRpc = (worker, onProgress) => {
 const initUi = () => {
   const style = document.createElement("style");
   style.textContent = [
-    ":root{--bg:#050607;--card-bg:rgba(24,24,27,0.75);--border:rgba(255,255,255,0.1);--text:#f4f4f8;--sub:#9ca3af;--accent:#fff;--yellow:#fbbf24;--green:#4ade80;--font:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;--mono:ui-monospace,'SFMono-Regular',Menlo,Monaco,Consolas,monospace;--glow-x:50%;--glow-y:0%;--glow-r:62;--glow-g:110;--glow-b:255;--breathe-opacity:1;--reflect-top:0;--reflect-bottom:0;--reflect-left:0;--reflect-right:0;}",
+    ":root{--bg:#050607;--card-bg:rgba(24,24,27,0.75);--border:rgba(255,255,255,0.1);--text:#f4f4f8;--sub:#9ca3af;--accent:#fff;--yellow:#fbbf24;--green:#4ade80;--font:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;--mono:ui-monospace,'SFMono-Regular',Menlo,Monaco,Consolas,monospace;--glow-x:50%;--glow-y:0%;--glow-r:62;--glow-g:110;--glow-b:255;--title-r:113;--title-g:148;--title-b:253;--breathe-opacity:1;--reflect-top:0;--reflect-bottom:0;--reflect-left:0;--reflect-right:0;}",
     "html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:var(--bg);color:var(--text);font-family:var(--font);display:flex;justify-content:center;align-items:center;-webkit-font-smoothing:antialiased;}",
     "body::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;background:radial-gradient(circle at var(--glow-x) var(--glow-y), rgba(var(--glow-r),var(--glow-g),var(--glow-b),0.35),transparent 55%),radial-gradient(circle at calc(100% - var(--glow-x)) calc(100% - var(--glow-y)), rgba(var(--glow-r),var(--glow-g),var(--glow-b),0.2),transparent 55%);opacity:var(--breathe-opacity);}",
     "body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;background:radial-gradient(ellipse var(--glow-h-width-top,6.75%) var(--glow-v-height-top,18px) at var(--glow-x) 0%,rgba(var(--glow-r),var(--glow-g),var(--glow-b),var(--reflect-top)) 0%,transparent 70%) top/100% var(--glow-v-height-top,18px) no-repeat,radial-gradient(ellipse var(--glow-h-width-bottom,6.75%) var(--glow-v-height-bottom,18px) at var(--glow-x) 100%,rgba(var(--glow-r),var(--glow-g),var(--glow-b),var(--reflect-bottom)) 0%,transparent 70%) bottom/100% var(--glow-v-height-bottom,18px) no-repeat,radial-gradient(ellipse var(--glow-h-width-left,18px) var(--glow-v-height-left,6.75%) at 0% var(--glow-y),rgba(var(--glow-r),var(--glow-g),var(--glow-b),var(--reflect-left)) 0%,transparent 70%) left/var(--glow-h-width-left,18px) 100% no-repeat,radial-gradient(ellipse var(--glow-h-width-right,18px) var(--glow-v-height-right,6.75%) at 100% var(--glow-y),rgba(var(--glow-r),var(--glow-g),var(--glow-b),var(--reflect-right)) 0%,transparent 70%) right/var(--glow-h-width-right,18px) 100% no-repeat;}",
     ".card{background:rgba(15,23,42,0.4);border:1px solid rgba(148,163,184,0.2);border-radius:12px;padding:32px;width:90%;max-width:360px;text-align:center;animation:fade-in 0.6s cubic-bezier(0.16,1,0.3,1) both;transition:height 0.3s ease,border-color 0.2s ease;backdrop-filter:blur(12px) saturate(130%);-webkit-backdrop-filter:blur(12px) saturate(130%);position:relative;z-index:1;}",
     ".card::after{content:'';position:absolute;top:0;left:0;right:0;bottom:0;pointer-events:none;border-radius:inherit;background:radial-gradient(ellipse var(--elem-glow-h-width-top,15%) 1px at var(--elem-glow-x,50%) 0%,rgba(var(--glow-r),var(--glow-g),var(--glow-b),var(--elem-reflect-top,0)) 0%,rgba(var(--glow-r),var(--glow-g),var(--glow-b),calc(var(--elem-reflect-top,0) * 0.3)) 50%,transparent 100%) top/100% 1px no-repeat,radial-gradient(ellipse var(--elem-glow-h-width-bottom,15%) 1px at var(--elem-glow-x,50%) 100%,rgba(var(--glow-r),var(--glow-g),var(--glow-b),var(--elem-reflect-bottom,0)) 0%,rgba(var(--glow-r),var(--glow-g),var(--glow-b),calc(var(--elem-reflect-bottom,0) * 0.3)) 50%,transparent 100%) bottom/100% 1px no-repeat,radial-gradient(ellipse 1px var(--elem-glow-v-height-left,15%) at 0% var(--elem-glow-y,50%),rgba(var(--glow-r),var(--glow-g),var(--glow-b),var(--elem-reflect-left,0)) 0%,rgba(var(--glow-r),var(--glow-g),var(--glow-b),calc(var(--elem-reflect-left,0) * 0.3)) 50%,transparent 100%) left/1px 100% no-repeat,radial-gradient(ellipse 1px var(--elem-glow-v-height-right,15%) at 100% var(--elem-glow-y,50%),rgba(var(--glow-r),var(--glow-g),var(--glow-b),var(--elem-reflect-right,0)) 0%,rgba(var(--glow-r),var(--glow-g),var(--glow-b),calc(var(--elem-reflect-right,0) * 0.3)) 50%,transparent 100%) right/1px 100% no-repeat;}",
-    "h1{margin:0 0 24px;font-size:15px;font-weight:500;color:var(--accent);letter-spacing:-0.01em;}",
-    "#t.shine{color:transparent;background-image:linear-gradient(90deg,#c4c4c9 0%,#ffffff 50%,#c4c4c9 100%);background-size:200% 100%;-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;animation:title-shine 3.2s ease-in-out infinite;}",
+    "h1{margin:0 0 24px;font-size:16px;font-weight:600;letter-spacing:0;line-height:1.2;}",
+    "#t{color:rgb(var(--title-r),var(--title-g),var(--title-b));text-shadow:0 0 10px rgba(var(--glow-r),var(--glow-g),var(--glow-b),0.26),0 0 24px rgba(var(--glow-r),var(--glow-g),var(--glow-b),0.14);transition:color 0.24s ease,text-shadow 0.24s ease;}",
+    "#t[data-state='success']{color:#7ae7a6;text-shadow:0 0 10px rgba(122,231,166,0.3),0 0 24px rgba(122,231,166,0.16);}",
+    "#t[data-state='error']{color:#ff8b8b;text-shadow:0 0 10px rgba(255,139,139,0.28),0 0 24px rgba(255,139,139,0.14);}",
     "#log{font-family:var(--mono);font-size:13px;color:var(--sub);text-align:left;height:120px;overflow:hidden;position:relative;mask-image:linear-gradient(to bottom,transparent,black 30%);-webkit-mask-image:linear-gradient(to bottom,transparent,black 30%);display:flex;flex-direction:column;justify-content:flex-end;background:transparent;border:none;border-radius:0;padding:0;}",
     "#ts{margin-top:16px;display:flex;justify-content:center;max-height:0;opacity:0;overflow:hidden;transition:max-height 0.4s cubic-bezier(0.16,1,0.3,1),opacity 0.3s ease,margin-top 0.4s cubic-bezier(0.16,1,0.3,1);position:relative;z-index:2;}#ts.show{max-height:400px;opacity:1;margin-top:16px;}#ts.hide{max-height:0;opacity:0;margin-top:0;}",
     ".log-line{padding:3px 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:0 0 auto;}.log-line .yellow{color:var(--yellow);}.log-line .green{color:var(--green);}",
-    "@keyframes fade-in{from{opacity:0;transform:scale(0.98)}to{opacity:1;transform:scale(1)}}",
-    "@keyframes title-shine{0%{background-position:200% 0;}100%{background-position:-200% 0;}}"
+    "@keyframes fade-in{from{opacity:0;transform:scale(0.98)}to{opacity:1;transform:scale(1)}}"
   ].join("");
   (document.head || document.documentElement).appendChild(style);
   const titleText = t("title_verifying");
   document.body.innerHTML =
-    `<div class="card"><h1 id="t" class="shine">${titleText}</h1><div id="log"></div><div id="ts"></div></div>`;
+    `<div class="card"><h1 id="t">${titleText}</h1><div id="log"></div><div id="ts"></div></div>`;
 
   // --- Advanced Glow Effect Implementation (from landing) ---
   const glowState = {
@@ -839,9 +840,16 @@ const initUi = () => {
       const r = Math.round(currentColor.r + (targetColor.r - currentColor.r) * this.colorTransitionPhase);
       const g = Math.round(currentColor.g + (targetColor.g - currentColor.g) * this.colorTransitionPhase);
       const b = Math.round(currentColor.b + (targetColor.b - currentColor.b) * this.colorTransitionPhase);
+      const titleMix = 0.28;
+      const titleR = Math.round(r + (244 - r) * titleMix);
+      const titleG = Math.round(g + (244 - g) * titleMix);
+      const titleB = Math.round(b + (248 - b) * titleMix);
       body.style.setProperty('--glow-r', r);
       body.style.setProperty('--glow-g', g);
       body.style.setProperty('--glow-b', b);
+      body.style.setProperty('--title-r', titleR);
+      body.style.setProperty('--title-g', titleG);
+      body.style.setProperty('--title-b', titleB);
     },
 
     updateElementsEdgeGlow(glowX, glowY) {
@@ -1218,15 +1226,13 @@ const update = (idx, msg) => {
 };
 
 const setStatus = (ok) => {
-  if (ui.tEl && ui.tEl.classList && typeof ui.tEl.classList.remove === "function") {
-    ui.tEl.classList.remove("shine");
+  if (ui.tEl && ui.tEl.dataset) {
+    ui.tEl.dataset.state = ok ? "success" : "error";
   }
   if (ok) {
     ui.tEl.textContent = t("title_redirecting");
-    ui.tEl.style.color = "#4ade80";
   } else {
     ui.tEl.textContent = t("title_failed");
-    ui.tEl.style.color = "#f87171";
   }
 };
 
