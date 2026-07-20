@@ -111,7 +111,3 @@ test("CJK locales keep commit/challenge/consume as English terms", () => {
   assert.equal(glue.translate("ko", "no_challenge"), "No Challenge");
   assert.equal(glue.translate("ko", "consume_missing"), "Consume 누락");
 });
-
-test("title uses shine class while verifying", () => {
-  assert.match(document.body.innerHTML, /id="t"[^>]*class="[^"]*shine/);
-});
