@@ -12,13 +12,12 @@ const DEFAULTS = {
   bindPathQueryName: "path",
   bindPathHeaderName: "",
   stripBindPathHeader: false,
-  POW_VERSION: 4,
+  POW_VERSION: 5,
   POW_API_PREFIX: "/__pow",
   POW_DIFFICULTY_BASE: 8192,
   POW_DIFFICULTY_COEFF: 1.0,
   POW_MIN_STEPS: 512,
   POW_MAX_STEPS: 8192,
-  POW_HASHCASH_X: 1,
   POW_PAGE_BYTES: 16384,
   POW_MIX_ROUNDS: 2,
   POW_SEGMENT_LEN: 2,
@@ -57,9 +56,9 @@ const DEFAULTS = {
   IPV4_PREFIX: 32,
   IPV6_PREFIX: 128,
   POW_ESM_URL:
-    "https://cdn.jsdelivr.net/gh/ImoutoHeaven/snippet-posw@6a34eb1/esm/esm.js",
+    "https://cdn.jsdelivr.net/gh/ImoutoHeaven/snippet-posw-mhg@main/esm/esm.js",
   POW_GLUE_URL:
-    "https://cdn.jsdelivr.net/gh/ImoutoHeaven/snippet-posw@6a34eb1/glue.js",
+    "https://cdn.jsdelivr.net/gh/ImoutoHeaven/snippet-posw-mhg@main/glue.js",
   SITEVERIFY_URLS: [],
   SITEVERIFY_AUTH_KID: "v1",
   SITEVERIFY_AUTH_SECRET: "",
@@ -836,12 +835,6 @@ const normalizeConfig = (baseConfig) => {
       DEFAULTS.POW_MAX_STEPS,
       1,
       1000000
-    ),
-    POW_HASHCASH_X: normalizeNumberClamp(
-      merged.POW_HASHCASH_X,
-      DEFAULTS.POW_HASHCASH_X,
-      0,
-      4294967296
     ),
     POW_PAGE_BYTES: normalizePageBytes(merged.POW_PAGE_BYTES, DEFAULTS.POW_PAGE_BYTES),
     POW_MIX_ROUNDS: normalizeNumberClamp(merged.POW_MIX_ROUNDS, DEFAULTS.POW_MIX_ROUNDS, 1, 4),

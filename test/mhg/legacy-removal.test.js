@@ -8,6 +8,7 @@ const LEGACY_POW_BITS_KEY = ["POW", "HASHCASH", "BITS"].join("_");
 test("legacy pow chain symbols removed", async () => {
   const businessGateSource = await readFile("lib/pow/business-gate.js", "utf8");
   const configSource = await readFile("pow-config.js", "utf8");
+  const glueSource = await readFile("glue.js", "utf8");
 
   assert.equal(businessGateSource.includes("POW_SPINE_K"), false);
   assert.equal(businessGateSource.includes("MERKLE_LEAF_PREFIX"), false);
@@ -24,7 +25,8 @@ test("legacy pow chain symbols removed", async () => {
   assert.equal(configSource.includes("spineSeed"), false);
   assert.equal(configSource.includes("POW_SEGMENT_LEN"), true);
   assert.equal(configSource.includes(LEGACY_POW_BITS_KEY), false);
-  assert.equal(configSource.includes("POW_HASHCASH_X"), true);
+  assert.equal(configSource.includes("POW_HASHCASH_X"), false);
+  assert.equal(glueSource.includes("hashcashX"), false);
 });
 
 const collectCodeFiles = async (dir) => {

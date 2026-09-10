@@ -8,7 +8,6 @@ const LABEL = {
   pb: encoder.encode("MHG1-PB"),
   graphPrefix: encoder.encode("mhg|graph|v4|"),
   bar: encoder.encode("|"),
-  hashcashV4: encoder.encode("hashcash|v4|"),
   nonceV1: encoder.encode("mhg|commit-nonce|v1|"),
 };
 
@@ -384,17 +383,13 @@ const deriveCommitNonce = async ({
   steps,
   pageBytes,
   mixRounds,
-  hashcashXCanonical,
-  attempt,
 }) => {
   const raw = await sha256(
     LABEL.nonceV1,
     encoder.encode(ticketB64),
     u32be(steps),
     u32be(pageBytes),
-    u32be(mixRounds),
-    encoder.encode(hashcashXCanonical),
-    u32be(attempt)
+    u32be(mixRounds)
   );
   return b64u(raw.slice(0, 16));
 };
@@ -419,18 +414,6 @@ const deriveNonce16 = async (nonceString) => {
   const digest = await sha256(raw);
   return digest.slice(0, 16);
 };
-
-const hashcashRootLast = async (root, lastPage) => sha256(LABEL.hashcashV4, root, lastPage);
-
-const canonicalizeHashcashX = (value) => {
-  const n = Number(value);
-  if (!Number.isFinite(n)) return null;
-  if (Object.is(n, -0)) return "0";
-  return n.toString();
-};
-
-const hashcashThresholdFromX = (hashcashX) =>
-  hashcashX > 1 ? Math.max(1, Math.floor(U32_MAX_PLUS_ONE / hashcashX)) : 0;
 
 const shouldYield = (counter, every) =>
   Number.isFinite(every) && every > 0 && counter % every === 0;
@@ -545,8 +528,8 @@ export const buildCrossEndFixture = async (vector, options = {}) => {
 let cancelled = false;
 let state = null;
 
-const emitProgress = (phase, done = 0, total = 0, attempt = 0) => {
-  postMessage({ type: "PROGRESS", phase, done, total, attempt });
+const emitProgress = (phase, done = 0, total = 0) => {
+  postMessage({ type: "PROGRESS", phase, done, total });
 };
 
 const initWorkerState = (payload) => {
@@ -554,22 +537,16 @@ const initWorkerState = (payload) => {
   if (!ticketB64) throw new Error("ticketB64 required");
 
   const steps = payload.steps;
-  const hashcashXCanonical = canonicalizeHashcashX(payload.hashcashX);
-  const hashcashX = hashcashXCanonical === null ? NaN : Number(hashcashXCanonical);
   const pageBytes = payload.pageBytes;
   const mixRounds = payload.mixRounds;
 
   if (!Number.isInteger(steps) || steps < 1) throw new Error("steps invalid");
-  if (!Number.isFinite(hashcashX)) throw new Error("hashcashX invalid");
   if (!Number.isInteger(pageBytes) || pageBytes < 16 || pageBytes % 16 !== 0) throw new Error("pageBytes invalid");
   if (!Number.isInteger(mixRounds) || mixRounds < 1 || mixRounds > 4) throw new Error("mixRounds invalid");
 
   state = {
     ticketB64,
     steps,
-    hashcashX,
-    hashcashXCanonical,
-    hashcashThreshold: hashcashThresholdFromX(hashcashX),
     pageBytes,
     mixRounds,
     yieldEvery: Math.max(1, Math.floor(Number(payload.yieldEvery) || 1024)),
@@ -592,52 +569,38 @@ const checkCancelled = () => {
 const computeCommit = async () => {
   if (!state) throw new Error("not initialized");
   const progressEvery = state.progressEvery;
-  const hashcashThreshold = state.hashcashThreshold;
-  let attempt = 0;
-  while (true) {
-    checkCancelled();
-    attempt += 1;
-    const nonce = await deriveCommitNonce({
-      ticketB64: state.ticketB64,
-      steps: state.steps,
-      pageBytes: state.pageBytes,
-      mixRounds: state.mixRounds,
-      hashcashXCanonical: state.hashcashXCanonical,
-      attempt,
-    });
-    const graphSeed = await deriveGraphSeed16(state.ticketB64, nonce);
-    const nonce16 = await deriveNonce16(nonce);
-    const pages = await buildGraphPages({
-      graphSeed,
-      nonce: nonce16,
-      pageBytes: state.pageBytes,
-      mixRounds: state.mixRounds,
-      pages: state.steps + 1,
-      yieldEvery: state.yieldEvery,
-      checkCancelled,
-      onProgress: (done, total) => {
-        if (done === 0 || done === total || done % progressEvery === 0) {
-          emitProgress("chain", done, total, attempt - 1);
-        }
-      },
-    });
-    const tree = await buildMerkle(pages);
-    if (hashcashThreshold > 0) {
-      const digest = await hashcashRootLast(tree.root, pages[state.steps]);
-      if (readU32be(digest, 0) >= hashcashThreshold) {
-        emitProgress("hashcash", 0, 0, attempt);
-        continue;
+  checkCancelled();
+  const nonce = await deriveCommitNonce({
+    ticketB64: state.ticketB64,
+    steps: state.steps,
+    pageBytes: state.pageBytes,
+    mixRounds: state.mixRounds,
+  });
+  const graphSeed = await deriveGraphSeed16(state.ticketB64, nonce);
+  const nonce16 = await deriveNonce16(nonce);
+  const pages = await buildGraphPages({
+    graphSeed,
+    nonce: nonce16,
+    pageBytes: state.pageBytes,
+    mixRounds: state.mixRounds,
+    pages: state.steps + 1,
+    yieldEvery: state.yieldEvery,
+    checkCancelled,
+    onProgress: (done, total) => {
+      if (done === 0 || done === total || done % progressEvery === 0) {
+        emitProgress("chain", done, total);
       }
-    }
-    state.nonce = nonce;
-    state.graphSeed = graphSeed;
-    state.nonce16 = nonce16;
-    state.pages = pages;
-    state.levels = tree.levels;
-    state.rootB64 = b64u(tree.root);
-    state.ready = true;
-    return { rootB64: state.rootB64, nonce };
-  }
+    },
+  });
+  const tree = await buildMerkle(pages);
+  state.nonce = nonce;
+  state.graphSeed = graphSeed;
+  state.nonce16 = nonce16;
+  state.pages = pages;
+  state.levels = tree.levels;
+  state.rootB64 = b64u(tree.root);
+  state.ready = true;
+  return { rootB64: state.rootB64, nonce };
 };
 
 const computeOpen = async (payload) => {
@@ -665,7 +628,7 @@ const computeOpen = async (payload) => {
         pageBytes: state.pageBytes,
       })
     );
-    emitProgress("open", i + 1, indices.length, 0);
+    emitProgress("open", i + 1, indices.length);
   }
   return opens;
 };

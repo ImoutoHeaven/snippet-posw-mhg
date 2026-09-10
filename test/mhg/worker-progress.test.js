@@ -7,14 +7,12 @@ import { buildCrossEndFixture } from "../../esm/mhg-worker.js";
 
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 const encoder = new TextEncoder();
-const LEGACY_BITS_FIELD = ["hashcash", "Bits"].join("");
 
 const runWorkerCommit = async ({
   ticketB64 = "dGVzdC10aWNrZXQ",
   steps = 8,
   pageBytes = 64,
   mixRounds = 2,
-  hashcashX = 1,
   progressEvery = 1,
   initOverrides,
   beforeImport,
@@ -78,7 +76,6 @@ const runWorkerCommit = async ({
       steps,
       pageBytes,
       mixRounds,
-      hashcashX,
       progressEvery,
       ...(initOverrides || {}),
     });
@@ -105,12 +102,15 @@ const runWorkerCommit = async ({
 test("mhg worker emits chain progress during commit", async () => {
   const { progress } = await runWorkerCommit({
     steps: 8,
-    hashcashX: 1,
     progressEvery: 1,
   });
   assert.equal(
     progress.some((msg) => msg && msg.phase === "chain"),
     true,
+  );
+  assert.deepEqual(
+    progress.filter((msg) => msg && msg.phase === "chain").map((msg) => msg.done),
+    [0, 1, 2, 3, 4, 5, 6, 7, 8],
   );
 });
 
@@ -120,7 +120,6 @@ test("worker hash path is WebCrypto-only", async () => {
 
   const { commit } = await runWorkerCommit({
     steps: 4,
-    hashcashX: 1,
     progressEvery: 1,
     beforeImport() {
       globalThis.__MHG_HASH_WASM_FACTORY__ = async () => {
@@ -158,45 +157,10 @@ test("worker hash path is WebCrypto-only", async () => {
   assert.equal(encoder.encode(commit.nonce).length > 0, true);
 });
 
-test("worker accepts float hashcashX commit input", async () => {
-  const { commit } = await runWorkerCommit({
-    steps: 4,
-    hashcashX: 3.5,
-    progressEvery: 1,
-  });
-  assert.equal(typeof commit.rootB64, "string");
-  assert.equal(commit.rootB64.length > 0, true);
-  assert.equal(typeof commit.nonce, "string");
-  assert.equal(commit.nonce.length > 0, true);
-});
-
-test("worker accepts negative hashcashX as disabled", async () => {
-  const { commit } = await runWorkerCommit({
-    steps: 4,
-    hashcashX: -3.5,
-    progressEvery: 1,
-  });
-  assert.equal(typeof commit.rootB64, "string");
-  assert.equal(commit.rootB64.length > 0, true);
-  assert.equal(typeof commit.nonce, "string");
-  assert.equal(commit.nonce.length > 0, true);
-});
-
-test("worker INIT rejects legacy bits-only payload", async () => {
-  await assert.rejects(
-    runWorkerCommit({
-      steps: 4,
-      initOverrides: { hashcashX: undefined, [LEGACY_BITS_FIELD]: 2 },
-    }),
-    /hashcashX invalid/,
-  );
-});
-
 test("worker fails closed when parent rejection sampling cannot converge", { timeout: 750 }, async () => {
   await assert.rejects(
     runWorkerCommit({
       steps: 4,
-      hashcashX: 1,
       beforeImport() {
         const baseCrypto = globalThis.crypto || webcrypto;
         const wrappedSubtle = {
@@ -247,7 +211,6 @@ test("worker derives PA/PB once per page index", async () => {
   await runWorkerCommit({
     steps: 4,
     mixRounds: 4,
-    hashcashX: 1,
     progressEvery: 1,
     beforeImport() {
       const baseCrypto = globalThis.crypto || webcrypto;

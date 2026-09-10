@@ -5,7 +5,7 @@ test("protocol constants are fixed and not configurable", async () => {
   const c = await import("../../lib/mhg/constants.js");
   assert.equal(c.MERKLE_LEAF_PREFIX, "MHG1-LEAF");
   assert.equal(c.MERKLE_NODE_PREFIX, "MHG1-NODE");
-  assert.equal(c.HASHCASH_PREFIX, "hashcash|v4|");
+  assert.equal("HASHCASH_PREFIX" in c, false);
   assert.equal(c.POW_PAGE_BYTES_DEFAULT, 16384);
   assert.equal(c.POW_MIX_ROUNDS_DEFAULT, 2);
 });

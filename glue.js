@@ -35,8 +35,6 @@ const I18N = {
     worker_missing: "Worker Missing",
     bad_binding: "Bad Binding",
     computing_hash_chain: "Computing hash chain...",
-    screening_hash_attempt: "Screening hash (attempt {n})...",
-    screening_hash_done: "Screening hash... {done}",
     computing_hash_chain_done: "Computing hash chain... {done}",
     submitting_commit: "Submitting commit...",
     requesting_challenge: "Requesting challenge...",
@@ -84,8 +82,6 @@ const I18N = {
     worker_missing: "Worker 不可用",
     bad_binding: "绑定无效",
     computing_hash_chain: "计算哈希链...",
-    screening_hash_attempt: "筛选哈希（第 {n} 次）...",
-    screening_hash_done: "筛选哈希... {done}",
     computing_hash_chain_done: "计算哈希链... {done}",
     submitting_commit: "提交 Commit...",
     requesting_challenge: "请求 Challenge...",
@@ -133,8 +129,6 @@ const I18N = {
     worker_missing: "Worker が見つかりません",
     bad_binding: "無効なバインド",
     computing_hash_chain: "ハッシュチェーンを計算中...",
-    screening_hash_attempt: "ハッシュを選別中（{n} 回目）...",
-    screening_hash_done: "ハッシュ選別... {done}",
     computing_hash_chain_done: "ハッシュチェーン... {done}",
     submitting_commit: "Commit を送信中...",
     requesting_challenge: "Challenge を要求中...",
@@ -182,8 +176,6 @@ const I18N = {
     worker_missing: "Worker 不可用",
     bad_binding: "綁定無效",
     computing_hash_chain: "計算雜湊鏈...",
-    screening_hash_attempt: "篩選雜湊（第 {n} 次）...",
-    screening_hash_done: "篩選雜湊... {done}",
     computing_hash_chain_done: "計算雜湊鏈... {done}",
     submitting_commit: "提交 Commit...",
     requesting_challenge: "請求 Challenge...",
@@ -231,8 +223,6 @@ const I18N = {
     worker_missing: "Worker 없음",
     bad_binding: "잘못된 바인딩",
     computing_hash_chain: "해시 체인 계산 중...",
-    screening_hash_attempt: "해시 검사 중 (시도 {n})...",
-    screening_hash_done: "해시 검사... {done}",
     computing_hash_chain_done: "해시 체인 계산... {done}",
     submitting_commit: "Commit 제출 중...",
     requesting_challenge: "Challenge 요청 중...",
@@ -280,8 +270,6 @@ const I18N = {
     worker_missing: "Worker indisponible",
     bad_binding: "Liaison invalide",
     computing_hash_chain: "Calcul de la chaîne de hachage...",
-    screening_hash_attempt: "Vérification du hachage (tentative {n})...",
-    screening_hash_done: "Vérification du hachage... {done}",
     computing_hash_chain_done: "Calcul de la chaîne de hachage... {done}",
     submitting_commit: "Envoi du commit...",
     requesting_challenge: "Demande du challenge...",
@@ -1401,7 +1389,6 @@ const runPowFlow = async (
   steps,
   ticketB64,
   pathHash,
-  hashcashX,
   segmentLen,
   pageBytes,
   mixRounds,
@@ -1443,7 +1430,6 @@ const runPowFlow = async (
     let spinIndex = -1;
     let spinFrame = 0;
     const spinChars = "|/-\\";
-    let attemptCount = 0;
     let verifyLine = -1;
     let verifySpinFrame = 0;
     const verifySpinChars = "|/-\\";
@@ -1453,10 +1439,7 @@ const runPowFlow = async (
       if (spinIndex !== -1) return;
       spinIndex = log(t("computing_hash_chain"));
       spinTimer = setInterval(() => {
-        let msg = t("computing_hash_chain");
-        if (attemptCount > 0) {
-          msg = t("screening_hash_attempt", { n: attemptCount });
-        }
+        const msg = t("computing_hash_chain");
         const spinner =
           '<span class="yellow">' + spinChars[spinFrame++ % spinChars.length] + "</span>";
         update(spinIndex, msg + " " + spinner);
@@ -1466,11 +1449,8 @@ const runPowFlow = async (
     let activeWorker = null;
     const onProgress = (source, progress) => {
       if (source !== activeWorker) return;
-      if (progress.phase === "chain" || progress.phase === "hashcash") {
+      if (progress.phase === "chain") {
         ensureHashingLine();
-      }
-      if (progress.phase === "hashcash" && typeof progress.attempt === "number") {
-        attemptCount = progress.attempt;
       }
     };
 
@@ -1508,7 +1488,6 @@ const runPowFlow = async (
       bindingString: powBinding,
       ticketB64,
       steps,
-      hashcashX,
       segmentLen: Math.max(2, Math.min(16, Math.floor(Number(segmentLen) || 0))),
       pageBytes,
       mixRounds,
@@ -1532,10 +1511,7 @@ const runPowFlow = async (
 
     if (spinTimer) clearInterval(spinTimer);
     if (spinIndex !== -1) {
-      const doneText =
-        attemptCount > 0
-          ? t("screening_hash_done", { done: doneMark() })
-          : t("computing_hash_chain_done", { done: doneMark() });
+      const doneText = t("computing_hash_chain_done", { done: doneMark() });
       update(spinIndex, doneText);
     }
 
@@ -1636,7 +1612,6 @@ export default async function runPow(
   steps,
   ticketB64,
   pathHash,
-  hashcashX,
   segmentLen,
   reloadUrlB64,
   apiPrefixB64,
@@ -1722,7 +1697,6 @@ export default async function runPow(
         steps,
         ticketB64,
         pathHash,
-        hashcashX,
         segmentLen,
         pageBytes,
         mixRounds,
@@ -1772,7 +1746,6 @@ export default async function runPow(
         steps,
         ticketB64,
         pathHash,
-        hashcashX,
         segmentLen,
         pageBytes,
         mixRounds,

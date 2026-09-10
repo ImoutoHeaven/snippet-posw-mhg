@@ -166,7 +166,7 @@ const buildConfigModule = async (secret = CONFIG_SECRET, overrides = {}) => {
         POW_BIND_TLS: false,
         POW_BIND_COUNTRY: false,
         POW_BIND_ASN: false,
-        POW_VERSION: 3,
+        POW_VERSION: 5,
         POW_API_PREFIX: "/__pow",
         POW_DIFFICULTY_BASE: 16,
         POW_DIFFICULTY_COEFF: 1,
@@ -174,7 +174,6 @@ const buildConfigModule = async (secret = CONFIG_SECRET, overrides = {}) => {
         POW_MAX_STEPS: 8,
         POW_SAMPLE_RATE: 0.01,
         POW_OPEN_BATCH: 2,
-        POW_HASHCASH_X: 1,
         POW_SEGMENT_LEN: 2,
         POW_COMMIT_TTL_SEC: 120,
         POW_TICKET_TTL_SEC: 180,
@@ -336,7 +335,7 @@ const makeInnerPayload = ({
     SITEVERIFY_AUTH_SECRET: "siteverify-secret",
     TURNSTILE_SITEKEY: "turn-site",
     TURNSTILE_SECRET: "turn-secret",
-    POW_VERSION: 3,
+    POW_VERSION: 5,
     POW_API_PREFIX: "/__pow",
     POW_DIFFICULTY_BASE: 16,
     POW_DIFFICULTY_COEFF: 1,
@@ -344,7 +343,6 @@ const makeInnerPayload = ({
     POW_MAX_STEPS: 8,
     POW_SAMPLE_RATE: 0.01,
     POW_OPEN_BATCH: 2,
-    POW_HASHCASH_X: 1,
     POW_PAGE_BYTES: 16384,
     POW_MIX_ROUNDS: 2,
     POW_SEGMENT_LEN: 2,
@@ -871,7 +869,7 @@ const runSplitLinkedCase = async ({ pathId }) => {
     providers: "",
     atomicState: emptyAtomic,
   });
-  seedPayload.c.POW_VERSION = 4;
+  seedPayload.c.POW_VERSION = 5;
   seedPayload.id = 0;
 
   const originalFetch = globalThis.fetch;
@@ -1852,7 +1850,7 @@ test("resolveConfig for challenge/open uses body commitToken cfgId", async () =>
   const makeCommitTokenForCfgId = (cfgId) => {
     const nowSeconds = Math.floor(Date.now() / 1000);
     const ticketRaw = [
-      "4",
+      "5",
       String(nowSeconds + 180),
       "6",
       base64Url(crypto.randomBytes(12)),

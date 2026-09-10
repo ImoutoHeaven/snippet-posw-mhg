@@ -15,10 +15,10 @@ const PARENT_MAX_MS = Number(process.env.MHG_PARENT_MAX_MS || 1800);
 
 const nowMs = () => Date.now();
 
-const runWorkerFlow = async ({ ticketB64, steps, pageBytes, mixRounds, hashcashX, indices, segs }) => {
+const runWorkerFlow = async ({ ticketB64, steps, pageBytes, mixRounds, indices, segs }) => {
   const worker = await createTestWorker();
   try {
-    await rpcCall(worker, "INIT", { ticketB64, steps, pageBytes, mixRounds, hashcashX });
+    await rpcCall(worker, "INIT", { ticketB64, steps, pageBytes, mixRounds });
     const commit = await rpcCall(worker, "COMMIT");
     const open =
       Array.isArray(indices) && Array.isArray(segs)
@@ -37,7 +37,6 @@ const makeVerifyFixture = async () => {
     steps: 127,
     pageBytes: 512,
     mixRounds: 2,
-    hashcashX: 1,
     indices: [95, 111, 127],
     segs: [16, 16, 16],
   };

@@ -1,17 +1,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { LOW_PROFILE, assertLowProfileFixture } from "./helpers/low-profile.js";
+import { assertLowProfileFixture } from "./helpers/low-profile.js";
 import { cleanupWorkerGlobals, createTestWorker, rpcCall } from "./helpers/worker-rpc-harness.js";
 import { runGlueFlow } from "./helpers/glue-flow-harness.js";
 
 const CANCEL_MAX_MS = Number(process.env.MHG_CANCEL_MAX_MS || 1000);
 const nowMs = () => Date.now();
 
-const runWorkerFlow = async ({ ticketB64, steps, pageBytes, mixRounds, hashcashX, indices, segs }) => {
+const runWorkerFlow = async ({ ticketB64, steps, pageBytes, mixRounds, indices, segs }) => {
   const worker = await createTestWorker();
   try {
-    await rpcCall(worker, "INIT", { ticketB64, steps, pageBytes, mixRounds, hashcashX });
+    await rpcCall(worker, "INIT", { ticketB64, steps, pageBytes, mixRounds });
     const commit = await rpcCall(worker, "COMMIT");
     const open =
       Array.isArray(indices) && Array.isArray(segs)
@@ -24,7 +24,7 @@ const runWorkerFlow = async ({ ticketB64, steps, pageBytes, mixRounds, hashcashX
   }
 };
 
-test("L2 high-hashcash commit search stays serial", async () => {
+test("L2 commit worker selection stays serial", async () => {
   const fixture = {
     bindingString: "binding-l2-serial",
     ticketB64: "dGVzdC10aWNrZXQ",
@@ -32,7 +32,6 @@ test("L2 high-hashcash commit search stays serial", async () => {
     segmentLen: 3,
     pageBytes: 512,
     mixRounds: 1,
-    hashcashX: 8,
   };
 
   const traces = await runGlueFlow({
@@ -87,7 +86,6 @@ test("L2 one real-worker smoke remains low-difficulty", async () => {
     steps: 64,
     pageBytes: 240,
     mixRounds: 3,
-    hashcashX: LOW_PROFILE.hashcashX,
     indices: [16],
     segs: [4],
   };
@@ -107,7 +105,6 @@ test("L2 cancel latency stays bounded while worker is under load", { timeout: 30
       steps: 384,
       pageBytes: 1024,
       mixRounds: 3,
-      hashcashX: 256,
     });
 
     const commitPromise = rpcCall(worker, "COMMIT");

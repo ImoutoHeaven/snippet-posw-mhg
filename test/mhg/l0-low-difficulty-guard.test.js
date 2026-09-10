@@ -24,10 +24,10 @@ const openWitnessShape = (opens) =>
     ),
   }));
 
-const runWorkerFlow = async ({ ticketB64, steps, pageBytes, mixRounds, hashcashX, indices, segs }) => {
+const runWorkerFlow = async ({ ticketB64, steps, pageBytes, mixRounds, indices, segs }) => {
   const worker = await createTestWorker();
   try {
-    await rpcCall(worker, "INIT", { ticketB64, steps, pageBytes, mixRounds, hashcashX });
+    await rpcCall(worker, "INIT", { ticketB64, steps, pageBytes, mixRounds });
     const commit = await rpcCall(worker, "COMMIT");
     const open =
       Array.isArray(indices) && Array.isArray(segs)
@@ -43,13 +43,11 @@ const runWorkerFlow = async ({ ticketB64, steps, pageBytes, mixRounds, hashcashX
 test("helpers expose low-profile defaults", async () => {
   assert.equal(LOW_PROFILE.maxSteps, 128);
   assert.equal(LOW_PROFILE.maxPageBytes, 1024);
-  assert.equal(LOW_PROFILE.hashcashX, 1);
   await runWorkerFlow({
     ticketB64: "dGVzdC10aWNrZXQ",
     steps: 24,
     pageBytes: 64,
     mixRounds: 1,
-    hashcashX: 1,
   });
 });
 
@@ -83,7 +81,6 @@ test("glue harness records payload-only INIT trace and restores globals", async 
       segmentLen: 2,
       pageBytes: 240,
       mixRounds: 3,
-      hashcashX: 1,
     },
     challengeFixture: {
       done: true,
@@ -101,7 +98,6 @@ test("glue harness records payload-only INIT trace and restores globals", async 
     "segmentLen",
     "pageBytes",
     "mixRounds",
-    "hashcashX",
   ].sort());
   assert.equal(globalThis.document, prevDocument);
   assert.equal(globalThis.window, prevWindow);
@@ -140,7 +136,6 @@ test("L0 matrix: worker output verifies with verifyOpenBatchVector", async () =>
       steps: 24,
       pageBytes: 64,
       mixRounds: 2,
-      hashcashX: LOW_PROFILE.hashcashX,
       indices: [1, 12],
       segs: [2, 3],
     },
@@ -149,7 +144,6 @@ test("L0 matrix: worker output verifies with verifyOpenBatchVector", async () =>
       steps: 47,
       pageBytes: 240,
       mixRounds: 2,
-      hashcashX: LOW_PROFILE.hashcashX,
       indices: [2, 31],
       segs: [2, 5],
     },
@@ -158,7 +152,6 @@ test("L0 matrix: worker output verifies with verifyOpenBatchVector", async () =>
       steps: 96,
       pageBytes: 512,
       mixRounds: 2,
-      hashcashX: LOW_PROFILE.hashcashX,
       indices: [5, 48],
       segs: [5, 11],
     },
@@ -168,13 +161,11 @@ test("L0 matrix: worker output verifies with verifyOpenBatchVector", async () =>
     assertLowProfileFixture(fixture);
     assert.equal(fixture.steps <= LOW_PROFILE.maxSteps, true);
     assert.equal(fixture.pageBytes <= LOW_PROFILE.maxPageBytes, true);
-    assert.equal(fixture.hashcashX, LOW_PROFILE.hashcashX);
     const out = await runWorkerFlow({
       ticketB64: fixture.ticketB64,
       steps: fixture.steps,
       pageBytes: fixture.pageBytes,
       mixRounds: fixture.mixRounds,
-      hashcashX: fixture.hashcashX,
       indices: fixture.indices,
       segs: fixture.segs,
     });
@@ -215,7 +206,6 @@ test("L0 deterministic lock: repeated identical flow keeps root and OPEN shape",
     steps: 24,
     pageBytes: 64,
     mixRounds: 2,
-    hashcashX: LOW_PROFILE.hashcashX,
     indices: [1, 12],
     segs: [2, 3],
   };

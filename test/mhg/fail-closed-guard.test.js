@@ -8,11 +8,13 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { createPowRuntimeFixture } from "../helpers/pow-runtime-fixture.js";
 import { __testNormalizeConfig as normalizePowConfig } from "../../pow-config.js";
 import { verifyOpenBatchVector } from "../../lib/mhg/verify.js";
+import { makePowStateToken } from "../../lib/pow/api-protocol-shared.js";
 import { resolveParentsV4 } from "./helpers/resolve-parents-v4.js";
 
 const CONFIG_SECRET = "config-secret";
 const POW_SECRET = "pow-secret";
 const TURNSTILE_SITEVERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
+const AGGREGATOR_URL = "https://provider.example/verify";
 
 const base64Url = (buffer) =>
   Buffer.from(buffer)
@@ -170,70 +172,106 @@ const parseTicket = (ticketB64) => {
   };
 };
 
-const rewriteTicketVersion = (ticketB64, nextVersion) => {
-  const raw = fromBase64Url(ticketB64).toString("utf8");
-  const parts = raw.split(".");
-  if (parts.length !== 7) throw new Error("invalid ticket parts");
-  parts[0] = String(nextVersion);
-  return base64Url(Buffer.from(parts.join("."), "utf8"));
+const makeVersionedTicket = (ticketB64, bindingB64, nextVersion) => {
+  const ticketParts = fromBase64Url(ticketB64).toString("utf8").split(".");
+  const bindingParts = fromBase64Url(bindingB64).toString("utf8").split("|");
+  if (ticketParts.length !== 7 || bindingParts.length !== 14) {
+    throw new Error("invalid ticket binding");
+  }
+  ticketParts[0] = String(nextVersion);
+  bindingParts[0] = String(nextVersion);
+  ticketParts[6] = base64Url(
+    crypto.createHmac("sha256", POW_SECRET).update(bindingParts.join("|")).digest(),
+  );
+  return base64Url(Buffer.from(ticketParts.join("."), "utf8"));
 };
 
-const makeInnerPayload = ({ atomic = false, turncheck = true, powVersion = 4 } = {}) => ({
-  v: 1,
-  id: 77,
-  c: normalizePowConfig({
-    POW_TOKEN: POW_SECRET,
-    powcheck: true,
-    turncheck,
-    recaptchaEnabled: false,
-    POW_VERSION: powVersion,
-    POW_API_PREFIX: "/__pow",
-    POW_DIFFICULTY_BASE: 16,
-    POW_DIFFICULTY_COEFF: 1,
-    POW_MIN_STEPS: 4,
-    POW_MAX_STEPS: 8,
-    POW_SAMPLE_RATE: 0.01,
-    POW_OPEN_BATCH: 2,
-    POW_HASHCASH_X: 1,
-    POW_PAGE_BYTES: 64,
-    POW_MIX_ROUNDS: 2,
-    POW_SEGMENT_LEN: 2,
-    POW_COMMIT_TTL_SEC: 120,
-    POW_TICKET_TTL_SEC: 180,
-    POW_BIND_PATH: true,
-    POW_BIND_IPRANGE: true,
-    POW_BIND_COUNTRY: false,
-    POW_BIND_ASN: false,
-    POW_BIND_TLS: false,
-    PROOF_TTL_SEC: 300,
-    ATOMIC_CONSUME: atomic,
-    ATOMIC_TURN_QUERY: "__ts",
-    ATOMIC_TICKET_QUERY: "__tt",
-    ATOMIC_CONSUME_QUERY: "__ct",
-    ATOMIC_TURN_HEADER: "x-turnstile",
-    ATOMIC_TICKET_HEADER: "x-ticket",
-    ATOMIC_CONSUME_HEADER: "x-consume",
-    ATOMIC_COOKIE_NAME: "__Secure-pow_a",
-    TURNSTILE_SITEKEY: "turn-site",
-    TURNSTILE_SECRET: "turn-secret",
-    POW_ESM_URL: "https://cdn.example/esm.js",
-    POW_GLUE_URL: "https://cdn.example/glue.js",
-  }),
-  d: { ipScope: "1.2.3.4/32", country: "", asn: "", tlsFingerprint: "" },
-  s: {
-    nav: {},
-    bypass: { bypass: false },
-    bind: { ok: true, code: "", canonicalPath: "/protected" },
-    atomic: {
-      captchaToken: "",
-      ticketB64: "",
-      consumeToken: "",
-      fromCookie: false,
-      cookieName: "",
-      turnstilePreflight: null,
+const makeSignedCommitToken = ({ ticketB64, rootB64, pathHash, captchaTag = "any", nonce, exp }) => {
+  const mac = base64Url(
+    crypto
+      .createHmac("sha256", POW_SECRET)
+      .update(`C2|${ticketB64}|${rootB64}|${pathHash}|${captchaTag}|${nonce}|${exp}`)
+      .digest(),
+  );
+  return `v5.${ticketB64}.${rootB64}.${pathHash}.${captchaTag}.${nonce}.${exp}.${mac}`;
+};
+
+const makeProofCookie = ({ ticketB64, iat, last = iat, n = 0, m = 1 }) => {
+  const mac = base64Url(
+    crypto.createHmac("sha256", POW_SECRET).update(`O|${ticketB64}|${iat}|${last}|${n}|${m}`).digest(),
+  );
+  return `v1.${ticketB64}.${iat}.${last}.${n}.${m}.${mac}`;
+};
+
+const makeConsumeToken = ({ ticketB64, exp, captchaTag = "any", m = 1 }) => {
+  const mac = base64Url(
+    crypto.createHmac("sha256", POW_SECRET).update(`U|${ticketB64}|${exp}|${captchaTag}|${m}`).digest(),
+  );
+  return `v2.${ticketB64}.${exp}.${captchaTag}.${m}.${mac}`;
+};
+
+const makeInnerPayload = ({ atomic = false, turncheck = true, powVersion = 5, atomicState } = {}) => {
+  const suppliedAtomicState = atomicState && typeof atomicState === "object" ? atomicState : {};
+  return {
+    v: 1,
+    id: 77,
+    c: normalizePowConfig({
+      POW_TOKEN: POW_SECRET,
+      powcheck: true,
+      turncheck,
+      recaptchaEnabled: false,
+      POW_VERSION: powVersion,
+      POW_API_PREFIX: "/__pow",
+      POW_DIFFICULTY_BASE: 16,
+      POW_DIFFICULTY_COEFF: 1,
+      POW_MIN_STEPS: 4,
+      POW_MAX_STEPS: 8,
+      POW_SAMPLE_RATE: 0.01,
+      POW_OPEN_BATCH: 2,
+      POW_PAGE_BYTES: 64,
+      POW_MIX_ROUNDS: 2,
+      POW_SEGMENT_LEN: 2,
+      POW_COMMIT_TTL_SEC: 120,
+      POW_TICKET_TTL_SEC: 180,
+      POW_BIND_PATH: true,
+      POW_BIND_IPRANGE: true,
+      POW_BIND_COUNTRY: false,
+      POW_BIND_ASN: false,
+      POW_BIND_TLS: false,
+      PROOF_TTL_SEC: 300,
+      ATOMIC_CONSUME: atomic,
+      ATOMIC_TURN_QUERY: "__ts",
+      ATOMIC_TICKET_QUERY: "__tt",
+      ATOMIC_CONSUME_QUERY: "__ct",
+      ATOMIC_TURN_HEADER: "x-turnstile",
+      ATOMIC_TICKET_HEADER: "x-ticket",
+      ATOMIC_CONSUME_HEADER: "x-consume",
+      ATOMIC_COOKIE_NAME: "__Secure-pow_a",
+      TURNSTILE_SITEKEY: "turn-site",
+      TURNSTILE_SECRET: "turn-secret",
+      POW_ESM_URL: "https://cdn.example/esm.js",
+      POW_GLUE_URL: "https://cdn.example/glue.js",
+    }),
+    d: { ipScope: "1.2.3.4/32", country: "", asn: "", tlsFingerprint: "" },
+    s: {
+      nav: {},
+      bypass: { bypass: false },
+      bind: { ok: true, code: "", canonicalPath: "/protected" },
+      atomic: {
+        captchaToken:
+          typeof suppliedAtomicState.captchaToken === "string" ? suppliedAtomicState.captchaToken : "",
+        ticketB64:
+          typeof suppliedAtomicState.ticketB64 === "string" ? suppliedAtomicState.ticketB64 : "",
+        consumeToken:
+          typeof suppliedAtomicState.consumeToken === "string" ? suppliedAtomicState.consumeToken : "",
+        fromCookie: suppliedAtomicState.fromCookie === true,
+        cookieName:
+          typeof suppliedAtomicState.cookieName === "string" ? suppliedAtomicState.cookieName : "",
+        turnstilePreflight: null,
+      },
     },
-  },
-});
+  };
+};
 
 const makeInnerHeaders = (payloadObj, secret = CONFIG_SECRET, expireOffsetSec = 2) => {
   const payload = base64Url(Buffer.from(JSON.stringify(payloadObj), "utf8"));
@@ -249,7 +287,7 @@ const makeInnerHeaders = (payloadObj, secret = CONFIG_SECRET, expireOffsetSec = 
 const extractChallengeArgs = (html) => {
   const match = html.match(/g\("([^"]+)",\s*(\d+),\s*"([^"]+)",\s*"([^"]+)"/u);
   if (!match) return null;
-  return { ticketB64: match[3], pathHash: match[4] };
+  return { bindingB64: match[1], ticketB64: match[3], pathHash: match[4] };
 };
 
 const deriveMhgGraphSeed = (ticketB64, nonce, graphLabel = "v4") =>
@@ -526,7 +564,7 @@ test("split core1 denies unauthorized non-navigation fail-closed", async () => {
   }
 });
 
-test("challenge issues only POW_VERSION=4 tickets", async () => {
+test("challenge issues only POW_VERSION=5 tickets", async () => {
   const restoreGlobals = ensureGlobals();
   try {
     const bridgeFetch = await buildSplitBridgeFetch();
@@ -547,13 +585,13 @@ test("challenge issues only POW_VERSION=4 tickets", async () => {
     assert.ok(args);
     const ticket = parseTicket(args.ticketB64);
     assert.ok(ticket);
-    assert.equal(ticket.v, 4);
+    assert.equal(ticket.v, 5);
   } finally {
     restoreGlobals();
   }
 });
 
-test("challenge ignores non-4 POW_VERSION config input", async () => {
+test("challenge ignores non-5 POW_VERSION config input", async () => {
   const restoreGlobals = ensureGlobals();
   try {
     const bridgeFetch = await buildSplitBridgeFetch();
@@ -574,7 +612,7 @@ test("challenge ignores non-4 POW_VERSION config input", async () => {
     assert.ok(args);
     const ticket = parseTicket(args.ticketB64);
     assert.ok(ticket);
-    assert.equal(ticket.v, 4);
+    assert.equal(ticket.v, 5);
   } finally {
     restoreGlobals();
   }
@@ -599,7 +637,7 @@ test("old-version tickets are rejected fail-closed", async () => {
     assert.equal(pageRes.status, 200);
     const args = extractChallengeArgs(await pageRes.text());
     assert.ok(args);
-    const staleTicketB64 = rewriteTicketVersion(args.ticketB64, 3);
+    const staleTicketB64 = makeVersionedTicket(args.ticketB64, args.bindingB64, 4);
 
     const commitRes = await bridgeFetch(
       new Request("https://example.com/__pow/commit", {
@@ -624,6 +662,162 @@ test("old-version tickets are rejected fail-closed", async () => {
     assert.equal(commitRes.headers.get("x-pow-h"), "stale");
     assert.equal(await commitRes.text(), "");
   } finally {
+    restoreGlobals();
+  }
+});
+
+test("v4 tickets are rejected at challenge, cap, open, proof, and atomic boundaries", async () => {
+  const restoreGlobals = ensureGlobals();
+  const originalFetch = globalThis.fetch;
+  let aggregatorCalls = 0;
+  try {
+    globalThis.fetch = async (input, init) => {
+      const request = input instanceof Request ? input : new Request(input, init);
+      if (request.url === AGGREGATOR_URL) {
+        aggregatorCalls += 1;
+        return new Response(
+          JSON.stringify({ ok: true, reason: "ok", checks: {}, providers: {} }),
+          { status: 200 },
+        );
+      }
+      return new Response("origin", { status: 200 });
+    };
+    const bridgeFetch = await buildSplitBridgeFetch();
+    const payload = makeInnerPayload({ turncheck: false });
+    const pageRes = await bridgeFetch(
+      new Request("https://example.com/protected", {
+        headers: {
+          ...makeInnerHeaders(payload),
+          Accept: "text/html",
+          "CF-Connecting-IP": "1.2.3.4",
+        },
+      }),
+      {},
+      {},
+    );
+    assert.equal(pageRes.status, 200);
+    const args = extractChallengeArgs(await pageRes.text());
+    assert.ok(args);
+
+    const oldTicketB64 = makeVersionedTicket(args.ticketB64, args.bindingB64, 4);
+    const nonce = base64Url(crypto.randomBytes(16));
+    const witness = await buildMhgWitnessBundle({ ticketB64: oldTicketB64, nonce });
+    const exp = Math.floor(Date.now() / 1000) + 30;
+    const commitToken = makeSignedCommitToken({
+      ticketB64: oldTicketB64,
+      rootB64: witness.rootB64,
+      pathHash: args.pathHash,
+      nonce,
+      exp,
+    });
+    const commitMac = commitToken.split(".").at(-1);
+    const sid = base64Url(
+      crypto.createHmac("sha256", POW_SECRET).update(`I|${payload.id}|${commitMac}`).digest().subarray(0, 12),
+    );
+    const stateToken = await makePowStateToken(POW_SECRET, payload.id, sid, commitMac, 0, 2);
+    const oldTicket = parseTicket(oldTicketB64);
+    assert.ok(oldTicket);
+
+    const challengeRes = await bridgeFetch(
+      new Request("https://example.com/__pow/challenge", {
+        method: "POST",
+        headers: { ...makeInnerHeaders(payload), "Content-Type": "application/json" },
+        body: JSON.stringify({ commitToken }),
+      }),
+      {},
+      {},
+    );
+    assert.equal(challengeRes.status, 403);
+    assert.equal(challengeRes.headers.get("x-pow-h"), "cheat");
+
+    const openRes = await bridgeFetch(
+      new Request("https://example.com/__pow/open", {
+        method: "POST",
+        headers: { ...makeInnerHeaders(payload), "Content-Type": "application/json" },
+        body: JSON.stringify({
+          commitToken,
+          sid,
+          cursor: 0,
+          token: stateToken,
+          opens: [
+            witness.makeOpenEntry(1, 2),
+            witness.makeOpenEntry(oldTicket.L, 2),
+          ],
+        }),
+      }),
+      {},
+      {},
+    );
+    assert.equal(openRes.status, 403);
+    assert.equal(openRes.headers.get("x-pow-h"), "cheat");
+
+    const capPayload = makeInnerPayload();
+    capPayload.c.powcheck = false;
+    capPayload.c.turncheck = true;
+    capPayload.c.SITEVERIFY_URLS = [AGGREGATOR_URL];
+    capPayload.c.SITEVERIFY_AUTH_KID = "v1";
+    capPayload.c.SITEVERIFY_AUTH_SECRET = "siteverify-secret";
+    const capRes = await bridgeFetch(
+      new Request("https://example.com/__pow/cap", {
+        method: "POST",
+        headers: { ...makeInnerHeaders(capPayload), "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ticketB64: oldTicketB64,
+          pathHash: args.pathHash,
+          captchaToken: JSON.stringify({ turnstile: "turnstile-token-value-1234567890" }),
+        }),
+      }),
+      {},
+      {},
+    );
+    assert.equal(capRes.status, 403);
+
+    const proofPayload = makeInnerPayload({ turncheck: false });
+    const iat = Math.floor(Date.now() / 1000);
+    const proofRes = await bridgeFetch(
+      new Request("https://example.com/protected", {
+        headers: {
+          ...makeInnerHeaders(proofPayload),
+          Accept: "application/json",
+          Cookie: `__Host-proof=${makeProofCookie({ ticketB64: oldTicketB64, iat })}`,
+        },
+      }),
+      {},
+      {},
+    );
+    assert.equal(proofRes.status, 403);
+    assert.deepEqual(await proofRes.json(), { code: "pow_required" });
+
+    const consumeToken = makeConsumeToken({ ticketB64: oldTicketB64, exp: iat + 30 });
+    const atomicPayload = makeInnerPayload({
+      atomic: true,
+      turncheck: false,
+      atomicState: {
+        captchaToken: "",
+        ticketB64: "",
+        consumeToken,
+        fromCookie: false,
+        cookieName: "",
+      },
+    });
+    atomicPayload.c.AGGREGATOR_POW_ATOMIC_CONSUME = true;
+    atomicPayload.c.SITEVERIFY_URLS = [AGGREGATOR_URL];
+    atomicPayload.c.SITEVERIFY_AUTH_KID = "v1";
+    atomicPayload.c.SITEVERIFY_AUTH_SECRET = "siteverify-secret";
+    const atomicRes = await bridgeFetch(
+      new Request("https://example.com/protected", {
+        headers: {
+          ...makeInnerHeaders(atomicPayload),
+          Accept: "application/json",
+        },
+      }),
+      {},
+      {},
+    );
+    assert.equal(atomicRes.status, 403);
+    assert.equal(aggregatorCalls, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
     restoreGlobals();
   }
 });

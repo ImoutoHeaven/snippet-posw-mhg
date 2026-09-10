@@ -135,7 +135,6 @@ const buildConfigModule = async (secret = "config-secret", configOverrides = nul
     POW_MAX_STEPS: 64,
     POW_SAMPLE_RATE: 0.01,
     POW_OPEN_BATCH: 4,
-    POW_HASHCASH_X: 1,
     POW_PAGE_BYTES: 16384,
     POW_MIX_ROUNDS: 2,
     POW_SEGMENT_LEN: 4,
@@ -377,6 +376,19 @@ const buildMhgWitnessBundle = async ({ ticketB64, nonce, pageBytes = 64 }) => {
   };
 };
 
+const HASHCASH_PREFIX_BYTES = Buffer.from("hashcash|v4|", "utf8");
+
+const hashcashPrefixU32 = (bytes) =>
+  (((bytes[0] << 24) | (bytes[1] << 16) | (bytes[2] << 8) | bytes[3]) >>> 0);
+
+const hashcashPrefixU32ForRootLast = (rootB64, lastPageB64) => {
+  const digest = crypto
+    .createHash("sha256")
+    .update(Buffer.concat([HASHCASH_PREFIX_BYTES, fromBase64Url(rootB64), fromBase64Url(lastPageB64)]))
+    .digest();
+  return hashcashPrefixU32(digest);
+};
+
 const buildEqSet = (index, seg) => {
   const out = [];
   const start = Math.max(1, index - seg + 1);
@@ -414,19 +426,6 @@ const buildMhgOpensForChallenge = ({ indices, segs, witnessByIndex, parentByInde
     }
     return { i: index, seg, nodes };
   });
-};
-
-const HASHCASH_PREFIX_BYTES = Buffer.from("hashcash|v4|", "utf8");
-
-const hashcashPrefixU32 = (bytes) =>
-  (((bytes[0] << 24) | (bytes[1] << 16) | (bytes[2] << 8) | bytes[3]) >>> 0);
-
-const hashcashPrefixU32ForRootLast = (rootB64, lastPageB64) => {
-  const digest = crypto
-    .createHash("sha256")
-    .update(Buffer.concat([HASHCASH_PREFIX_BYTES, fromBase64Url(rootB64), fromBase64Url(lastPageB64)]))
-    .digest();
-  return hashcashPrefixU32(digest);
 };
 
 const runChallengeOpenFlow = async ({
@@ -497,26 +496,22 @@ const runChallengeOpenFlow = async ({
 
 const extractChallengeArgs = (html) => {
   const match = html.match(
-    /g\("([^"]+)",\s*(\d+),\s*"([^"]+)",\s*"([^"]+)",\s*([0-9]+(?:\.[0-9]+)?),\s*(\d+)/u,
+    /g\("([^"]+)",\s*(\d+),\s*"([^"]+)",\s*"([^"]+)",\s*(\d+)/u,
   );
   if (!match) return null;
-  const hashcashX = Number.parseFloat(match[5]);
-  if (!Number.isFinite(hashcashX)) return null;
   return {
     bindingB64: match[1],
     steps: Number.parseInt(match[2], 10),
     ticketB64: match[3],
     pathHash: match[4],
-    hashcashX,
-    segmentLen: Number.parseInt(match[6], 10),
+    segmentLen: Number.parseInt(match[5], 10),
   };
 };
 
-test("challenge parser accepts float hashcashX argument", () => {
-  const args = extractChallengeArgs('<script>g("bind", 20, "ticket", "path", 3.5, 4)</script>');
+test("challenge parser captures the segment length argument", () => {
+  const args = extractChallengeArgs('<script>g("bind", 20, "ticket", "path", 4)</script>');
   assert.ok(args, "challenge parser extracts args");
-  assert.equal(typeof args.hashcashX, "number");
-  assert.equal(args.hashcashX, 3.5);
+  assert.equal(args.segmentLen, 4);
 });
 
 test("commit returns commitToken payload; challenge requires payload token", async () => {
@@ -860,12 +855,10 @@ test("challenge sampling count follows ceil(L*POW_SAMPLE_RATE)", async () => {
   }
 });
 
-test("split core-2 open enforces hashcashX threshold with hashcash(root,lastPage)", async () => {
+test("split core-2 accepts a proof above the retired hashcash target", async () => {
   const restoreGlobals = ensureGlobals();
   const core1ModulePath = await buildSplitHarnessModule();
-  const hashcashX = 3.5;
   const configModulePath = await buildConfigModule("config-secret", {
-    POW_HASHCASH_X: hashcashX,
     POW_MIN_STEPS: 20,
     POW_MAX_STEPS: 20,
     POW_SAMPLE_RATE: 0.5,
@@ -887,7 +880,8 @@ test("split core-2 open enforces hashcashX threshold with hashcash(root,lastPage
       return new Response("ok", { status: 200 });
     };
 
-    const threshold = Math.floor(0x1_0000_0000 / hashcashX);
+    const formerHashcashX = 3.5;
+    const threshold = Math.floor(0x1_0000_0000 / formerHashcashX);
     const ip = "1.2.3.4";
     const pageRes = await configHandler(
       new Request("https://example.com/protected", {
@@ -899,14 +893,13 @@ test("split core-2 open enforces hashcashX threshold with hashcash(root,lastPage
       }),
     );
     assert.equal(pageRes.status, 200);
-    const args = extractChallengeArgs(await pageRes.text());
+    const html = await pageRes.text();
+    assert.doesNotMatch(html, /hashcash/iu);
+    const args = extractChallengeArgs(html);
     assert.ok(args, "challenge html includes args");
-    assert.equal(typeof args.hashcashX, "number");
-    assert.equal(args.hashcashX, hashcashX);
 
-    let passing = null;
-    let failing = null;
-    for (let attempt = 0; attempt < 48 && (!passing || !failing); attempt += 1) {
+    let formerlyFailing = null;
+    for (let attempt = 0; attempt < 48 && !formerlyFailing; attempt += 1) {
       const nonce = base64Url(crypto.randomBytes(12));
       const witness = await buildMhgWitnessBundle({
         ticketB64: args.ticketB64,
@@ -914,48 +907,33 @@ test("split core-2 open enforces hashcashX threshold with hashcash(root,lastPage
         pageBytes: 64,
       });
       const u = hashcashPrefixU32ForRootLast(witness.rootB64, witness.finalPageB64);
-      const candidate = {
-        nonce,
-        rootB64: witness.rootB64,
-        witnessByIndex: witness.witnessByIndex,
-        parentByIndex: witness.parentByIndex,
-        u,
-      };
-      if (!passing && u < threshold) passing = candidate;
-      if (!failing && u >= threshold) failing = candidate;
+      if (u >= threshold) {
+        formerlyFailing = {
+          nonce,
+          rootB64: witness.rootB64,
+          witnessByIndex: witness.witnessByIndex,
+          parentByIndex: witness.parentByIndex,
+          u,
+        };
+      }
     }
 
-    assert.ok(passing, "found witness with u < floor(2^32 / x)");
-    assert.ok(failing, "found witness with u >= floor(2^32 / x)");
-    assert.ok(passing.u < threshold, "passing witness is below threshold");
-    assert.ok(failing.u >= threshold, "failing witness meets or exceeds threshold");
+    assert.ok(formerlyFailing, "found witness that would fail the retired target");
+    assert.ok(formerlyFailing.u >= threshold, "witness meets or exceeds the retired target");
 
-    const passingFlow = await runChallengeOpenFlow({
+    const flow = await runChallengeOpenFlow({
       configHandler,
       ip,
       ticketB64: args.ticketB64,
       pathHash: args.pathHash,
-      rootB64: passing.rootB64,
-      nonce: passing.nonce,
-      witnessByIndex: passing.witnessByIndex,
-      parentByIndex: passing.parentByIndex,
+      rootB64: formerlyFailing.rootB64,
+      nonce: formerlyFailing.nonce,
+      witnessByIndex: formerlyFailing.witnessByIndex,
+      parentByIndex: formerlyFailing.parentByIndex,
     });
-    assert.equal(passingFlow.openRes.status, 200);
-    const passingPayload = await passingFlow.openRes.json();
-    assert.equal(passingPayload.done, true);
-
-    const failingFlow = await runChallengeOpenFlow({
-      configHandler,
-      ip,
-      ticketB64: args.ticketB64,
-      pathHash: args.pathHash,
-      rootB64: failing.rootB64,
-      nonce: failing.nonce,
-      witnessByIndex: failing.witnessByIndex,
-      parentByIndex: failing.parentByIndex,
-    });
-    assert.equal(failingFlow.openRes.status, 403);
-    assert.equal(failingFlow.openRes.headers.get("x-pow-h"), "cheat");
+    assert.equal(flow.openRes.status, 200);
+    const payload = await flow.openRes.json();
+    assert.equal(payload.done, true);
   } finally {
     globalThis.fetch = originalFetch;
     restoreGlobals();
@@ -999,14 +977,13 @@ test("split core-2 hard-cutoff rejects removed API routes", async () => {
       POW_TOKEN: "test-secret",
       powcheck: true,
       turncheck: false,
-      POW_VERSION: 3,
+      POW_VERSION: 5,
       POW_API_PREFIX: "/__pow",
       POW_DIFFICULTY_BASE: 64,
       POW_MIN_STEPS: 16,
       POW_MAX_STEPS: 64,
       POW_SAMPLE_RATE: 0.01,
       POW_OPEN_BATCH: 4,
-      POW_HASHCASH_X: 1,
       POW_PAGE_BYTES: 16384,
       POW_MIX_ROUNDS: 2,
       POW_SEGMENT_LEN: 4,

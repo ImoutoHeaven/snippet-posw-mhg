@@ -5,9 +5,6 @@ import { LOW_PROFILE } from "./helpers/low-profile.js";
 import { createTestWorker, rpcCall, cleanupWorkerGlobals } from "./helpers/worker-rpc-harness.js";
 import { runGlueFlow } from "./helpers/glue-flow-harness.js";
 
-const LOW_PROFILE_HASHCASH_X = 1;
-const LEGACY_BITS_FIELD = ["hashcash", "Bits"].join("");
-
 const scriptedEchoWorker = ({ msg }) => {
   if (msg.type === "INIT") {
     return { type: "INIT_OK", rid: msg.rid };
@@ -45,23 +42,20 @@ const withRealWorker = async (fn) => {
   }
 };
 
-const runRealWorkerFlow = async ({ ticketB64, steps, pageBytes, mixRounds, hashcashX, indices, segs }) =>
+const runRealWorkerFlow = async ({ ticketB64, steps, pageBytes, mixRounds, indices, segs }) =>
   withRealWorker(async (worker) => {
-    await rpcCall(worker, "INIT", { ticketB64, steps, pageBytes, mixRounds, hashcashX });
+    await rpcCall(worker, "INIT", { ticketB64, steps, pageBytes, mixRounds });
     const commit = await rpcCall(worker, "COMMIT");
     const open = await rpcCall(worker, "OPEN", { indices, segs });
     return { commit, open };
   });
 
-const assertLowProfileFixture = ({ steps, pageBytes, hashcashX }) => {
+const assertLowProfileFixture = ({ steps, pageBytes }) => {
   if (!(steps <= LOW_PROFILE.maxSteps)) {
     throw new Error("steps out of low-profile bounds");
   }
   if (!(pageBytes <= LOW_PROFILE.maxPageBytes)) {
     throw new Error("pageBytes out of low-profile bounds");
-  }
-  if (hashcashX !== LOW_PROFILE_HASHCASH_X) {
-    throw new Error("hashcashX must be 1 (disabled) in CI guardrails");
   }
 };
 
@@ -73,7 +67,6 @@ test("L1 commit->challenge->open flow preserves server values", async () => {
   assertLowProfileFixture({
     steps: LOW_PROFILE.defaults.steps,
     pageBytes: LOW_PROFILE.defaults.pageBytes,
-    hashcashX: LOW_PROFILE_HASHCASH_X,
   });
   const caseA = await assertFlow({
     bootstrap: {
@@ -83,7 +76,6 @@ test("L1 commit->challenge->open flow preserves server values", async () => {
       segmentLen: 2,
       pageBytes: LOW_PROFILE.defaults.pageBytes,
       mixRounds: LOW_PROFILE.defaults.mixRounds,
-      hashcashX: LOW_PROFILE_HASHCASH_X,
       pathHash: "pathhash-a",
     },
     challengeFixture: {
@@ -131,7 +123,6 @@ test("L1 commit->challenge->open flow preserves server values", async () => {
     [caseA.runPowArgs.segmentLen, caseA.initPayloads[0].segmentLen, "strict"],
     [caseA.runPowArgs.pageBytes, caseA.initPayloads[0].pageBytes, "strict"],
     [caseA.runPowArgs.mixRounds, caseA.initPayloads[0].mixRounds, "strict"],
-    [caseA.runPowArgs.hashcashX, caseA.initPayloads[0].hashcashX, "strict"],
     [caseA.runPowArgs.pathHash, reqByPathA["/__pow/commit"].body.pathHash, "strict"],
     [caseA.challengeFixture.indices, caseA.openPayloads[0].indices, "deep"],
     [caseA.challengeFixture.segs, caseA.openPayloads[0].segs, "deep"],
@@ -150,7 +141,7 @@ test("L1 commit->challenge->open flow preserves server values", async () => {
   assert.equal(caseA.callCounts.challenge, 1);
   assert.equal(caseA.callCounts.open, 1);
 
-  assertLowProfileFixture({ steps: 127, pageBytes: 1001, hashcashX: LOW_PROFILE_HASHCASH_X });
+  assertLowProfileFixture({ steps: 127, pageBytes: 1001 });
   const caseB = await assertFlow({
     bootstrap: {
       bindingString: "binding-b",
@@ -159,7 +150,6 @@ test("L1 commit->challenge->open flow preserves server values", async () => {
       segmentLen: 9,
       pageBytes: 1001,
       mixRounds: 0,
-      hashcashX: LOW_PROFILE_HASHCASH_X,
       pathHash: "pathhash-b",
     },
     challengeFixture: {
@@ -177,7 +167,6 @@ test("L1 commit->challenge->open flow preserves server values", async () => {
   assert.equal(caseB.initPayloads[0].steps, 127);
   assert.equal(caseB.initPayloads[0].pageBytes, 1001);
   assert.equal(caseB.initPayloads[0].mixRounds, 0);
-  assert.equal(caseB.initPayloads[0].hashcashX, LOW_PROFILE_HASHCASH_X);
   assert.deepEqual(caseB.openPayloads[0].indices, [33]);
   assert.deepEqual(caseB.openPayloads[0].segs, [19]);
   assert.deepEqual(Object.keys(reqByPathB["/__pow/challenge"].body).sort(), ["commitToken"]);
@@ -203,35 +192,19 @@ test("L1 commit->challenge->open flow preserves server values", async () => {
 });
 
 test("real worker OPEN returns seg unchanged", async () => {
-  assertLowProfileFixture({ steps: 64, pageBytes: 240, hashcashX: LOW_PROFILE_HASHCASH_X });
+  assertLowProfileFixture({ steps: 64, pageBytes: 240 });
   const out = await runRealWorkerFlow({
     ticketB64: "dGVzdC10aWNrZXQ",
     steps: 64,
     pageBytes: 240,
     mixRounds: 2,
-    hashcashX: 1,
     indices: [32],
     segs: [16],
   });
   assert.equal(out.open.opens[0].seg, 16);
 });
 
-test("real worker INIT rejects legacy bits-only payload", async () => {
-  await withRealWorker(async (worker) => {
-    await assert.rejects(
-      rpcCall(worker, "INIT", {
-        ticketB64: "dGVzdC10aWNrZXQ",
-        steps: 64,
-        pageBytes: 240,
-        mixRounds: 2,
-        [LEGACY_BITS_FIELD]: 2,
-      }),
-      /hashcashX invalid/,
-    );
-  });
-});
-
-test("worker-count policy lock stays unchanged for hashcashX=1 low-profile matrix", async () => {
+test("worker-count policy lock stays unchanged for the low-profile matrix", async () => {
   const matrix = [
     { steps: 24, pageBytes: 64 },
     { steps: 64, pageBytes: 240 },
@@ -242,7 +215,6 @@ test("worker-count policy lock stays unchanged for hashcashX=1 low-profile matri
     assertLowProfileFixture({
       steps: row.steps,
       pageBytes: row.pageBytes,
-      hashcashX: LOW_PROFILE_HASHCASH_X,
     });
     const traces = await runGlueFlow({
       bootstrap: {
@@ -252,7 +224,6 @@ test("worker-count policy lock stays unchanged for hashcashX=1 low-profile matri
         segmentLen: 2,
         pageBytes: row.pageBytes,
         mixRounds: 1,
-        hashcashX: LOW_PROFILE_HASHCASH_X,
         pathHash: `pathhash-policy-${row.steps}-${row.pageBytes}`,
       },
       challengeFixture: {

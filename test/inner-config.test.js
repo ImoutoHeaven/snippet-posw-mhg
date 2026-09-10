@@ -641,7 +641,7 @@ test("pow-config preserves numeric POW_SEGMENT_LEN", async () => {
   }
 });
 
-test("pow-config hard-cuts POW_VERSION to 4 in forwarded config", async () => {
+test("pow-config hard-cuts POW_VERSION to 5 in forwarded config", async () => {
   const restoreGlobals = ensureGlobals();
   const modulePath = await buildConfigModule("config-secret", {
     configOverrides: { POW_VERSION: 3 },
@@ -669,7 +669,7 @@ test("pow-config hard-cuts POW_VERSION to 4 in forwarded config", async () => {
     const decoded = base64UrlDecode(payload);
     assert.ok(decoded, "payload decodes");
     const parsed = JSON.parse(decoded);
-    assert.equal(parsed.c.POW_VERSION, 4);
+    assert.equal(parsed.c.POW_VERSION, 5);
   } finally {
     globalThis.fetch = originalFetch;
     restoreGlobals();

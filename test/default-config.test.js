@@ -70,13 +70,12 @@ const FULL_CONFIG = {
   bindPathQueryName: "path",
   bindPathHeaderName: "",
   stripBindPathHeader: false,
-  POW_VERSION: 3,
+  POW_VERSION: 5,
   POW_API_PREFIX: "/__pow",
   POW_DIFFICULTY_BASE: 8192,
   POW_DIFFICULTY_COEFF: 1.0,
   POW_MIN_STEPS: 512,
   POW_MAX_STEPS: 8192,
-  POW_HASHCASH_X: 3.5,
   POW_PAGE_BYTES: 16384,
   POW_MIX_ROUNDS: 2,
   POW_SEGMENT_LEN: 2,
@@ -115,9 +114,9 @@ const FULL_CONFIG = {
   IPV4_PREFIX: 32,
   IPV6_PREFIX: 64,
   POW_ESM_URL:
-    "https://cdn.jsdelivr.net/gh/ImoutoHeaven/snippet-posw@412f7fcc71c319b62a614e4252280f2bb3d7302b/esm/esm.js",
+    "https://cdn.jsdelivr.net/gh/ImoutoHeaven/snippet-posw-mhg@main/esm/esm.js",
   POW_GLUE_URL:
-    "https://cdn.jsdelivr.net/gh/ImoutoHeaven/snippet-posw@412f7fcc71c319b62a614e4252280f2bb3d7302b/glue.js",
+    "https://cdn.jsdelivr.net/gh/ImoutoHeaven/snippet-posw-mhg@main/glue.js",
 };
 
 const FULL_STRATEGY = {
@@ -172,11 +171,11 @@ test("normalizeConfig exposes turnstile-only captcha surface", () => {
   assert.equal(cfg.AGGREGATOR_POW_ATOMIC_CONSUME, false);
 });
 
-test("normalizeConfig hard-cuts POW_VERSION to 4 regardless input", () => {
+test("normalizeConfig hard-cuts POW_VERSION to 5 regardless input", () => {
   const cases = [undefined, 3, 4, 5, "3", "4", "9", -1, 100, "oops"];
   for (const value of cases) {
     const cfg = __testNormalizeConfig({ POW_VERSION: value });
-    assert.equal(cfg.POW_VERSION, 4);
+    assert.equal(cfg.POW_VERSION, 5);
   }
 });
 
@@ -185,25 +184,13 @@ test("normalizeConfig hard-cuts legacy POW_COMMIT_COOKIE", () => {
   assert.equal("POW_COMMIT_COOKIE" in cfg, false);
 });
 
-test("normalizeConfig uses POW_HASHCASH_X contract", () => {
+test("normalizeConfig drops retired Hashcash keys", () => {
   const cfgDefault = __testNormalizeConfig({});
-  assert.equal(cfgDefault.POW_HASHCASH_X, 1);
+  assert.equal("POW_HASHCASH_X" in cfgDefault, false);
   assert.equal(LEGACY_POW_BITS_KEY in cfgDefault, false);
 
-  const cfgFloat = __testNormalizeConfig({ POW_HASHCASH_X: 3.5 });
-  assert.equal(cfgFloat.POW_HASHCASH_X, 3.5);
-  assert.equal(LEGACY_POW_BITS_KEY in cfgFloat, false);
-
-  const cfgLowerClamp = __testNormalizeConfig({ POW_HASHCASH_X: -1 });
-  assert.equal(cfgLowerClamp.POW_HASHCASH_X, 0);
-
-  const cfgUpperClamp = __testNormalizeConfig({ POW_HASHCASH_X: 9_999_999_999 });
-  assert.equal(cfgUpperClamp.POW_HASHCASH_X, 4_294_967_296);
-});
-
-test("normalizeConfig ignores legacy bits key input", () => {
-  const cfgLegacyInput = __testNormalizeConfig({ [LEGACY_POW_BITS_KEY]: 31 });
-  assert.equal(cfgLegacyInput.POW_HASHCASH_X, 1);
+  const cfgLegacyInput = __testNormalizeConfig({ POW_HASHCASH_X: 3.5, [LEGACY_POW_BITS_KEY]: 31 });
+  assert.equal("POW_HASHCASH_X" in cfgLegacyInput, false);
   assert.equal(LEGACY_POW_BITS_KEY in cfgLegacyInput, false);
 });
 

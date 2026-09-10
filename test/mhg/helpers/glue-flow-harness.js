@@ -123,7 +123,6 @@ const createFakeWorkerClass = ({ traces, workerScript }) => {
           segmentLen: msg.segmentLen,
           pageBytes: msg.pageBytes,
           mixRounds: msg.mixRounds,
-          hashcashX: msg.hashcashX,
         });
       }
       if (msg.type === "OPEN") traces.openPayloads.push({ indices: msg.indices, segs: msg.segs });
@@ -321,7 +320,6 @@ export function buildGlueArgs(bootstrap) {
     bootstrap.steps,
     bootstrap.ticketB64,
     bootstrap.pathHash || "pathhash",
-    bootstrap.hashcashX,
     bootstrap.segmentLen,
     b64u(bootstrap.reloadUrl || "https://example.com/ok"),
     b64u(bootstrap.apiPrefix || "/__pow"),
@@ -373,7 +371,6 @@ export async function runGlueFlow({ bootstrap, challengeFixture, workerScript, f
     "segmentLen",
     "pageBytes",
     "mixRounds",
-    "hashcashX",
   ];
   for (const key of required) {
     if (!(key in (bootstrap || {}))) throw new Error(`bootstrap.${key} required`);
@@ -392,7 +389,6 @@ export async function runGlueFlow({ bootstrap, challengeFixture, workerScript, f
       segmentLen: bootstrap.segmentLen,
       pageBytes: bootstrap.pageBytes,
       mixRounds: bootstrap.mixRounds,
-      hashcashX: bootstrap.hashcashX,
       pathHash: bootstrap.pathHash || "pathhash",
     },
     challengeFixture:
@@ -421,7 +417,6 @@ export async function runGlueFlow({ bootstrap, challengeFixture, workerScript, f
       segmentLen: bootstrap.segmentLen,
       pageBytes: bootstrap.pageBytes,
       mixRounds: bootstrap.mixRounds,
-      hashcashX: bootstrap.hashcashX,
     });
     return traces;
   } finally {

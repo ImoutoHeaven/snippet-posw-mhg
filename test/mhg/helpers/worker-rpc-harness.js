@@ -143,12 +143,11 @@ export async function runWorkerFlow({
   steps,
   pageBytes,
   mixRounds,
-  hashcashX,
   indices,
   segs,
 }) {
   if (!ticketB64) throw new Error("ticketB64 required");
-  const initPayload = { ticketB64, steps, pageBytes, mixRounds, hashcashX };
+  const initPayload = { ticketB64, steps, pageBytes, mixRounds };
   const traces = { workerMessages: [] };
   const worker = await createTestWorker();
   try {

@@ -1,8 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { webcrypto } from "node:crypto";
+import { cp, readFile, writeFile } from "node:fs/promises";
+import { setTimeout as delay } from "node:timers/promises";
+import { Worker as NodeWorker } from "node:worker_threads";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { join } from "node:path";
+import { createPowRuntimeFixture } from "./helpers/pow-runtime-fixture.js";
 
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 
@@ -15,8 +19,6 @@ const base64Url = (value) =>
 
 const makeModuleUrl = (workerUrl) =>
   `data:text/javascript,${encodeURIComponent(`export const workerUrl = "${workerUrl}";`)}`;
-
-const LEGACY_BITS_FIELD = ["hashcash", "Bits"].join("");
 
 const encodeCaptchaCfg = (cfg) =>
   base64Url(typeof cfg === "string" ? cfg : JSON.stringify(cfg || {}));
@@ -117,13 +119,14 @@ const makeRunPowArgs = (overrides = {}) => {
     steps: 1,
     ticketB64: base64Url("a.b.c.d.e.f.g"),
     pathHash: "pathhash",
-    hashcashX: 1,
     segmentLen: 1,
     reloadUrlB64: base64Url("https://example.com/"),
     apiPrefixB64: base64Url("/__pow"),
     esmUrlB64: base64Url(moduleUrl),
     captchaCfgB64: encodeCaptchaCfg({}),
     atomicCfg: "0",
+    pageBytes: 64,
+    mixRounds: 2,
   };
   Object.assign(params, overrides);
   if (!params.esmUrlB64) params.esmUrlB64 = base64Url(moduleUrl);
@@ -132,13 +135,14 @@ const makeRunPowArgs = (overrides = {}) => {
     params.steps,
     params.ticketB64,
     params.pathHash,
-    params.hashcashX,
     params.segmentLen,
     params.reloadUrlB64,
     params.apiPrefixB64,
     params.esmUrlB64,
     params.captchaCfgB64,
     params.atomicCfg,
+    params.pageBytes,
+    params.mixRounds,
   ];
 };
 
@@ -168,8 +172,7 @@ test("glue hardening", { concurrency: 1 }, async (t) => {
     const args = makeRunPowArgs({ segmentLen: 1 });
     await glue.default(...args);
     assert.ok(initPayload);
-    assert.equal(initPayload.hashcashX, 1);
-    assert.equal(Object.hasOwn(initPayload, LEGACY_BITS_FIELD), false);
+    assert.equal(Object.hasOwn(initPayload, "hashcashX"), false);
     assert.equal(initPayload.segmentLen, 2);
   });
 
@@ -211,63 +214,179 @@ test("glue hardening", { concurrency: 1 }, async (t) => {
       terminate() {}
     };
 
-    const assertSingleCommitWorker = async (hashcashX) => {
+    const assertSingleCommitWorker = async () => {
       workerCtorCalls.length = 0;
       commitCalls.length = 0;
-      await glue.default(...makeRunPowArgs({ hashcashX }));
+      await glue.default(...makeRunPowArgs());
       assert.equal(workerCtorCalls.length, 1);
       assert.equal(commitCalls.length, 1);
       assert.equal(commitCalls[0], workerCtorCalls[0]);
     };
 
-    await assertSingleCommitWorker(1);
-    await assertSingleCommitWorker(3.5);
-    await assertSingleCommitWorker(4);
-    await assertSingleCommitWorker(4.000001);
-    await assertSingleCommitWorker(8);
+    await assertSingleCommitWorker();
+    await assertSingleCommitWorker();
   });
 
-  await t.test("worker bootstrap launches module worker from workerUrl directly", async () => {
-    const workerCtorCalls = [];
-    let workerSourceFetches = 0;
-    let blobUrlCreations = 0;
-    const glue = await importGlue();
-    globalThis.URL.createObjectURL = () => {
-      blobUrlCreations += 1;
-      return "blob:mock";
-    };
-    globalThis.fetch = async (url) => {
-      if (String(url) === "https://example.com/esm/mhg-worker.js") {
-        workerSourceFetches += 1;
+  await t.test("local release template resolves glue, ESM, and worker assets", async () => {
+    const { tmpDir } = await createPowRuntimeFixture({ secret: "config-secret", tmpPrefix: "glue-release-" });
+    await cp(
+      join(repoRoot, "lib/rule-engine"),
+      join(tmpDir, "lib/rule-engine"),
+      { recursive: true },
+    );
+    const esmUrl = pathToFileURL(join(repoRoot, "esm/esm.js")).href;
+    const glueUrl = pathToFileURL(join(repoRoot, "glue.js")).href;
+    const workerUrl = pathToFileURL(join(repoRoot, "esm/mhg-worker.js")).href;
+
+    const configSource = await readFile(join(repoRoot, "pow-config.js"), "utf8");
+    const compiledConfig = JSON.stringify([
+      {
+        host: { kind: "eq", value: "example.com" },
+        hostType: "exact",
+        hostExact: "example.com",
+        path: null,
+        config: {
+          POW_TOKEN: "pow-secret",
+          powcheck: true,
+          turncheck: false,
+          POW_VERSION: 5,
+          POW_DIFFICULTY_BASE: 1,
+          POW_DIFFICULTY_COEFF: 1,
+          POW_MIN_STEPS: 1,
+          POW_MAX_STEPS: 1,
+          POW_PAGE_BYTES: 64,
+          POW_MIX_ROUNDS: 1,
+          POW_SEGMENT_LEN: 2,
+          POW_SAMPLE_RATE: 0.01,
+          POW_OPEN_BATCH: 4,
+          POW_COMMIT_TTL_SEC: 120,
+          POW_TICKET_TTL_SEC: 600,
+          PROOF_TTL_SEC: 600,
+          POW_BIND_PATH: false,
+          POW_BIND_IPRANGE: false,
+          POW_BIND_COUNTRY: false,
+          POW_BIND_ASN: false,
+          POW_BIND_TLS: false,
+          POW_GLUE_URL: glueUrl,
+          POW_ESM_URL: esmUrl,
+        },
+      },
+    ]);
+    const configPath = join(tmpDir, "pow-config.js");
+    await writeFile(
+      configPath,
+      configSource
+        .replace(/__COMPILED_CONFIG__/gu, compiledConfig)
+        .replace(/const CONFIG_SECRET = "[^"]*";/u, 'const CONFIG_SECRET = "config-secret";'),
+    );
+    const [configModule, coreModule] = await Promise.all([
+      import(`${pathToFileURL(configPath).href}?local-release=${Date.now()}`),
+      import(`${pathToFileURL(join(tmpDir, "pow-core-1.js")).href}?local-release=${Date.now()}`),
+    ]);
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (input, init) => {
+      const request = input instanceof Request ? input : new Request(input, init);
+      if (Array.from(request.headers.keys()).some((name) => name.toLowerCase().startsWith("x-pow-inner"))) {
+        return coreModule.default.fetch(request);
       }
-      return { text: async () => "self.onmessage = () => {};" };
+      return new Response("origin", { status: 200 });
     };
-    globalThis.Worker = class FakeWorker {
+    const pageResponse = await configModule.default.fetch(
+      new Request("https://example.com/protected", { headers: { Accept: "text/html" } }),
+    );
+    const html = await pageResponse.text();
+    globalThis.fetch = originalFetch;
+    assert.equal(pageResponse.status, 200);
+    assert.match(html, new RegExp(`import g from "${glueUrl.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}"`, "u"));
+
+    const call = html.match(/g\(([^;]+)\);/u);
+    assert.ok(call, "generated challenge invokes local glue");
+    const args = Function(`return [${call[1]}];`)();
+    assert.equal(args.length, 12);
+    assert.equal(args[10], 64);
+    assert.equal(args[11], 1);
+
+    const workerCtorCalls = [];
+    const workers = [];
+    const glue = await importGlue();
+    globalThis.fetch = async (url) => {
+      const normalized = String(url);
+      if (normalized === "/__pow/commit") {
+        return { ok: true, status: 200, json: async () => ({ commitToken: "commit-token" }) };
+      }
+      if (normalized === "/__pow/challenge") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ done: false, indices: [1], segs: [2], sid: "sid", cursor: 0, token: "token" }),
+        };
+      }
+      if (normalized === "/__pow/open") {
+        return { ok: true, status: 200, json: async () => ({ done: true }) };
+      }
+      throw new Error(`unexpected fetch ${normalized}`);
+    };
+
+    globalThis.Worker = class LocalWorker {
       constructor(url, options) {
         this.listeners = new Map();
         workerCtorCalls.push({ url: String(url), options });
+        const source = `
+          import { parentPort } from "node:worker_threads";
+          import { webcrypto } from "node:crypto";
+          globalThis.self = globalThis;
+          globalThis.crypto = webcrypto;
+          globalThis.addEventListener = () => {};
+          globalThis.btoa ??= (value) => Buffer.from(value, "binary").toString("base64");
+          globalThis.atob ??= (value) => Buffer.from(value, "base64").toString("binary");
+          globalThis.postMessage = (message) => parentPort.postMessage(message);
+          const pending = [];
+          parentPort.on("message", (data) => {
+            if (typeof globalThis.onmessage === "function") globalThis.onmessage({ data });
+            else pending.push(data);
+          });
+          import(${JSON.stringify(String(url))}).then(() => {
+            for (const data of pending) globalThis.onmessage?.({ data });
+          });
+        `;
+        this.node = new NodeWorker(source, { eval: true, type: "module" });
+        workers.push(this);
+        this.node.on("message", (data) => this.emit("message", { data }));
+        this.node.on("error", (error) => this.emit("error", error));
+        this.node.on("messageerror", (error) => this.emit("messageerror", { data: error }));
       }
       addEventListener(type, cb) {
         const list = this.listeners.get(type) || [];
         list.push(cb);
         this.listeners.set(type, list);
       }
-      postMessage(msg) {
-        if (msg && msg.type === "INIT") {
-          const event = { data: { type: "ERROR", rid: msg.rid, message: "init failed" } };
-          const list = this.listeners.get("message") || [];
-          for (const cb of list) cb(event);
-        }
+      emit(type, data) {
+        for (const cb of this.listeners.get(type) || []) cb(data);
       }
-      terminate() {}
+      postMessage(message) {
+        this.node.postMessage(message);
+      }
+      terminate() {
+        return this.node.terminate();
+      }
     };
-    const args = makeRunPowArgs({ workerUrl: "https://example.com/esm/mhg-worker.js" });
-    await glue.default(...args);
-    assert.equal(workerCtorCalls.length, 1);
-    assert.equal(workerCtorCalls[0].url, "https://example.com/esm/mhg-worker.js");
-    assert.equal(workerCtorCalls[0].options && workerCtorCalls[0].options.type, "module");
-    assert.equal(workerSourceFetches, 0);
-    assert.equal(blobUrlCreations, 0);
+
+    const timeoutController = new AbortController();
+    try {
+      await Promise.race([
+        glue.default(...args),
+        delay(30_000, undefined, { signal: timeoutController.signal }).then(() => {
+          throw new Error("local release flow timed out");
+        }),
+      ]);
+      assert.equal(workerCtorCalls.length, 1);
+      assert.equal(workerCtorCalls[0].url, workerUrl);
+      assert.equal(workerCtorCalls[0].options && workerCtorCalls[0].options.type, "module");
+    } finally {
+      timeoutController.abort();
+      await Promise.all(workers.map((worker) => worker.terminate()));
+    }
   });
 
   await t.test("worker bootstrap falls back to blob worker when direct worker URL is blocked", async () => {

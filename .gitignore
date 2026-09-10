@@ -4,3 +4,8 @@ dist/
 .worktrees/
 docs/plans/
 docs/plan/
+/.scratch/
+/scratch/
+/spec/
+/specs/
+/spec.md
