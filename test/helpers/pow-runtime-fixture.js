@@ -44,7 +44,7 @@ const collectJsFiles = async (rootDir, relativeDir, out) => {
       await collectJsFiles(rootDir, nextRelative, out);
       continue;
     }
-    if (entry.isFile() && entry.name.endsWith(".js")) out.push(nextRelative);
+    if (entry.isFile() && entry.name.endsWith(".js")) out.push(nextRelative.replaceAll("\\", "/"));
   }
 };
 

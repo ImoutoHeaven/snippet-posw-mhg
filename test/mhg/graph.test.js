@@ -69,30 +69,17 @@ test("uniformMod fails closed when PRF cannot produce an acceptable sample", asy
   let digestCalls = 0;
   globalThis.crypto.subtle.digest = async () => {
     digestCalls += 1;
-    if (digestCalls % 128 === 0) {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    }
+    if (digestCalls > 4096) throw new Error("sampling exceeded rejection budget");
     return new Uint8Array(32).fill(0xff);
   };
-  const stuckSampling = uniformMod({ seed: new Uint8Array(16), label: "p1", i: 3, mod: 3 })
-    .then(() => "resolved")
-    .catch((err) => `rejected:${err.message}`);
 
   try {
-    const outcome = await Promise.race([
-      stuckSampling,
-      new Promise((resolve) => setTimeout(() => resolve("timeout"), 300)),
-    ]);
-
-    assert.match(outcome, /^rejected:/);
+    await assert.rejects(
+      uniformMod({ seed: new Uint8Array(16), label: "p1", i: 3, mod: 3 }),
+      { message: "parent invariants violated" },
+    );
+    assert.equal(digestCalls, 4096);
   } finally {
-    globalThis.crypto.subtle.digest = async () => {
-      throw new Error("forced-stop");
-    };
-    await Promise.race([
-      stuckSampling.catch(() => undefined),
-      new Promise((resolve) => setTimeout(resolve, 50)),
-    ]);
     globalThis.crypto.subtle.digest = subtleDigest;
   }
 });

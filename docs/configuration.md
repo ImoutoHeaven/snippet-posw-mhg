@@ -161,9 +161,18 @@ Serve the Worker and JavaScript resources with a JavaScript MIME type.
 | Key | Type | Default | Required when | What it controls |
 | --- | --- | --- | --- | --- |
 | `TURNSTILE_SITEKEY` | string | `` (empty) | Required when `turncheck=true`. | Site key presented to clients for Turnstile challenges. |
-| `SITEVERIFY_URLS` | string[] | `[]` | Required for successful verification flows when `turncheck=true`; also required for aggregator consume verification flows (`AGGREGATOR_POW_ATOMIC_CONSUME=true`). | Ordered provider endpoint list for server-side verification requests. |
+| `SITEVERIFY_URLS` | string[] | `[]` | Required for PoW-only aggregator consumption. | Ordered provider endpoints; empty with `turncheck=true` uses official Turnstile Siteverify. |
 | `SITEVERIFY_AUTH_KID` | string | `v1` | Required when `SITEVERIFY_URLS` is non-empty and auth-kid routing is used. | Key identifier attached to siteverify auth material. |
 | `AGGREGATOR_POW_ATOMIC_CONSUME` | boolean | `false` | Set to `true` for aggregator-backed PoW+atomic consume mode. | Enables aggregator-specific consume behavior in combined flows. |
+
+With an empty provider list and `turncheck=true`, the client sends `secret`,
+`response`, and optional `remoteip` directly to Cloudflare's official Turnstile
+Siteverify endpoint. Aggregator authentication is not needed. Token consumption
+occurs at proof-cookie issuance in ordinary mode and at the business gate in
+atomic mode. Ordinary proof cookies remain reusable. Even with
+`AGGREGATOR_POW_ATOMIC_CONSUME=true`, this fallback relies on the proof-bound
+Turnstile token for single-use and does not maintain a separate PoW ledger.
+PoW-only aggregator consumption without a provider URL fails closed.
 
 ### Secrets
 
