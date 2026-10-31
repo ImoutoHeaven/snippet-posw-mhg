@@ -118,6 +118,7 @@ const createFakeWorkerClass = ({ traces, workerScript }) => {
         traces.initWorkerIds.push(this.workerId);
         traces.initPayloads.push({
           bindingString: msg.bindingString,
+          captchaTag: msg.captchaTag,
           ticketB64: msg.ticketB64,
           steps: msg.steps,
           segmentLen: msg.segmentLen,
@@ -412,6 +413,7 @@ export async function runGlueFlow({ bootstrap, challengeFixture, workerScript, f
     await glue.default(...buildGlueArgs(bootstrap));
     assert.deepEqual(traces.initPayloads[0], {
       bindingString: bootstrap.bindingString,
+      captchaTag: "any",
       ticketB64: bootstrap.ticketB64,
       steps: bootstrap.steps,
       segmentLen: bootstrap.segmentLen,

@@ -1407,10 +1407,11 @@ const runPowFlow = async (
     throw new Error("Bad Binding");
   }
   let powBinding = authBinding;
+  let captchaTag = "any";
   if (captchaToken) {
     const parsedCaptcha = parseCanonicalCaptchaEnvelope(captchaToken);
     if (!parsedCaptcha) throw new Error("Bad Binding");
-    const captchaTag = await captchaTagV1(parsedCaptcha.turnstile);
+    captchaTag = await captchaTagV1(parsedCaptcha.turnstile);
     powBinding = `${authBinding}|${captchaTag}`;
   }
 
@@ -1486,6 +1487,7 @@ const runPowFlow = async (
 
     const initPayload = {
       bindingString: powBinding,
+      captchaTag,
       ticketB64,
       steps,
       segmentLen: Math.max(2, Math.min(16, Math.floor(Number(segmentLen) || 0))),

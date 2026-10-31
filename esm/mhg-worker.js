@@ -6,7 +6,7 @@ const LABEL = {
   iv0: encoder.encode("MHG1-IV0"),
   pa: encoder.encode("MHG1-PA"),
   pb: encoder.encode("MHG1-PB"),
-  graphPrefix: encoder.encode("mhg|graph|v4|"),
+  graphPrefix: encoder.encode("mhg|graph|v5|"),
   bar: encoder.encode("|"),
   nonceV1: encoder.encode("mhg|commit-nonce|v1|"),
 };
@@ -394,12 +394,14 @@ const deriveCommitNonce = async ({
   return b64u(raw.slice(0, 16));
 };
 
-const deriveGraphSeed16 = async (ticketB64, nonceString) => {
+const deriveGraphSeed16 = async (ticketB64, nonceString, captchaTag) => {
   const digest = await sha256(
     LABEL.graphPrefix,
     encoder.encode(ticketB64),
     LABEL.bar,
-    encoder.encode(nonceString)
+    encoder.encode(nonceString),
+    LABEL.bar,
+    encoder.encode(captchaTag)
   );
   return digest.slice(0, 16);
 };
@@ -535,6 +537,10 @@ const emitProgress = (phase, done = 0, total = 0) => {
 const initWorkerState = (payload) => {
   const ticketB64 = typeof payload.ticketB64 === "string" ? payload.ticketB64 : "";
   if (!ticketB64) throw new Error("ticketB64 required");
+  const captchaTag = payload.captchaTag === undefined ? "any" : payload.captchaTag;
+  if (typeof captchaTag !== "string" || !/^(?:any|[A-Za-z0-9_-]{16})$/.test(captchaTag)) {
+    throw new Error("captchaTag invalid");
+  }
 
   const steps = payload.steps;
   const pageBytes = payload.pageBytes;
@@ -546,6 +552,7 @@ const initWorkerState = (payload) => {
 
   state = {
     ticketB64,
+    captchaTag,
     steps,
     pageBytes,
     mixRounds,
@@ -576,7 +583,7 @@ const computeCommit = async () => {
     pageBytes: state.pageBytes,
     mixRounds: state.mixRounds,
   });
-  const graphSeed = await deriveGraphSeed16(state.ticketB64, nonce);
+  const graphSeed = await deriveGraphSeed16(state.ticketB64, nonce, state.captchaTag);
   const nonce16 = await deriveNonce16(nonce);
   const pages = await buildGraphPages({
     graphSeed,

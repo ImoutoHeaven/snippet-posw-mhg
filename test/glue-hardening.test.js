@@ -954,6 +954,29 @@ test("glue hardening", { concurrency: 1 }, async (t) => {
     assert.equal(logEl.innerHTML.includes("<img"), false);
   });
 
+  await t.test("combined flow sends the canonical Turnstile tag to worker INIT", async () => {
+    const glue = await importGlue();
+    let initialized;
+    globalThis.window.turnstile = {
+      render: (_el, opts) => { queueMicrotask(() => opts.callback("turn-token")); return 1; },
+      reset() {}, remove() {},
+    };
+    globalThis.Worker = class {
+      addEventListener(type, callback) { if (type === "message") this.message = callback; }
+      postMessage(msg) {
+        if (msg.type === "INIT") {
+          initialized = msg;
+          this.message({ data: { type: "ERROR", rid: msg.rid, message: "stop after INIT" } });
+        }
+      }
+      terminate() {}
+    };
+    await glue.default(...makeRunPowArgs({ captchaCfgB64: encodeCaptchaCfg({ turnstile: { sitekey: "sitekey" } }) }));
+    const expected = Buffer.from(await webcrypto.subtle.digest("SHA-256", new TextEncoder().encode("ctag|v1|t=turn-token"))).subarray(0, 12).toString("base64url");
+    assert.ok(initialized, "combined flow must initialize the solver");
+    assert.equal(initialized.captchaTag, expected);
+  });
+
   await t.test("atomic postMessage only targets same-origin parent/opener", async () => {
     const calls = [];
     const glue = await importGlue();

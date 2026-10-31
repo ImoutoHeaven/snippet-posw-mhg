@@ -167,7 +167,10 @@ Serve the Worker and JavaScript resources with a JavaScript MIME type.
 
 With an empty provider list and `turncheck=true`, the client sends `secret`,
 `response`, and optional `remoteip` directly to Cloudflare's official Turnstile
-Siteverify endpoint. Aggregator authentication is not needed. Token consumption
+Siteverify endpoint. The official response must have `success=true`, `cdata`
+equal to the verified ticket MAC, and `hostname` matching the protected request
+hostname (case-insensitive, with no wildcard or suffix matching). Aggregator
+authentication is not needed. Token consumption
 occurs at proof-cookie issuance in ordinary mode and at the business gate in
 atomic mode. Ordinary proof cookies remain reusable. Even with
 `AGGREGATOR_POW_ATOMIC_CONSUME=true`, this fallback relies on the proof-bound

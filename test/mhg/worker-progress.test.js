@@ -187,6 +187,12 @@ test("worker INIT rejects mixRounds outside 1..4", async () => {
   await assert.rejects(runWorkerCommit({ mixRounds: 5 }), /mixRounds invalid/);
 });
 
+test("worker INIT rejects malformed captcha tags", async () => {
+  for (const captchaTag of [null, 42, "", "any|extra", "A".repeat(15), "A".repeat(17)]) {
+    await assert.rejects(runWorkerCommit({ initOverrides: { captchaTag } }), /captchaTag invalid/);
+  }
+});
+
 test("buildCrossEndFixture rejects invalid mixRounds", async () => {
   const baseVector = {
     graphSeedHex: "000102030405060708090a0b0c0d0e0f",

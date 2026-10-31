@@ -160,8 +160,8 @@ const fromBase64Url = (value) => {
   return Buffer.from(normalized + pad, "base64");
 };
 
-const deriveMhgGraphSeed = (ticketB64, nonce) =>
-  crypto.createHash("sha256").update(`mhg|graph|v4|${ticketB64}|${nonce}`).digest().subarray(0, 16);
+const deriveMhgGraphSeed = (ticketB64, nonce, captchaTag) =>
+  crypto.createHash("sha256").update(`mhg|graph|v5|${ticketB64}|${nonce}|${captchaTag}`).digest().subarray(0, 16);
 
 const deriveMhgNonce16 = (nonce) => {
   const raw = fromBase64Url(nonce);
@@ -169,13 +169,13 @@ const deriveMhgNonce16 = (nonce) => {
   return crypto.createHash("sha256").update(raw).digest().subarray(0, 16);
 };
 
-const buildMhgWitnessBundle = async ({ ticketB64, nonce }) => {
+const buildMhgWitnessBundle = async ({ ticketB64, nonce, captchaTag = "any" }) => {
   const ticket = decodeTicket(ticketB64);
   if (!ticket) throw new Error("invalid ticket");
   const { makeGenesisPage, mixPage } = await import("../lib/mhg/mix-aes.js");
   const { buildMerkle, buildProof } = await import("../lib/mhg/merkle.js");
 
-  const graphSeed = deriveMhgGraphSeed(ticketB64, nonce);
+  const graphSeed = deriveMhgGraphSeed(ticketB64, nonce, captchaTag);
   const nonce16 = deriveMhgNonce16(nonce);
   const pageBytes = 64;
   const pages = new Array(ticket.L + 1);
@@ -1389,13 +1389,14 @@ test("/commit, /challenge, and non-final /open do not call siteverify", async ()
     const { rootB64, witnessByIndex, parentByIndex } = await buildMhgWitnessBundle({
       ticketB64: args.ticketB64,
       nonce,
+      captchaTag,
     });
 
     let siteverifyCalls = 0;
     globalThis.fetch = async (url) => {
       if (String(url) === "https://challenges.cloudflare.com/turnstile/v0/siteverify") {
         siteverifyCalls += 1;
-        return new Response(JSON.stringify({ success: true }), { status: 200 });
+        return new Response(JSON.stringify({ success: true, cdata: decodeTicket(args.ticketB64).mac, hostname: "example.com" }), { status: 200 });
       }
       return new Response("ok", { status: 200 });
     };
@@ -1908,13 +1909,14 @@ test("atomic /open final does not call siteverify", async () => {
     const { rootB64, witnessByIndex, parentByIndex } = await buildMhgWitnessBundle({
       ticketB64: args.ticketB64,
       nonce,
+      captchaTag: await captchaTagFromToken(turnToken),
     });
 
     let siteverifyCalls = 0;
     globalThis.fetch = async (url) => {
       if (String(url) === "https://challenges.cloudflare.com/turnstile/v0/siteverify") {
         siteverifyCalls += 1;
-        return new Response(JSON.stringify({ success: true }), { status: 200 });
+        return new Response(JSON.stringify({ success: true, cdata: decodeTicket(args.ticketB64).mac, hostname: "example.com" }), { status: 200 });
       }
       return new Response("ok", { status: 200 });
     };
@@ -2113,6 +2115,7 @@ test("combined pow+captcha /open returns cheat hint for tampered payload and cap
     const { rootB64, witnessByIndex, parentByIndex } = await buildMhgWitnessBundle({
       ticketB64: args.ticketB64,
       nonce,
+      captchaTag: commitCaptchaTag,
     });
 
     globalThis.fetch = async (url) => {
@@ -2450,6 +2453,7 @@ test("pow+captcha /open fails closed when aggregator returns non-200 or non-json
     const { rootB64, witnessByIndex, parentByIndex } = await buildMhgWitnessBundle({
       ticketB64: args.ticketB64,
       nonce,
+      captchaTag: await captchaTagFromToken(turnToken),
     });
 
     let mode = "ok";
@@ -2702,7 +2706,7 @@ test("non-atomic /open returns 400 for malformed captcha envelope", async () => 
     globalThis.fetch = async (url) => {
       if (String(url) === "https://challenges.cloudflare.com/turnstile/v0/siteverify") {
         siteverifyCalls += 1;
-        return new Response(JSON.stringify({ success: true, cdata: ticket.mac }), {
+        return new Response(JSON.stringify({ success: true, cdata: ticket.mac, hostname: "example.com" }), {
           status: 200,
         });
       }

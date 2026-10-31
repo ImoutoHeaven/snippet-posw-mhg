@@ -4,6 +4,13 @@ MHG PoW and Turnstile protection for Cloudflare Snippets and Workers. A PoW
 challenge builds one MHG graph and Merkle commitment, opens the server-selected
 samples, and receives proof or consume authorization.
 
+The graph seed binds the ticket, nonce, and Turnstile token tag (or `any` in
+PoW-only mode). Changing the token requires a new graph, including when atomic
+consumption is disabled. Graph seed domain `v5` replaces `v4`; it does not change
+the underlying MHG graph algorithm. Deploy the matching Snippets, glue, and worker
+assets together. In-flight challenges built with the old seed must be restarted;
+the verifier does not accept the old derivation as a fallback.
+
 ## Build
 
 Run the build and tests in a Linux Node.js `22.20.0` environment, such as a

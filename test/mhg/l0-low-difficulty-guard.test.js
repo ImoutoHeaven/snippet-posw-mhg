@@ -93,6 +93,7 @@ test("glue harness records payload-only INIT trace and restores globals", async 
 
   assert.deepEqual(Object.keys(traces.initPayloads[0]).sort(), [
     "bindingString",
+    "captchaTag",
     "ticketB64",
     "steps",
     "segmentLen",

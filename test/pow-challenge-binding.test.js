@@ -325,7 +325,7 @@ const decodeTicket = (ticketB64) => {
 };
 
 const deriveMhgGraphSeed16 = (ticketB64, nonce) =>
-  crypto.createHash("sha256").update(`mhg|graph|v4|${ticketB64}|${nonce}`).digest().subarray(0, 16);
+  crypto.createHash("sha256").update(`mhg|graph|v5|${ticketB64}|${nonce}|any`).digest().subarray(0, 16);
 
 const deriveMhgNonce16 = (nonce) => {
   const raw = fromBase64Url(nonce);

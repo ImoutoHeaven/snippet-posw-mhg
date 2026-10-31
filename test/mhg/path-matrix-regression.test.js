@@ -13,6 +13,8 @@ const POW_SECRET = "pow-secret";
 const SITEVERIFY_URL = "https://sv.example/siteverify";
 
 const TURN_TOKEN = "turnstile-token-value-1234567890";
+const captchaTagFromToken = (token) =>
+  crypto.createHash("sha256").update(`ctag|v1|t=${token}`).digest().subarray(0, 12).toString("base64url");
 
 const base64Url = (buffer) =>
   Buffer.from(buffer)
@@ -413,8 +415,8 @@ const parseInnerPayloadFromRequest = (request) => {
   return JSON.parse(fromBase64Url(joined).toString("utf8"));
 };
 
-const deriveMhgGraphSeed = (ticketB64, nonce) =>
-  crypto.createHash("sha256").update(`mhg|graph|v4|${ticketB64}|${nonce}`).digest().subarray(0, 16);
+const deriveMhgGraphSeed = (ticketB64, nonce, captchaTag) =>
+  crypto.createHash("sha256").update(`mhg|graph|v5|${ticketB64}|${nonce}|${captchaTag}`).digest().subarray(0, 16);
 
 const deriveMhgNonce16 = (nonce) => {
   const raw = fromBase64Url(nonce);
@@ -450,11 +452,11 @@ const buildOpenEntryFromBundle = ({ bundle, idx, seg }) => {
   return { i: idx, seg: segmentLen, nodes };
 };
 
-const buildMhgWitnessBundle = async ({ ticketB64, nonce, pageBytes = 16384, mixRounds = 2 }) => {
+const buildMhgWitnessBundle = async ({ ticketB64, nonce, pageBytes = 16384, mixRounds = 2, captchaTag = "any" }) => {
   const { makeGenesisPage, mixPage } = await import("../../lib/mhg/mix-aes.js");
   const { buildMerkle, buildProof } = await import("../../lib/mhg/merkle.js");
   const ticket = parseTicket(ticketB64);
-  const graphSeed = deriveMhgGraphSeed(ticketB64, nonce);
+  const graphSeed = deriveMhgGraphSeed(ticketB64, nonce, captchaTag);
   const nonce16 = deriveMhgNonce16(nonce);
   const pages = new Array(ticket.L + 1);
   pages[0] = await makeGenesisPage({ graphSeed, nonce: nonce16, pageBytes });
@@ -551,7 +553,13 @@ const runOnePath = async (mod, spec, failures) => {
     globalThis.fetch = async (input, init) => {
       const req = input instanceof Request ? input : new Request(input, init);
       const reqUrl = String(req.url);
+      if (reqUrl === "https://challenges.cloudflare.com/turnstile/v0/siteverify") {
+        assert.equal(spec.direct, true);
+        counters.aggregator += 1;
+        return Response.json({ success: true, cdata: activeTicketMac, hostname: "example.com" });
+      }
       if (reqUrl === SITEVERIFY_URL) {
+        assert.notEqual(spec.direct, true);
         counters.aggregator += 1;
         return new Response(
           JSON.stringify({
@@ -581,6 +589,7 @@ const runOnePath = async (mod, spec, failures) => {
       providers: spec.providers || "",
       aggregatorPowAtomicConsume: spec.aggregatorPowAtomicConsume === true,
     });
+    if (spec.direct) payload.c.SITEVERIFY_URLS = [];
     const freshHeaders = () => makeInnerHeaders(payload);
     const pageRes = await mod.default.fetch(
       new Request("https://example.com/protected", {
@@ -644,6 +653,7 @@ const runOnePath = async (mod, spec, failures) => {
       const witness = await buildMhgWitnessBundle({
         ticketB64: args.ticketB64,
         nonce,
+        captchaTag: needTurn ? captchaTagFromToken(TURN_TOKEN) : "any",
         pageBytes: payload.c.POW_PAGE_BYTES,
         mixRounds: payload.c.POW_MIX_ROUNDS,
       });
@@ -766,6 +776,7 @@ const runOnePath = async (mod, spec, failures) => {
             },
           });
           const businessBefore = snapshot();
+          if (spec.direct) businessPayload.c.SITEVERIFY_URLS = [];
           const businessRes = await mod.default.fetch(
             new Request("https://example.com/protected", {
               method: "GET",
@@ -803,6 +814,7 @@ const runOnePath = async (mod, spec, failures) => {
         },
       });
       const businessBefore = snapshot();
+      if (spec.direct) businessPayload.c.SITEVERIFY_URLS = [];
       const businessRes = await mod.default.fetch(
         new Request("https://example.com/protected", {
           method: "GET",
@@ -897,6 +909,7 @@ const runSplitLinkedCase = async ({ pathId }) => {
       nonce,
       pageBytes: seedPayload.c.POW_PAGE_BYTES,
       mixRounds: seedPayload.c.POW_MIX_ROUNDS,
+      captchaTag: captchaTagFromToken(JSON.parse(captchaEnvelope).turnstile),
     });
     const commitRes = await powHandler(
       new Request("https://example.com/__pow/commit", {
@@ -1039,6 +1052,92 @@ const runSplitLinkedCase = async ({ pathId }) => {
     restoreGlobals();
   }
 };
+
+test("official Turnstile fallback supports combined and captcha-only flows in both atomic modes", async () => {
+  const restoreGlobals = ensureGlobals();
+  try {
+    const modulePath = await buildPowModule();
+    const mod = await import(pathToFileURL(modulePath).href);
+    const failures = [];
+    for (const pathId of [1, 3, 5, 7]) {
+      const spec = PATH_CHECKLIST.find((entry) => entry.pathId === pathId);
+      await runOnePath(mod, { ...spec, direct: true, aggregatorPowAtomicConsume: false }, failures);
+    }
+    assert.deepEqual(failures, []);
+  } finally {
+    restoreGlobals();
+  }
+});
+
+test("a fresh signed commit cannot reuse another Turnstile token's graph", async () => {
+  const restoreGlobals = ensureGlobals();
+  const originalFetch = globalThis.fetch;
+  try {
+    const modulePath = await buildPowModule();
+    const mod = await import(pathToFileURL(modulePath).href);
+    let providerCalls = 0;
+    globalThis.fetch = async () => {
+      providerCalls += 1;
+      return Response.json({ ok: true, reason: "ok", checks: {}, providers: {} });
+    };
+    for (const atomic of [false, true]) {
+      const payload = makeInnerPayload({ powcheck: true, turncheck: true, atomic });
+      const request = (path, body) => mod.default.fetch(new Request(`https://example.com${path}`, {
+        method: body ? "POST" : "GET",
+        headers: { ...makeInnerHeaders(payload), "CF-Connecting-IP": "1.2.3.4", Accept: "text/html", "Content-Type": "application/json" },
+        ...(body ? { body: JSON.stringify(body) } : {}),
+      }), {}, {});
+      const page = await request("/protected");
+      assert.equal(page.status, 200);
+      const args = extractChallengeArgs(await page.text());
+      assert.ok(args);
+      const nonce = base64Url(crypto.randomBytes(16));
+      const tokens = ["turnstile-token-A-1234567890", "turnstile-token-B-1234567890"];
+      const witnesses = [];
+      for (const token of tokens) {
+        witnesses.push(await buildMhgWitnessBundle({
+          ticketB64: args.ticketB64, nonce, captchaTag: captchaTagFromToken(token),
+          pageBytes: payload.c.POW_PAGE_BYTES, mixRounds: payload.c.POW_MIX_ROUNDS,
+        }));
+      }
+      const submit = async (witness, token, expectedStatus) => {
+        const captchaToken = JSON.stringify({ turnstile: token });
+        const commit = await request("/__pow/commit", {
+          ticketB64: args.ticketB64, nonce, rootB64: witness.rootB64, pathHash: args.pathHash, captchaToken,
+        });
+        assert.equal(commit.status, 200, "server must issue a fresh, valid signed commit for the submitted token");
+        const { commitToken } = await commit.json();
+        const challenge = await request("/__pow/challenge", { commitToken });
+        assert.equal(challenge.status, 200);
+        let state = await challenge.json();
+        assert.equal(state.done, false);
+        const before = providerCalls;
+        do {
+          const response = await request("/__pow/open", {
+            commitToken, captchaToken, sid: state.sid, cursor: state.cursor, token: state.token,
+            opens: state.indices.map((idx, pos) => buildOpenEntryFromBundle({ bundle: witness, idx, seg: state.segs[pos] })),
+          });
+          assert.equal(response.status, expectedStatus);
+          if (expectedStatus === 403) {
+            assert.equal(response.headers.get("x-pow-h"), "cheat");
+            assert.equal(providerCalls, before, "reject the reused graph before consuming Turnstile");
+            return;
+          }
+          state = await response.json();
+        } while (state.done === false);
+        assert.equal(state.done, true);
+        assert.equal(typeof state.consume, atomic ? "string" : "undefined");
+        assert.equal(providerCalls - before, atomic ? 0 : 1);
+      };
+      await submit(witnesses[0], tokens[0], 200);
+      await submit(witnesses[0], tokens[1], 403);
+      await submit(witnesses[1], tokens[1], 200);
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreGlobals();
+  }
+});
 
 const runMatrix8 = async () => {
   const restoreGlobals = ensureGlobals();

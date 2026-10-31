@@ -2,21 +2,29 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { verifyViaSiteverifyAggregator } from "../lib/pow/siteverify-client.js";
 
+const input = () => ({
+  config: { turncheck: true, SITEVERIFY_URLS: [] },
+  expectedHostname: "example.com",
+  payload: {
+    ticketMac: "ticket-mac",
+    token: { turnstile: "token" },
+    providers: { turnstile: { secret: "secret" } },
+    remoteip: "192.0.2.1",
+  },
+});
+const validResponse = { success: true, cdata: "ticket-mac", hostname: "example.com" };
+
 test("empty provider list uses the official Turnstile contract without aggregator credentials", async (t) => {
   const calls = [];
   t.mock.method(globalThis, "fetch", async (url, init) => {
     calls.push({ url, init });
-    return Response.json({ success: true });
+    return Response.json(validResponse);
   });
   for (const urls of [[], ["", "  "], undefined]) {
-    const result = await verifyViaSiteverifyAggregator({
-      config: { turncheck: true, SITEVERIFY_URLS: urls, AGGREGATOR_POW_ATOMIC_CONSUME: true },
-      payload: {
-        token: { turnstile: "token" },
-        providers: { turnstile: { secret: "secret" } },
-        remoteip: "192.0.2.1",
-      },
-    });
+    const args = input();
+    args.config.SITEVERIFY_URLS = urls;
+    args.config.AGGREGATOR_POW_ATOMIC_CONSUME = true;
+    const result = await verifyViaSiteverifyAggregator(args);
     assert.equal(result.ok, true);
   }
   assert.equal(calls.length, 3);
@@ -30,34 +38,60 @@ test("empty provider list uses the official Turnstile contract without aggregato
   }
 });
 
+test("official fallback rejects tokens bound to another ticket or hostname", async (t) => {
+  let response;
+  t.mock.method(globalThis, "fetch", () => Response.json(response));
+  const invalid = [
+    { cdata: "another-ticket" }, { cdata: undefined }, { cdata: null }, { cdata: 1 },
+    { hostname: "other.example.com" }, { hostname: "example.com.attacker.invalid" },
+    { hostname: " example.com" }, { hostname: "example.com." },
+    { hostname: undefined }, { hostname: null }, { hostname: ["example.com"] },
+  ];
+  for (const fields of invalid) {
+    response = { ...validResponse, ...fields };
+    assert.equal((await verifyViaSiteverifyAggregator(input())).ok, false, JSON.stringify(fields));
+  }
+  response = { ...validResponse, hostname: "EXAMPLE.COM" };
+  assert.equal((await verifyViaSiteverifyAggregator(input())).ok, true, "DNS names are case insensitive");
+  const args = input();
+  args.expectedHostname = "EXAMPLE.COM";
+  response = validResponse;
+  assert.equal((await verifyViaSiteverifyAggregator(args)).ok, true);
+});
+
 test("official fallback fails closed for rejection, malformed responses and transport failures", async (t) => {
   const responses = [
-    () => Response.json({ success: false, "error-codes": ["timeout-or-duplicate"] }),
-    () => Response.json({ success: "true" }),
+    () => Response.json({ ...validResponse, success: false, "error-codes": ["timeout-or-duplicate"] }),
+    () => Response.json({ ...validResponse, success: "true" }),
     () => Response.json(null),
     () => new Response("invalid json"),
-    () => Response.json({ success: true }, { status: 500 }),
+    () => Response.json(validResponse, { status: 500 }),
     () => { throw new Error("network"); },
   ];
   let reply;
   t.mock.method(globalThis, "fetch", () => reply());
   for (reply of responses) {
-    const result = await verifyViaSiteverifyAggregator({
-      config: { turncheck: true, SITEVERIFY_URLS: [] },
-      payload: { token: { turnstile: "token" }, providers: { turnstile: { secret: "secret" } } },
-    });
-    assert.equal(result.ok, false);
+    assert.equal((await verifyViaSiteverifyAggregator(input())).ok, false);
   }
 });
 
-test("fallback cannot replace PoW-only consumption or accept missing Turnstile input", async (t) => {
+test("fallback requires Turnstile credentials and trusted ticket and hostname expectations", async (t) => {
   const fetch = t.mock.method(globalThis, "fetch", () => { throw new Error("unexpected request"); });
   for (const [turncheck, token, secret] of [[false, "", ""], [true, "", "secret"], [true, "token", ""]]) {
-    const result = await verifyViaSiteverifyAggregator({
-      config: { turncheck, SITEVERIFY_URLS: [], AGGREGATOR_POW_ATOMIC_CONSUME: true },
-      payload: { token: { turnstile: token }, providers: { turnstile: { secret } } },
-    });
-    assert.equal(result.ok, false);
+    const args = input();
+    args.config.turncheck = turncheck;
+    args.config.AGGREGATOR_POW_ATOMIC_CONSUME = true;
+    args.payload.token.turnstile = token;
+    args.payload.providers.turnstile.secret = secret;
+    assert.equal((await verifyViaSiteverifyAggregator(args)).ok, false);
+  }
+  for (const value of [undefined, null, "", 123]) {
+    const noHost = input();
+    noHost.expectedHostname = value;
+    assert.equal((await verifyViaSiteverifyAggregator(noHost)).ok, false);
+    const noTicket = input();
+    noTicket.payload.ticketMac = value;
+    assert.equal((await verifyViaSiteverifyAggregator(noTicket)).ok, false);
   }
   assert.equal(fetch.mock.callCount(), 0);
 });

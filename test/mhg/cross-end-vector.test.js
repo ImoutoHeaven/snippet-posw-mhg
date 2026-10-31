@@ -74,24 +74,27 @@ const resolveParentsV4 = async ({ i, graphSeed, pageBytes, readNodePage }) => {
   return { p0, p1, p2 };
 };
 
-const deriveGraphSeed16 = async (ticketB64, nonceString) => {
+const deriveGraphSeed16 = async (ticketB64, nonceString, captchaTag = "any") => {
   const d = await digest(
-    encoder.encode("mhg|graph|v4|"),
+    encoder.encode("mhg|graph|v5|"),
     encoder.encode(ticketB64),
     encoder.encode("|"),
     encoder.encode(nonceString),
+    encoder.encode("|"),
+    encoder.encode(captchaTag),
   );
   return d.slice(0, 16);
 };
 
-test("graph seed derivation uses v4 label contract", async () => {
+test("graph seed derivation uses v5 label and explicit PoW-only tag", async () => {
   const ticketB64 = "dGVzdC10aWNrZXQtdjQ";
   const nonce = "bm9uY2UtdjQtY29udHJhY3Q";
-  const expectedV4 = (await digest(
-    encoder.encode("mhg|graph|v4|"),
+  const expectedV5 = (await digest(
+    encoder.encode("mhg|graph|v5|"),
     encoder.encode(ticketB64),
     encoder.encode("|"),
     encoder.encode(nonce),
+    encoder.encode("|any"),
   )).slice(0, 16);
   const expectedV3 = (await digest(
     encoder.encode("mhg|graph|v3|"),
@@ -101,7 +104,7 @@ test("graph seed derivation uses v4 label contract", async () => {
   )).slice(0, 16);
   const actual = await deriveGraphSeed16(ticketB64, nonce);
 
-  assert.deepEqual(actual, expectedV4);
+  assert.deepEqual(actual, expectedV5);
   assert.notDeepEqual(actual, expectedV3);
 });
 
@@ -111,7 +114,7 @@ const deriveNonce16 = async (nonceString) => {
   return (await digest(raw)).slice(0, 16);
 };
 
-const runWorkerFlow = async ({ ticketB64, steps, pageBytes = 64, mixRounds = 2, indices, segs }) => {
+const runWorkerFlow = async ({ ticketB64, steps, pageBytes = 64, mixRounds = 2, indices, segs, captchaTag = "any" }) => {
   const prevSelf = globalThis.self;
   const prevPostMessage = globalThis.postMessage;
   const prevAtob = globalThis.atob;
@@ -156,7 +159,7 @@ const runWorkerFlow = async ({ ticketB64, steps, pageBytes = 64, mixRounds = 2, 
     });
 
   try {
-    await call("INIT", { ticketB64, steps, pageBytes, mixRounds });
+    await call("INIT", { ticketB64, steps, pageBytes, mixRounds, captchaTag });
     const commit = await call("COMMIT");
     const open = await call("OPEN", { indices, segs });
     return { commit, open };
@@ -234,6 +237,25 @@ const verifyOpenEquationsWithServer = async ({ open, graphSeed, nonce, pageBytes
     assert.deepEqual(expected, readNodePage(i));
   }
 };
+
+test("worker binds the graph to the captcha tag and server rejects another tag's graph", async () => {
+  const ticketB64 = "dGVzdC10aWNrZXQ";
+  const tags = ["AAAAAAAAAAAAAAAA", "BBBBBBBBBBBBBBBB"];
+  const flows = [];
+  for (const captchaTag of tags) {
+    const flow = await runWorkerFlow({ ticketB64, steps: 8, indices: [1, 8], segs: [2, 2], captchaTag });
+    const verify = (tag) => deriveGraphSeed16(ticketB64, flow.commit.nonce, tag).then(async (graphSeed) =>
+      verifyOpenBatchVector({
+        rootB64: flow.commit.rootB64, leafCount: 9, graphSeed,
+        nonce: await deriveNonce16(flow.commit.nonce), pageBytes: 64, mixRounds: 2, opens: flow.open.opens,
+      }));
+    assert.equal((await verify(captchaTag)).ok, true);
+    assert.equal((await verify(tags.find((tag) => tag !== captchaTag))).ok, false);
+    flows.push(flow);
+  }
+  assert.equal(flows[0].commit.nonce, flows[1].commit.nonce);
+  assert.notEqual(flows[0].commit.rootB64, flows[1].commit.rootB64);
+});
 
 test("fixed vectors produce cross-end consistent verification", async () => {
   const ticketB64 = "dGVzdC10aWNrZXQ";

@@ -290,8 +290,8 @@ const extractChallengeArgs = (html) => {
   return { bindingB64: match[1], ticketB64: match[3], pathHash: match[4] };
 };
 
-const deriveMhgGraphSeed = (ticketB64, nonce, graphLabel = "v4") =>
-  crypto.createHash("sha256").update(`mhg|graph|${graphLabel}|${ticketB64}|${nonce}`).digest().subarray(0, 16);
+const deriveMhgGraphSeed = (ticketB64, nonce, graphLabel = "v5", captchaTag = "any") =>
+  crypto.createHash("sha256").update(`mhg|graph|${graphLabel}|${ticketB64}|${nonce}${graphLabel === "v5" ? `|${captchaTag}` : ""}`).digest().subarray(0, 16);
 
 const deriveMhgNonce16 = (nonce) => {
   const raw = fromBase64Url(nonce);
@@ -299,12 +299,12 @@ const deriveMhgNonce16 = (nonce) => {
   return crypto.createHash("sha256").update(raw).digest().subarray(0, 16);
 };
 
-const buildMhgWitnessBundle = async ({ ticketB64, nonce, graphLabel = "v4" }) => {
+const buildMhgWitnessBundle = async ({ ticketB64, nonce, graphLabel = "v5", captchaTag = "any" }) => {
   const { makeGenesisPage, mixPage } = await import("../../lib/mhg/mix-aes.js");
   const { buildMerkle, buildProof } = await import("../../lib/mhg/merkle.js");
   const ticket = parseTicket(ticketB64);
   if (!ticket) throw new Error("invalid ticket");
-  const graphSeed = deriveMhgGraphSeed(ticketB64, nonce, graphLabel);
+  const graphSeed = deriveMhgGraphSeed(ticketB64, nonce, graphLabel, captchaTag);
   const nonce16 = deriveMhgNonce16(nonce);
   const pageBytes = 64;
   const pages = new Array(ticket.L + 1);
@@ -384,7 +384,7 @@ const runForbiddenVerifyPointCases = async (handler) => {
       const req = input instanceof Request ? input : new Request(input);
       if (String(req.url) === TURNSTILE_SITEVERIFY_URL) {
         siteverifyCalls += 1;
-        return new Response(JSON.stringify({ success: true }), { status: 200 });
+        return new Response(JSON.stringify({ success: true, cdata: parseTicket(args.ticketB64).mac, hostname: "example.com" }), { status: 200 });
       }
       return new Response("ok", { status: 200 });
     };
@@ -399,7 +399,8 @@ const runForbiddenVerifyPointCases = async (handler) => {
     const args = extractChallengeArgs(await pageRes.text());
     assert.ok(args);
     const nonce = base64Url(crypto.randomBytes(16));
-    const witness = await buildMhgWitnessBundle({ ticketB64: args.ticketB64, nonce });
+    const captchaTag = crypto.createHash("sha256").update(`ctag|v1|t=${JSON.parse(tokenEnvelope).turnstile}`).digest().subarray(0, 12).toString("base64url");
+    const witness = await buildMhgWitnessBundle({ ticketB64: args.ticketB64, nonce, captchaTag });
 
     const commitRes = await handler(
       new Request("https://example.com/__pow/commit", {
@@ -822,7 +823,7 @@ test("v4 tickets are rejected at challenge, cap, open, proof, and atomic boundar
   }
 });
 
-test("v3-derived vector no longer verifies under v4 graph seed contract", async () => {
+test("v4-derived vector no longer verifies under v5 graph seed contract", async () => {
   const restoreGlobals = ensureGlobals();
   try {
     const bridgeFetch = await buildSplitBridgeFetch();
@@ -845,8 +846,8 @@ test("v3-derived vector no longer verifies under v4 graph seed contract", async 
     const nonce = base64Url(crypto.randomBytes(16));
     const ticket = parseTicket(args.ticketB64);
     assert.ok(ticket);
-    const witness = await buildMhgWitnessBundle({ ticketB64: args.ticketB64, nonce, graphLabel: "v3" });
-    const graphSeedV4 = deriveMhgGraphSeed(args.ticketB64, nonce, "v4");
+    const witness = await buildMhgWitnessBundle({ ticketB64: args.ticketB64, nonce, graphLabel: "v4" });
+    const graphSeedV5 = deriveMhgGraphSeed(args.ticketB64, nonce, "v5");
     const nonce16 = deriveMhgNonce16(nonce);
     const index = Math.min(ticket.L, 3);
     const open = witness.makeOpenEntry(index, 2);
@@ -854,7 +855,7 @@ test("v3-derived vector no longer verifies under v4 graph seed contract", async 
     const verified = await verifyOpenBatchVector({
       rootB64: witness.rootB64,
       leafCount: ticket.L + 1,
-      graphSeed: graphSeedV4,
+      graphSeed: graphSeedV5,
       nonce: nonce16,
       pageBytes: 64,
       mixRounds: 2,

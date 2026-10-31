@@ -33,12 +33,14 @@ const b64uToBytes = (value) => {
   }
 };
 
-export async function deriveGraphSeed16FromTicketNonce(ticketB64, nonceString) {
+export async function deriveGraphSeed16FromTicketNonce(ticketB64, nonceString, captchaTag = "any") {
   const digest = await sha256(
-    encoder.encode("mhg|graph|v4|"),
+    encoder.encode("mhg|graph|v5|"),
     encoder.encode(ticketB64),
     encoder.encode("|"),
-    encoder.encode(nonceString)
+    encoder.encode(nonceString),
+    encoder.encode("|"),
+    encoder.encode(captchaTag)
   );
   return digest.slice(0, 16);
 }
